@@ -1,0 +1,233 @@
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { Inject } from '@nestjs/common';
+import { Cache } from 'cache-manager';
+import slugify from 'slugify';
+import { Product, ProductDocument } from './schemas/product.schema';
+import { CreateProductDto, UpdateProductDto } from './dto/product.dto';
+import { AuditService } from '../audit/audit.service';
+
+const CACHE_KEY_LIST = 'products:list';
+const CACHE_KEY_DETAIL = (slug: string) => `products:detail:${slug}`;
+const CACHE_TTL = 300; // 5 minutes
+
+// Fields hidden from user API (pricing security)
+const USER_EXCLUDED_FIELDS = '-costPrice -profit -profitPercent';
+
+@Injectable()
+export class ProductsService {
+  constructor(
+    @InjectModel(Product.name) private readonly productModel: Model<ProductDocument>,
+    @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
+    private readonly auditService: AuditService,
+  ) {}
+
+  private computePricing(
+    sellingPrice: number,
+    costPrice: number,
+    discountPercent = 0,
+  ) {
+    const finalPrice = Math.round(sellingPrice * (1 - discountPercent / 100));
+    const profit = finalPrice - costPrice;
+    const profitPercent = costPrice > 0 ? Math.round((profit / costPrice) * 100) : 0;
+    return { finalPrice, profit, profitPercent };
+  }
+
+  async create(dto: CreateProductDto, staffId: string): Promise<ProductDocument> {
+    let slug = slugify(dto.name, { lower: true, strict: true });
+    const existing = await this.productModel.findOne({ slug }).exec();
+    if (existing) slug = `${slug}-${Date.now()}`;
+
+    const pricing = this.computePricing(
+      dto.sellingPrice,
+      dto.costPrice,
+      dto.discountPercent,
+    );
+
+    const product = new this.productModel({
+      ...dto,
+      slug,
+      category: new Types.ObjectId(dto.category),
+      ...pricing,
+    });
+
+    const saved = await product.save();
+    await this.invalidateCache();
+
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'CREATE',
+      module: 'products',
+      targetId: saved._id.toString(),
+      afterData: saved.toObject(),
+    });
+
+    return saved;
+  }
+
+  async findAll(query: {
+    page: number;
+    limit: number;
+    category?: string;
+    search?: string;
+    forAdmin?: boolean;
+    minPrice?: number;
+    maxPrice?: number;
+  }) {
+    const { page, limit, category, search, forAdmin, minPrice, maxPrice } = query;
+
+    // Try cache for user queries
+    if (!forAdmin && !search && !minPrice && !maxPrice) {
+      const cacheKey = `${CACHE_KEY_LIST}:${page}:${limit}:${category || 'all'}`;
+      const cached = await this.cacheManager.get(cacheKey);
+      if (cached) return cached;
+    }
+
+    const filter: Record<string, unknown> = {};
+    if (!forAdmin) filter.isActive = true;
+    if (category) filter.category = new Types.ObjectId(category);
+    if (search) filter.$text = { $search: search };
+    if (minPrice !== undefined || maxPrice !== undefined) {
+      filter.finalPrice = {};
+      if (minPrice !== undefined) (filter.finalPrice as any).$gte = minPrice;
+      if (maxPrice !== undefined) (filter.finalPrice as any).$lte = maxPrice;
+    }
+
+    const selectFields = forAdmin ? '' : USER_EXCLUDED_FIELDS;
+
+    const [data, total] = await Promise.all([
+      this.productModel
+        .find(filter)
+        .select(selectFields)
+        .populate('category', 'name')
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean()
+        .exec(),
+      this.productModel.countDocuments(filter).exec(),
+    ]);
+
+    const result = { data, total, page, limit };
+
+    if (!forAdmin && !search && !minPrice && !maxPrice) {
+      const cacheKey = `${CACHE_KEY_LIST}:${page}:${limit}:${category || 'all'}`;
+      await this.cacheManager.set(cacheKey, result, CACHE_TTL);
+    }
+
+    return result;
+  }
+
+  async findBySlug(slug: string, forAdmin = false): Promise<ProductDocument> {
+    if (!forAdmin) {
+      const cached = await this.cacheManager.get<ProductDocument>(CACHE_KEY_DETAIL(slug));
+      if (cached) return cached;
+    }
+
+    const selectFields = forAdmin ? '' : USER_EXCLUDED_FIELDS;
+    const product = await this.productModel
+      .findOne({ slug })
+      .select(selectFields)
+      .populate('category', 'name')
+      .exec();
+
+    if (!product) throw new NotFoundException('Product not found');
+
+    // Increment view count (non-blocking)
+    this.productModel.findByIdAndUpdate(product._id, { $inc: { viewCount: 1 } }).exec();
+
+    if (!forAdmin) {
+      await this.cacheManager.set(CACHE_KEY_DETAIL(slug), product, CACHE_TTL);
+    }
+
+    return product;
+  }
+
+  async findById(id: string, forAdmin = false): Promise<ProductDocument> {
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Product not found');
+    const selectFields = forAdmin ? '' : USER_EXCLUDED_FIELDS;
+    const product = await this.productModel.findById(id).select(selectFields).exec();
+    if (!product) throw new NotFoundException('Product not found');
+    return product;
+  }
+
+  async update(
+    id: string,
+    dto: UpdateProductDto,
+    staffId: string,
+  ): Promise<ProductDocument> {
+    const product = await this.productModel.findById(id).exec();
+    if (!product) throw new NotFoundException('Product not found');
+
+    const before = product.toObject();
+
+    // Recompute pricing if financial fields change
+    const sellingPrice = dto.sellingPrice ?? product.sellingPrice;
+    const costPrice = dto.costPrice ?? product.costPrice;
+    const discountPercent = dto.discountPercent ?? product.discountPercent;
+    const pricing = this.computePricing(sellingPrice, costPrice, discountPercent);
+
+    // Regenerate slug if name changed
+    let slug = product.slug;
+    if (dto.name && dto.name !== product.name) {
+      slug = slugify(dto.name, { lower: true, strict: true });
+      const existing = await this.productModel.findOne({ slug, _id: { $ne: id } }).exec();
+      if (existing) slug = `${slug}-${Date.now()}`;
+    }
+
+    const updates = { ...dto, ...pricing, slug };
+    if (dto.category) updates.category = new Types.ObjectId(dto.category) as any;
+
+    const updated = await this.productModel
+      .findByIdAndUpdate(id, { $set: updates }, { new: true })
+      .exec();
+
+    if (!updated) throw new NotFoundException('Product not found');
+
+    await this.invalidateCache(product.slug);
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'UPDATE',
+      module: 'products',
+      targetId: id,
+      beforeData: before,
+      afterData: updated.toObject(),
+    });
+
+    return updated;
+  }
+
+  async softDelete(id: string, staffId: string): Promise<void> {
+    const product = await this.productModel.findById(id).exec();
+    if (!product) throw new NotFoundException('Product not found');
+
+    product.isDeleted = true;
+    product.deletedAt = new Date();
+    product.deletedBy = staffId;
+    await product.save();
+
+    await this.invalidateCache(product.slug);
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'DELETE',
+      module: 'products',
+      targetId: id,
+    });
+  }
+
+  private async invalidateCache(slug?: string) {
+    // Invalidate list cache (all pages)
+    const keys = await (this.cacheManager as any).store?.keys?.(`${CACHE_KEY_LIST}:*`);
+    if (keys?.length) {
+      await Promise.all(keys.map((k: string) => this.cacheManager.del(k)));
+    }
+    if (slug) {
+      await this.cacheManager.del(CACHE_KEY_DETAIL(slug));
+    }
+  }
+}
