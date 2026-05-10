@@ -3,7 +3,8 @@ import { AuthGuard } from '@nestjs/passport';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
-  handleRequest(err: Error, user: unknown) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  handleRequest<TUser = any>(err: Error, user: TUser): TUser {
     if (err || !user) {
       throw err || new UnauthorizedException('Invalid or expired token');
     }
@@ -13,7 +14,8 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
 
 @Injectable()
 export class JwtRefreshGuard extends AuthGuard('jwt-refresh') {
-  handleRequest(err: Error, user: unknown) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  handleRequest<TUser = any>(err: Error, user: TUser): TUser {
     if (err || !user) {
       throw err || new UnauthorizedException('Invalid refresh token');
     }
@@ -23,7 +25,8 @@ export class JwtRefreshGuard extends AuthGuard('jwt-refresh') {
 
 @Injectable()
 export class JwtStaffGuard extends AuthGuard('jwt-staff') {
-  handleRequest(err: Error, user: unknown) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  handleRequest<TUser = any>(err: Error, user: TUser): TUser {
     if (err || !user) {
       throw err || new UnauthorizedException('Staff access required');
     }

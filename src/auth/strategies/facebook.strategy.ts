@@ -12,6 +12,7 @@ export class FacebookStrategy extends PassportStrategy(Strategy, 'facebook') {
       callbackURL: configService.get<string>('FACEBOOK_CALLBACK_URL') || '',
       scope: ['email'],
       profileFields: ['emails', 'name', 'picture'],
+      state: false,
     });
   }
 

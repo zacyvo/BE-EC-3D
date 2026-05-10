@@ -10,7 +10,7 @@ export enum StaffRole {
   SELLER = 'SELLER',
 }
 
-@Schema({ timestamps: true })
+@Schema({ timestamps: true, collection: 'staff' })
 export class Staff {
   _id: Types.ObjectId;
 
@@ -25,6 +25,9 @@ export class Staff {
 
   @Prop({ required: true, trim: true })
   name: string;
+
+  @Prop({ trim: true })
+  phone?: string;
 
   @Prop({ default: true })
   isActive: boolean;

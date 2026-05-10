@@ -29,6 +29,7 @@
     "@nestjs/platform-express": "^10.3.8",
     "@nestjs/swagger": "^7.3.1",
     "@nestjs/throttler": "^5.1.2",
+    "@types/nodemailer": "^8.0.0",
     "bcrypt": "^5.1.1",
     "cache-manager": "^5.4.0",
     "cache-manager-ioredis-yet": "^2.1.0",
@@ -39,6 +40,7 @@
     "helmet": "^7.1.0",
     "mongoose": "^8.4.0",
     "multer": "^1.4.5-lts.1",
+    "nodemailer": "^8.0.7",
     "passport": "^0.7.0",
     "passport-facebook": "^3.0.0",
     "passport-google-oauth20": "^2.0.0",
@@ -75,11 +77,19 @@
     "typescript": "^5.4.5"
   },
   "jest": {
-    "moduleFileExtensions": ["js", "json", "ts"],
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
-    "transform": { "^.+\\.(t|j)s$": "ts-jest" },
-    "collectCoverageFrom": ["**/*.(t|j)s"],
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
   }

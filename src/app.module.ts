@@ -12,7 +12,11 @@ import { OrdersModule } from './orders/orders.module';
 import { AuditModule } from './audit/audit.module';
 import { UploadModule } from './upload/upload.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { ExternalRevenueModule } from './external-revenue/external-revenue.module';
 import { CacheModule } from './common/cache.module';
+import { MailModule } from './mail/mail.module';
+import { CustomOrdersModule } from './custom-orders/custom-orders.module';
+import { PromotionsModule } from './promotions/promotions.module';
 
 @Module({
   imports: [
@@ -62,6 +66,10 @@ import { CacheModule } from './common/cache.module';
     AuditModule,
     UploadModule,
     AnalyticsModule,
+    ExternalRevenueModule,
+    MailModule,
+    CustomOrdersModule,
+    PromotionsModule,
   ],
 })
 export class AppModule {}

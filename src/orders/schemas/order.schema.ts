@@ -31,12 +31,31 @@ export class ShippingInfo {
   @Prop({ required: true }) phone: string;
   @Prop({ required: true }) street: string;
   @Prop({ required: true }) ward: string;
-  @Prop({ required: true }) district: string;
+  @Prop({ default: '' }) district: string;
   @Prop({ required: true }) city: string;
   @Prop() note?: string;
 }
 
 const ShippingInfoSchema = SchemaFactory.createForClass(ShippingInfo);
+
+@Schema({ _id: false })
+export class Delivery {
+  @Prop() carrierName?: string;
+  @Prop() trackingCode?: string;
+  @Prop() trackingUrl?: string;
+  @Prop() estimatedDeliveryDate?: Date;
+}
+
+const DeliverySchema = SchemaFactory.createForClass(Delivery);
+
+@Schema({ _id: false })
+export class AppliedCoupon {
+  @Prop({ required: true }) code: string;
+  @Prop({ required: true }) name: string;
+  @Prop({ required: true, min: 0 }) discountAmount: number;
+}
+
+const AppliedCouponSchema = SchemaFactory.createForClass(AppliedCoupon);
 
 @Schema({ timestamps: true })
 export class Order {
@@ -45,13 +64,30 @@ export class Order {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true }) userId: Types.ObjectId;
   @Prop({ type: [OrderItemSchema], required: true }) items: OrderItem[];
   @Prop({ type: ShippingInfoSchema, required: true }) shippingInfo: ShippingInfo;
+
+  /** Original total before discount */
+  @Prop({ required: true, min: 0 }) subtotal: number;
+
+  /** Total discount from all applied coupons */
+  @Prop({ default: 0, min: 0 }) discountAmount: number;
+
+  /** Applied coupon records */
+  @Prop({ type: [AppliedCouponSchema], default: [] })
+  appliedCoupons: AppliedCoupon[];
+
+  /** Final payable amount = subtotal - discountAmount */
   @Prop({ required: true, min: 0 }) total: number;
 
   @Prop({ default: OrderStatus.PENDING, enum: Object.values(OrderStatus) })
   status: OrderStatus;
 
+  @Prop() customerNote?: string;
   @Prop() csNote?: string;
   @Prop() cancelReason?: string;
+
+  @Prop({ type: DeliverySchema }) delivery?: Delivery;
+
+  @Prop({ default: 0, min: 0 }) paidAmount: number;
 
   @Prop({ default: false }) isDeleted: boolean;
   @Prop() deletedAt?: Date;

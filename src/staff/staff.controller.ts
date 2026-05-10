@@ -22,13 +22,53 @@ import {
   IsString,
   MinLength,
   MaxLength,
+  Matches,
+  IsOptional,
 } from 'class-validator';
+import { ValidateIf } from 'class-validator';
 
 class CreateStaffDto {
   @IsEmail() email: string;
   @IsString() @MinLength(8) @MaxLength(32) password: string;
   @IsString() @MinLength(2) name: string;
   @IsEnum(StaffRole) role: StaffRole;
+}
+
+class UpdateStaffDto {
+  @IsOptional()
+  @IsString() @MinLength(2) @MaxLength(64)
+  name?: string;
+
+  @IsOptional()
+  @IsEnum(StaffRole)
+  role?: StaffRole;
+
+  @ValidateIf((o) => o.name === undefined && o.role === undefined)
+  @IsString({ message: 'At least one field must be provided' })
+  _dummy?: never;
+}
+
+class UpdateProfileDto {
+  @IsString() @MinLength(2) @MaxLength(64) name: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^(0|\+84)(3[2-9]|5[25689]|7[06-9]|8[0-9]|9[0-9])\d{7}$/, {
+    message: 'Số điện thoại không hợp lệ (VD: 0912345678)',
+  })
+  phone?: string;
+}
+
+class ChangePasswordDto {
+  @IsString() @MinLength(1) currentPassword: string;
+
+  @IsString()
+  @MinLength(8)
+  @MaxLength(32)
+  @Matches(/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, {
+    message: 'Mật khẩu cần có chữ hoa, chữ thường và số',
+  })
+  newPassword: string;
 }
 
 @Controller('admin/staff')
@@ -53,6 +93,14 @@ export class StaffController {
     return this.staffService.create({ ...dto, createdBy: staff.sub });
   }
 
+  @Patch(':id')
+  async updateById(
+    @Param('id') id: string,
+    @Body() dto: UpdateStaffDto,
+  ) {
+    return this.staffService.updateById(id, { name: dto.name, role: dto.role });
+  }
+
   @Delete(':id')
   async softDelete(
     @Param('id') id: string,
@@ -65,5 +113,32 @@ export class StaffController {
   @Patch(':id/toggle-active')
   async toggleActive(@Param('id') id: string) {
     return this.staffService.toggleActive(id);
+  }
+
+  // ─── Self-service (any authenticated staff) ─────────────────────────────────
+
+  @Get('me')
+  @Roles() // override SUPER_ADMIN restriction
+  async getMe(@CurrentUser() staff: { sub: string }) {
+    return this.staffService.getMe(staff.sub);
+  }
+
+  @Patch('me/profile')
+  @Roles()
+  async updateProfile(
+    @CurrentUser() staff: { sub: string },
+    @Body() dto: UpdateProfileDto,
+  ) {
+    return this.staffService.updateProfile(staff.sub, { name: dto.name, phone: dto.phone });
+  }
+
+  @Patch('me/password')
+  @Roles()
+  async changePassword(
+    @CurrentUser() staff: { sub: string },
+    @Body() dto: ChangePasswordDto,
+  ) {
+    await this.staffService.changePassword(staff.sub, dto.currentPassword, dto.newPassword);
+    return { message: 'Mật khẩu đã được cập nhật' };
   }
 }

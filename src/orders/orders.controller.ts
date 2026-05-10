@@ -40,6 +40,12 @@ export class OrdersController {
 export class AdminOrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
+  @Get('stats')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
+  getUserStats(@Query('userId') userId: string) {
+    return this.ordersService.getUserStats(userId);
+  }
+
   @Get()
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
   findAll(
@@ -47,8 +53,9 @@ export class AdminOrdersController {
     @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
     @Query('status') status?: OrderStatus,
     @Query('userId') userId?: string,
+    @Query('search') search?: string,
   ) {
-    return this.ordersService.findAllAdmin({ page, limit, status, userId });
+    return this.ordersService.findAllAdmin({ page, limit, status, userId, search });
   }
 
   @Patch(':id/status')

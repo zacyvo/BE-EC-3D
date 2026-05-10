@@ -12,7 +12,8 @@ import { redisStore } from 'cache-manager-ioredis-yet';
         const redisUrl = configService.get<string>('REDIS_URL');
         if (redisUrl) {
           return {
-            store: await redisStore({ url: redisUrl }),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            store: await redisStore({ url: redisUrl } as any),
             ttl: 300, // 5 minutes default
           };
         }

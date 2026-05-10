@@ -7,7 +7,7 @@ export type UserDocument = User & Document;
 export class Address {
   @Prop({ required: true }) street: string;
   @Prop({ required: true }) ward: string;
-  @Prop({ required: true }) district: string;
+  @Prop({ default: '' }) district: string;
   @Prop({ required: true }) city: string;
   @Prop({ default: false }) isDefault: boolean;
 }
@@ -60,6 +60,30 @@ export class User {
   @Prop()
   deletedBy?: string;
 
+  @Prop({ default: false })
+  isBlocked: boolean;
+
+  @Prop()
+  blockedAt?: Date;
+
+  @Prop()
+  blockedBy?: string;
+
+  @Prop()
+  dob?: Date;
+
+  @Prop({ select: false })
+  deleteAccountCode?: string;
+
+  @Prop({ select: false })
+  deleteAccountCodeExpires?: Date;
+
+  @Prop({ select: false, default: 0 })
+  deleteAccountAttempts?: number;
+
+  @Prop({ select: false })
+  deleteAccountAttemptsDate?: string; // 'YYYY-MM-DD'
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -69,6 +93,7 @@ export const UserSchema = SchemaFactory.createForClass(User);
 // Indexes
 UserSchema.index({ email: 1 });
 UserSchema.index({ isDeleted: 1 });
+UserSchema.index({ phone: 1 }, { unique: true, sparse: true }); // sparse: allows multiple docs with no phone
 
 // Default query filter
 UserSchema.pre(/^find/, function (this: any, next: () => void) {

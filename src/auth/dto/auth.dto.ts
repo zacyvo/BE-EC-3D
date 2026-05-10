@@ -26,13 +26,16 @@ export class RegisterDto {
 
   @IsOptional()
   @IsString()
-  @Matches(/^\+?[0-9]{9,15}$/, { message: 'Invalid phone number' })
+  @Matches(/^(0|\+84)(3[2-9]|5[25689]|7[06-9]|8[0-9]|9[0-9])\d{7}$/, {
+    message: 'Số điện thoại không hợp lệ (VD: 0912345678)',
+  })
   phone?: string;
 }
 
 export class LoginDto {
-  @IsEmail()
-  email: string;
+  @IsString()
+  @MinLength(3)
+  identifier: string;
 
   @IsString()
   @MinLength(1)
@@ -40,8 +43,9 @@ export class LoginDto {
 }
 
 export class StaffLoginDto {
-  @IsEmail()
-  email: string;
+  @IsString()
+  @MinLength(3)
+  identifier: string;
 
   @IsString()
   @MinLength(1)

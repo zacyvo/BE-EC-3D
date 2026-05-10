@@ -62,7 +62,7 @@ export class ProductsService {
       action: 'CREATE',
       module: 'products',
       targetId: saved._id.toString(),
-      afterData: saved.toObject(),
+      afterData: saved.toObject() as unknown as Record<string, unknown>,
     });
 
     return saved;
@@ -76,8 +76,10 @@ export class ProductsService {
     forAdmin?: boolean;
     minPrice?: number;
     maxPrice?: number;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
   }) {
-    const { page, limit, category, search, forAdmin, minPrice, maxPrice } = query;
+    const { page, limit, category, search, forAdmin, minPrice, maxPrice, sortBy, sortOrder } = query;
 
     // Try cache for user queries
     if (!forAdmin && !search && !minPrice && !maxPrice) {
@@ -88,7 +90,7 @@ export class ProductsService {
 
     const filter: Record<string, unknown> = {};
     if (!forAdmin) filter.isActive = true;
-    if (category) filter.category = new Types.ObjectId(category);
+    if (category && Types.ObjectId.isValid(category)) filter.category = new Types.ObjectId(category);
     if (search) filter.$text = { $search: search };
     if (minPrice !== undefined || maxPrice !== undefined) {
       filter.finalPrice = {};
@@ -98,12 +100,17 @@ export class ProductsService {
 
     const selectFields = forAdmin ? '' : USER_EXCLUDED_FIELDS;
 
+    const sortQuery: Record<string, 1 | -1> =
+      sortBy === 'finalPrice'
+        ? { finalPrice: sortOrder === 'asc' ? 1 : -1 }
+        : { createdAt: -1 };
+
     const [data, total] = await Promise.all([
       this.productModel
         .find(filter)
         .select(selectFields)
         .populate('category', 'name')
-        .sort({ createdAt: -1 })
+        .sort(sortQuery)
         .skip((page - 1) * limit)
         .limit(limit)
         .lean()
@@ -194,8 +201,8 @@ export class ProductsService {
       action: 'UPDATE',
       module: 'products',
       targetId: id,
-      beforeData: before,
-      afterData: updated.toObject(),
+      beforeData: before as unknown as Record<string, unknown>,
+      afterData: updated.toObject() as unknown as Record<string, unknown>,
     });
 
     return updated;

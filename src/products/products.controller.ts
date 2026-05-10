@@ -32,6 +32,8 @@ export class ProductsController {
     @Query('search') search?: string,
     @Query('minPrice', new DefaultValuePipe(0), ParseIntPipe) minPrice?: number,
     @Query('maxPrice', new DefaultValuePipe(0), ParseIntPipe) maxPrice?: number,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: 'asc' | 'desc',
   ) {
     return this.productsService.findAll({
       page,
@@ -41,6 +43,8 @@ export class ProductsController {
       forAdmin: false,
       minPrice: minPrice || undefined,
       maxPrice: maxPrice || undefined,
+      sortBy,
+      sortOrder,
     });
   }
 

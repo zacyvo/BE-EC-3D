@@ -7,6 +7,7 @@ import { OrderVersion, OrderVersionSchema } from './schemas/order-version.schema
 import { ProductsModule } from '../products/products.module';
 import { CartModule } from '../cart/cart.module';
 import { AuditModule } from '../audit/audit.module';
+import { PromotionsModule } from '../promotions/promotions.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { AuditModule } from '../audit/audit.module';
     ProductsModule,
     CartModule,
     AuditModule,
+    PromotionsModule,
   ],
   controllers: [OrdersController, AdminOrdersController],
   providers: [OrdersService],

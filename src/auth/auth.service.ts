@@ -47,7 +47,7 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const user = await this.usersService.findByEmail(dto.email);
+    const user = await this.usersService.findByEmailOrPhone(dto.identifier);
     if (!user || !user.password) {
       throw new UnauthorizedException('Invalid credentials');
     }
@@ -55,6 +55,10 @@ export class AuthService {
     const passwordMatch = await bcrypt.compare(dto.password, user.password);
     if (!passwordMatch) {
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (user.isBlocked) {
+      return { user: { isBlocked: true } };
     }
 
     const tokens = await this.generateUserTokens(user._id.toString(), user.email);
@@ -82,6 +86,11 @@ export class AuthService {
     }
 
     const user = await this.usersService.findOrCreateOAuthUser(oauthUser);
+
+    if (user.isBlocked) {
+      return { user: { isBlocked: true } };
+    }
+
     const tokens = await this.generateUserTokens(user._id.toString(), user.email);
     await this.usersService.updateRefreshToken(user._id.toString(), tokens.refreshToken);
 
@@ -115,7 +124,7 @@ export class AuthService {
   // ─── Staff Auth ─────────────────────────────────────────────────────────────
 
   async staffLogin(dto: StaffLoginDto) {
-    const staff = await this.staffService.findByEmail(dto.email);
+    const staff = await this.staffService.findByEmailOrPhone(dto.identifier);
     if (!staff) throw new UnauthorizedException('Invalid credentials');
 
     const passwordMatch = await bcrypt.compare(dto.password, staff.password);
@@ -216,6 +225,12 @@ export class AuthService {
 
     await this.usersService.updatePassword(user._id.toString(), newPassword);
     return { message: 'Password reset successfully' };
+  }
+
+  async getProfile(userId: string) {
+    const user = await this.usersService.findById(userId);
+    if (!user) throw new UnauthorizedException('User not found');
+    return this.sanitizeUser(user);
   }
 
   private sanitizeUser(user: any) {

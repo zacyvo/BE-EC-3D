@@ -5,7 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { Model, Types, PipelineStage } from 'mongoose';
 import { Order, OrderDocument, OrderStatus } from './schemas/order.schema';
 import { OrderVersion, OrderVersionDocument } from './schemas/order-version.schema';
 import { CreateOrderDto, UpdateOrderStatusDto } from './dto/order.dto';
@@ -13,6 +13,7 @@ import { ProductsService } from '../products/products.service';
 import { CartService } from '../cart/cart.service';
 import { AuditService } from '../audit/audit.service';
 import { StaffRole } from '../auth/decorators/roles.decorator';
+import { PromotionsService } from '../promotions/promotions.service';
 
 @Injectable()
 export class OrdersService {
@@ -23,6 +24,7 @@ export class OrdersService {
     private readonly productsService: ProductsService,
     private readonly cartService: CartService,
     private readonly auditService: AuditService,
+    private readonly promotionsService: PromotionsService,
   ) {}
 
   async create(userId: string, dto: CreateOrderDto): Promise<OrderDocument> {
@@ -45,16 +47,42 @@ export class OrdersService {
       }),
     );
 
-    const total = items.reduce((sum, item) => sum + item.subtotal, 0);
+    const subtotal = items.reduce((sum, item) => sum + item.subtotal, 0);
+
+    // Apply coupon codes (floor rule enforced inside validateCoupons)
+    let discountAmount = 0;
+    let appliedCoupons: { code: string; name: string; discountAmount: number }[] = [];
+    if (dto.couponCodes?.length) {
+      const validation = await this.promotionsService.validateCoupons(userId, {
+        couponCodes: dto.couponCodes,
+        orderTotal: subtotal,
+      });
+      discountAmount = validation.totalDiscount;
+      appliedCoupons = validation.appliedCoupons;
+    }
+
+    const total = subtotal - discountAmount;
 
     const order = await this.orderModel.create({
       userId: new Types.ObjectId(userId),
       items,
       shippingInfo: dto.shippingInfo,
+      subtotal,
+      discountAmount,
+      appliedCoupons,
       total,
       status: OrderStatus.PENDING,
       currentVersion: 1,
+      ...(dto.customerNote ? { customerNote: dto.customerNote } : {}),
     });
+
+    // Mark coupons as used
+    if (appliedCoupons.length) {
+      await this.promotionsService.markUsed(
+        userId,
+        appliedCoupons.map((c) => c.code),
+      );
+    }
 
     // Save initial version snapshot
     await this.saveVersion(order, userId, 'user', 'Order created');
@@ -97,13 +125,69 @@ export class OrdersService {
     return order;
   }
 
+  async getUserStats(userId: string): Promise<{ totalOrders: number; deliveredOrders: number; totalSpent: number }> {
+    const uid = new Types.ObjectId(userId);
+    const [allResult, deliveredResult] = await Promise.all([
+      this.orderModel.countDocuments({ userId: uid }),
+      this.orderModel.aggregate([
+        { $match: { userId: uid, status: OrderStatus.DELIVERED } },
+        { $group: { _id: null, count: { $sum: 1 }, totalSpent: { $sum: '$total' } } },
+      ]),
+    ]);
+    return {
+      totalOrders: allResult,
+      deliveredOrders: deliveredResult[0]?.count ?? 0,
+      totalSpent: deliveredResult[0]?.totalSpent ?? 0,
+    };
+  }
+
   async findAllAdmin(query: {
     page: number;
     limit: number;
     status?: OrderStatus;
     userId?: string;
+    search?: string;
   }) {
-    const { page, limit, status, userId } = query;
+    const { page, limit, status, userId, search } = query;
+
+    if (search) {
+      // Escape special regex chars to prevent ReDoS
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+      const baseMatch: Record<string, unknown> = {};
+      if (status) baseMatch.status = status;
+      if (userId) baseMatch.userId = new Types.ObjectId(userId);
+
+      const pipeline: PipelineStage[] = [
+        ...(Object.keys(baseMatch).length ? [{ $match: baseMatch }] : []),
+        { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: '_user' } },
+        { $unwind: { path: '$_user', preserveNullAndEmptyArrays: true } },
+        {
+          $match: {
+            $or: [
+              { $expr: { $regexMatch: { input: { $toString: '$_id' }, regex: escaped, options: 'i' } } },
+              { '_user.name': { $regex: escaped, $options: 'i' } },
+              { '_user.email': { $regex: escaped, $options: 'i' } },
+            ],
+          },
+        },
+      ];
+
+      const [countResult, rows] = await Promise.all([
+        this.orderModel.aggregate([...pipeline, { $count: 'total' }]),
+        this.orderModel.aggregate([
+          ...pipeline,
+          { $sort: { createdAt: -1 } },
+          { $skip: (page - 1) * limit },
+          { $limit: limit },
+          { $addFields: { userId: '$_user' } },
+          { $project: { _user: 0 } },
+        ]),
+      ]);
+
+      return { data: rows, total: countResult[0]?.total ?? 0, page, limit };
+    }
+
     const filter: Record<string, unknown> = {};
     if (status) filter.status = status;
     if (userId) filter.userId = new Types.ObjectId(userId);
@@ -140,6 +224,8 @@ export class OrdersService {
     order.status = dto.status;
     if (dto.csNote) order.csNote = dto.csNote;
     if (dto.cancelReason) order.cancelReason = dto.cancelReason;
+    if (dto.delivery !== undefined) order.delivery = dto.delivery as any;
+    if (dto.paidAmount !== undefined) order.paidAmount = dto.paidAmount;
     order.currentVersion += 1;
 
     const updated = await order.save();
@@ -153,8 +239,8 @@ export class OrdersService {
       action: 'UPDATE_ORDER_STATUS',
       module: 'orders',
       targetId: orderId,
-      beforeData: before,
-      afterData: updated.toObject(),
+      beforeData: before as unknown as Record<string, unknown>,
+      afterData: updated.toObject() as unknown as Record<string, unknown>,
     });
 
     return updated;

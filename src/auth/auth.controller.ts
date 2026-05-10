@@ -63,6 +63,12 @@ export class AuthController {
     return { message: 'Logged out successfully' };
   }
 
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  async getMe(@CurrentUser() user: { sub: string }) {
+    return this.authService.getProfile(user.sub);
+  }
+
   @Post('password-reset/request')
   @HttpCode(HttpStatus.OK)
   async requestReset(@Body() dto: ResetPasswordRequestDto) {
@@ -88,10 +94,11 @@ export class AuthController {
   async googleCallback(@Req() req: Request, @Res() res: Response) {
     const result = await this.authService.loginWithOAuth(req.user as any);
     const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000');
-    const params = new URLSearchParams({
-      accessToken: result.accessToken,
-      refreshToken: result.refreshToken,
-    });
+    if ((result as any).user?.isBlocked) {
+      return res.redirect(`${frontendUrl}/auth/login?error=account_blocked`);
+    }
+    const { accessToken, refreshToken } = result as any;
+    const params = new URLSearchParams({ accessToken, refreshToken });
     return res.redirect(`${frontendUrl}/auth/callback?${params.toString()}`);
   }
 
@@ -108,10 +115,11 @@ export class AuthController {
   async facebookCallback(@Req() req: Request, @Res() res: Response) {
     const result = await this.authService.loginWithOAuth(req.user as any);
     const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000');
-    const params = new URLSearchParams({
-      accessToken: result.accessToken,
-      refreshToken: result.refreshToken,
-    });
+    if ((result as any).user?.isBlocked) {
+      return res.redirect(`${frontendUrl}/auth/login?error=account_blocked`);
+    }
+    const { accessToken, refreshToken } = result as any;
+    const params = new URLSearchParams({ accessToken, refreshToken });
     return res.redirect(`${frontendUrl}/auth/callback?${params.toString()}`);
   }
 
