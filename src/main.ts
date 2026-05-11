@@ -29,7 +29,13 @@ async function bootstrap() {
   app.use(helmet());
 
   app.enableCors({
-    origin: [frontendUrl, adminUrl],
+    origin: [
+      'http://localhost:3000',
+      'https://web-ec-3-d.vercel.app',
+      'https://luxe-glow.vn',
+      'https://www.luxe-glow.vn',
+      adminUrl,
+    ],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization'],
