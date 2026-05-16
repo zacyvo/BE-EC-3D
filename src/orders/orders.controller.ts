@@ -3,7 +3,7 @@ import {
   Query, UseGuards, ParseIntPipe, DefaultValuePipe,
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
-import { CreateOrderDto, UpdateOrderStatusDto } from './dto/order.dto';
+import { CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto } from './dto/order.dto';
 import { OrderStatus } from './schemas/order.schema';
 import { JwtAuthGuard, JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -44,6 +44,15 @@ export class AdminOrdersController {
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
   getUserStats(@Query('userId') userId: string) {
     return this.ordersService.getUserStats(userId);
+  }
+
+  @Post('for-user')
+  @Roles(StaffRole.SUPER_ADMIN)
+  createForUser(
+    @Body() dto: AdminCreateOrderDto,
+    @CurrentUser() staff: { sub: string; role: StaffRole },
+  ) {
+    return this.ordersService.createForAdmin(staff.sub, dto);
   }
 
   @Get()

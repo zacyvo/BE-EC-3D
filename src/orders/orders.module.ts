@@ -8,6 +8,7 @@ import { ProductsModule } from '../products/products.module';
 import { CartModule } from '../cart/cart.module';
 import { AuditModule } from '../audit/audit.module';
 import { PromotionsModule } from '../promotions/promotions.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { PromotionsModule } from '../promotions/promotions.module';
     CartModule,
     AuditModule,
     PromotionsModule,
+    UsersModule,
   ],
   controllers: [OrdersController, AdminOrdersController],
   providers: [OrdersService],

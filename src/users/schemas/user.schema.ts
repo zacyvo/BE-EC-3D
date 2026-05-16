@@ -84,6 +84,10 @@ export class User {
   @Prop({ select: false })
   deleteAccountAttemptsDate?: string; // 'YYYY-MM-DD'
 
+  /** Created automatically by admin order flow when phone not in DB */
+  @Prop({ default: false })
+  isGuest: boolean;
+
   createdAt: Date;
   updatedAt: Date;
 }

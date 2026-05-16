@@ -21,6 +21,7 @@ export class OrderItem {
   @Prop({ required: true, min: 1 }) quantity: number;
   @Prop({ required: true }) unitPrice: number;
   @Prop({ required: true }) subtotal: number;
+  @Prop() note?: string;
 }
 
 const OrderItemSchema = SchemaFactory.createForClass(OrderItem);
@@ -57,6 +58,17 @@ export class AppliedCoupon {
 
 const AppliedCouponSchema = SchemaFactory.createForClass(AppliedCoupon);
 
+@Schema({ _id: false })
+export class AdminDirectDiscount {
+  @Prop({ required: true, enum: ['AMOUNT', 'PERCENT'] }) type: 'AMOUNT' | 'PERCENT';
+  @Prop({ required: true, min: 0 }) value: number;
+  @Prop() reason?: string;
+  /** Computed discount in VND */
+  @Prop({ required: true, min: 0 }) amount: number;
+}
+
+const AdminDirectDiscountSchema = SchemaFactory.createForClass(AdminDirectDiscount);
+
 @Schema({ timestamps: true })
 export class Order {
   _id: Types.ObjectId;
@@ -84,6 +96,13 @@ export class Order {
   @Prop() customerNote?: string;
   @Prop() csNote?: string;
   @Prop() cancelReason?: string;
+  @Prop() adminNote?: string;
+  @Prop({ default: false }) createdByAdmin: boolean;
+  @Prop() createdByStaffId?: string;
+
+  /** Direct discount applied by admin (separate from coupon discounts) */
+  @Prop({ type: AdminDirectDiscountSchema })
+  adminDirectDiscount?: AdminDirectDiscount;
 
   @Prop({ type: DeliverySchema }) delivery?: Delivery;
 

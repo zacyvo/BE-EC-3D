@@ -59,6 +59,31 @@ export class UsersService {
     return this.userModel.findById(id).exec();
   }
 
+  async findByPhone(phone: string): Promise<UserDocument | null> {
+    const normalized = phone.startsWith('+84') ? '0' + phone.slice(3) : phone;
+    return this.userModel.findOne({ phone: normalized }).exec();
+  }
+
+  async findOrCreateByPhone(
+    phone: string,
+    name: string,
+  ): Promise<{ user: UserDocument; created: boolean }> {
+    const normalized = phone.startsWith('+84') ? '0' + phone.slice(3) : phone;
+    const existing = await this.userModel.findOne({ phone: normalized }).exec();
+    if (existing) return { user: existing, created: false };
+
+    const tempEmail = `guest_${normalized}@guest.luxe-glow.vn`;
+    const user = new this.userModel({
+      email: tempEmail,
+      name: name || `Khách ${normalized}`,
+      phone: normalized,
+      provider: 'local',
+      isGuest: true,
+    });
+    await user.save();
+    return { user, created: true };
+  }
+
   async findOrCreateOAuthUser(data: {
     email: string;
     name: string;

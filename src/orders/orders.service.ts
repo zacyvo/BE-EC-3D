@@ -8,12 +8,13 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types, PipelineStage } from 'mongoose';
 import { Order, OrderDocument, OrderStatus } from './schemas/order.schema';
 import { OrderVersion, OrderVersionDocument } from './schemas/order-version.schema';
-import { CreateOrderDto, UpdateOrderStatusDto } from './dto/order.dto';
+import { CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto } from './dto/order.dto';
 import { ProductsService } from '../products/products.service';
 import { CartService } from '../cart/cart.service';
 import { AuditService } from '../audit/audit.service';
 import { StaffRole } from '../auth/decorators/roles.decorator';
 import { PromotionsService } from '../promotions/promotions.service';
+import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class OrdersService {
@@ -25,6 +26,7 @@ export class OrdersService {
     private readonly cartService: CartService,
     private readonly auditService: AuditService,
     private readonly promotionsService: PromotionsService,
+    private readonly usersService: UsersService,
   ) {}
 
   async create(userId: string, dto: CreateOrderDto): Promise<OrderDocument> {
@@ -94,6 +96,91 @@ export class OrdersService {
       actorId: userId,
       actorType: 'user',
       action: 'CREATE_ORDER',
+      module: 'orders',
+      targetId: order._id.toString(),
+    });
+
+    return order;
+  }
+
+  async createForAdmin(staffId: string, dto: AdminCreateOrderDto): Promise<OrderDocument> {
+    // Resolve target userId
+    let targetUserId: string;
+
+    if (dto.userId) {
+      const user = await this.usersService.findById(dto.userId);
+      if (!user) throw new NotFoundException('User not found');
+      targetUserId = dto.userId;
+    } else if (dto.guestInfo) {
+      const { user } = await this.usersService.findOrCreateByPhone(
+        dto.guestInfo.phone,
+        dto.guestInfo.name,
+      );
+      targetUserId = user._id.toString();
+    } else {
+      throw new BadRequestException('Provide either userId or guestInfo');
+    }
+
+    // Validate and compute items
+    const items = await Promise.all(
+      dto.items.map(async (item) => {
+        const product = await this.productsService.findById(item.productId, false);
+        if (product.stock < item.quantity) {
+          throw new BadRequestException(`Không đủ hàng: ${product.name}`);
+        }
+        return {
+          productId: new Types.ObjectId(item.productId),
+          productName: product.name,
+          productImage: product.images[0] || '',
+          productSlug: product.slug,
+          quantity: item.quantity,
+          unitPrice: product.finalPrice,
+          subtotal: product.finalPrice * item.quantity,
+          ...(item.note ? { note: item.note } : {}),
+        };
+      }),
+    );
+
+    const subtotal = items.reduce((sum, item) => sum + item.subtotal, 0);
+
+    // Apply admin direct discount (bypasses coupon system)
+    let adminDiscountAmount = 0;
+    let adminDirectDiscount: { type: 'AMOUNT' | 'PERCENT'; value: number; reason?: string; amount: number } | undefined;
+    if (dto.adminDiscount) {
+      const { type, value, reason } = dto.adminDiscount;
+      if (type === 'PERCENT') {
+        adminDiscountAmount = Math.round((subtotal * Math.min(value, 100)) / 100);
+      } else {
+        adminDiscountAmount = Math.min(value, subtotal);
+      }
+      adminDirectDiscount = { type, value, reason, amount: adminDiscountAmount };
+    }
+
+    const total = subtotal - adminDiscountAmount;
+
+    const order = await this.orderModel.create({
+      userId: new Types.ObjectId(targetUserId),
+      items,
+      shippingInfo: dto.shippingInfo,
+      subtotal,
+      discountAmount: adminDiscountAmount,
+      appliedCoupons: [],
+      total,
+      ...(adminDirectDiscount ? { adminDirectDiscount } : {}),
+      status: OrderStatus.PENDING,
+      currentVersion: 1,
+      createdByAdmin: true,
+      createdByStaffId: staffId,
+      ...(dto.customerNote ? { customerNote: dto.customerNote } : {}),
+      ...(dto.adminNote ? { adminNote: dto.adminNote } : {}),
+    });
+
+    await this.saveVersion(order, staffId, 'staff', 'Order created by admin');
+
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'ADMIN_CREATE_ORDER',
       module: 'orders',
       targetId: order._id.toString(),
     });

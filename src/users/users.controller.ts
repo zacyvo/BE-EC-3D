@@ -153,6 +153,12 @@ export class AdminUsersController {
     return this.usersService.findAll({ page, limit, search });
   }
 
+  @Get('by-phone')
+  @Roles(StaffRole.SUPER_ADMIN)
+  async findByPhone(@Query('phone') phone: string) {
+    return this.usersService.findByPhone(phone);
+  }
+
   @Get(':id')
   async findOne(@Param('id') id: string) {
     return this.usersService.findById(id);
