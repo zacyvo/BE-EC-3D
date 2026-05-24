@@ -17,6 +17,7 @@ import { CacheModule } from './common/cache.module';
 import { MailModule } from './mail/mail.module';
 import { CustomOrdersModule } from './custom-orders/custom-orders.module';
 import { PromotionsModule } from './promotions/promotions.module';
+import { InvoicesModule } from './invoices/invoices.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -71,6 +72,7 @@ import { HealthController } from './health.controller';
     MailModule,
     CustomOrdersModule,
     PromotionsModule,
+    InvoicesModule,
   ],
   controllers: [HealthController],
 })
