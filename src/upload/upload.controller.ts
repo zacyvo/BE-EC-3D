@@ -14,7 +14,7 @@ export class UploadController {
 
   @Post('images')
   @UseInterceptors(
-    FilesInterceptor('files', 10, {
+    FilesInterceptor('images', 10, {
       storage: memoryStorage(),
       limits: { fileSize: 10 * 1024 * 1024 }, // 10MB per file
       fileFilter: (_req, file, cb) => {
