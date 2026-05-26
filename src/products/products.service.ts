@@ -8,6 +8,7 @@ import slugify from 'slugify';
 import { Product, ProductDocument } from './schemas/product.schema';
 import { CreateProductDto, UpdateProductDto } from './dto/product.dto';
 import { AuditService } from '../audit/audit.service';
+import { Category, CategoryDocument } from '../categories/schemas/category.schema';
 
 const CACHE_KEY_LIST = 'products:list';
 const CACHE_KEY_DETAIL = (slug: string) => `products:detail:${slug}`;
@@ -20,9 +21,17 @@ const USER_EXCLUDED_FIELDS = '-costPrice -profit -profitPercent';
 export class ProductsService {
   constructor(
     @InjectModel(Product.name) private readonly productModel: Model<ProductDocument>,
+    @InjectModel(Category.name) private readonly categoryModel: Model<CategoryDocument>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
     private readonly auditService: AuditService,
   ) {}
+
+  /** Resolve a category value (ObjectId string or slug) → ObjectId, or null if not found */
+  private async resolveCategoryId(category: string): Promise<Types.ObjectId | null> {
+    if (Types.ObjectId.isValid(category)) return new Types.ObjectId(category);
+    const cat = await this.categoryModel.findOne({ slug: category }).select('_id').lean().exec();
+    return cat ? (cat._id as Types.ObjectId) : null;
+  }
 
   private computePricing(
     sellingPrice: number,
@@ -90,7 +99,11 @@ export class ProductsService {
 
     const filter: Record<string, unknown> = {};
     if (!forAdmin) filter.isActive = true;
-    if (category && Types.ObjectId.isValid(category)) filter.category = new Types.ObjectId(category);
+    if (category) {
+      const categoryId = await this.resolveCategoryId(category);
+      if (categoryId) filter.category = categoryId;
+      else filter.category = null; // category not found → return empty
+    }
     if (search) filter.$text = { $search: search };
     if (minPrice !== undefined || maxPrice !== undefined) {
       filter.finalPrice = {};
