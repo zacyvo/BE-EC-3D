@@ -1,7 +1,7 @@
 import {
-  Controller, Get, Post, Put, Delete, Body, Param, UseGuards,
+  Controller, Get, Post, Put, Patch, Delete, Body, Param, Query, UseGuards,
 } from '@nestjs/common';
-import { CategoriesService, CreateCategoryDto } from './categories.service';
+import { CategoriesService, CreateCategoryDto, AdminListQuery } from './categories.service';
 import { JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
@@ -20,7 +20,10 @@ export class CategoriesController {
 export class AdminCategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
-  @Get() findAll() { return this.categoriesService.findAll(false); }
+  @Get()
+  findAll(@Query() query: AdminListQuery) {
+    return this.categoriesService.findAllPaginated(query);
+  }
 
   @Post()
   create(@Body() dto: CreateCategoryDto, @CurrentUser() s: { sub: string }) {
@@ -30,6 +33,11 @@ export class AdminCategoriesController {
   @Put(':id')
   update(@Param('id') id: string, @Body() dto: Partial<CreateCategoryDto>) {
     return this.categoriesService.update(id, dto);
+  }
+
+  @Patch(':id/toggle-active')
+  toggleActive(@Param('id') id: string) {
+    return this.categoriesService.toggleActive(id);
   }
 
   @Delete(':id')
