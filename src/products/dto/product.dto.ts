@@ -8,7 +8,6 @@ import {
   Max,
   MaxLength,
   MinLength,
-  ArrayMinSize,
   IsMongoId,
 } from 'class-validator';
 
@@ -16,10 +15,10 @@ export class CreateProductDto {
   @IsString() @MinLength(2) @MaxLength(200) name: string;
   @IsMongoId() category: string;
 
+  @IsOptional()
   @IsArray()
-  @ArrayMinSize(1, { message: 'At least 1 image required' })
   @IsString({ each: true })
-  images: string[];
+  images?: string[];
 
   @IsNumber() @Min(0) costPrice: number;
   @IsNumber() @Min(0) sellingPrice: number;

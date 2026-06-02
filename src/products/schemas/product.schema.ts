@@ -9,7 +9,7 @@ export class Product {
 
   @Prop({ required: true, trim: true }) name: string;
   @Prop({ required: true, unique: true, lowercase: true }) slug: string;
-  @Prop({ type: [String], default: [], validate: [(v: string[]) => v.length >= 1, 'At least 1 image'] })
+  @Prop({ type: [String], default: [] })
   images: string[];
 
   @Prop({ type: Types.ObjectId, ref: 'Category', required: true })
