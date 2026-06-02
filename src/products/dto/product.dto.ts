@@ -34,7 +34,7 @@ export class CreateProductDto {
 export class UpdateProductDto {
   @IsOptional() @IsString() @MinLength(2) @MaxLength(200) name?: string;
   @IsOptional() @IsMongoId() category?: string;
-  @IsOptional() @IsArray() @ArrayMinSize(1) @IsString({ each: true }) images?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) images?: string[];
   @IsOptional() @IsNumber() @Min(0) costPrice?: number;
   @IsOptional() @IsNumber() @Min(0) sellingPrice?: number;
   @IsOptional() @IsNumber() @Min(0) @Max(100) discountPercent?: number;
