@@ -18,6 +18,7 @@ import { MailModule } from './mail/mail.module';
 import { CustomOrdersModule } from './custom-orders/custom-orders.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { InvoicesModule } from './invoices/invoices.module';
+import { WarehouseExportsModule } from './warehouse-exports/warehouse-exports.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -73,6 +74,7 @@ import { HealthController } from './health.controller';
     CustomOrdersModule,
     PromotionsModule,
     InvoicesModule,
+    WarehouseExportsModule,
   ],
   controllers: [HealthController],
 })
