@@ -131,7 +131,7 @@ export class ProductsService {
       this.productModel.countDocuments(filter).exec(),
     ]);
 
-    const result = { data, total, page, limit };
+    const result = { data, total, page, limit, totalPages: Math.ceil(total / limit) };
 
     if (!forAdmin && !search && !minPrice && !maxPrice) {
       const cacheKey = `${CACHE_KEY_LIST}:${page}:${limit}:${category || 'all'}`;
