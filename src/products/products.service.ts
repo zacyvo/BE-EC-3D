@@ -104,7 +104,27 @@ export class ProductsService {
       if (categoryId) filter.category = categoryId;
       else filter.category = null; // category not found → return empty
     }
-    if (search) filter.$text = { $search: search };
+    if (search) {
+      if (forAdmin) {
+        const orConditions: Record<string, unknown>[] = [
+          { name: { $regex: search, $options: 'i' } },
+        ];
+        if (/^[0-9a-f]+$/i.test(search)) {
+          orConditions.push({
+            $expr: {
+              $regexMatch: {
+                input: { $toString: '$_id' },
+                regex: `${search}$`,
+                options: 'i',
+              },
+            },
+          });
+        }
+        filter.$or = orConditions;
+      } else {
+        filter.$text = { $search: search };
+      }
+    }
     if (minPrice !== undefined || maxPrice !== undefined) {
       filter.finalPrice = {};
       if (minPrice !== undefined) (filter.finalPrice as any).$gte = minPrice;
