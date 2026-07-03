@@ -156,7 +156,8 @@ export class OrdersService {
       adminDirectDiscount = { type, value, reason, amount: adminDiscountAmount };
     }
 
-    const total = subtotal - adminDiscountAmount;
+    const shippingFee = dto.shippingFee ?? 0;
+    const total = subtotal - adminDiscountAmount + shippingFee;
 
     const order = await this.orderModel.create({
       userId: new Types.ObjectId(targetUserId),
@@ -165,6 +166,7 @@ export class OrdersService {
       subtotal,
       discountAmount: adminDiscountAmount,
       appliedCoupons: [],
+      shippingFee,
       total,
       ...(adminDirectDiscount ? { adminDirectDiscount } : {}),
       status: OrderStatus.PENDING,

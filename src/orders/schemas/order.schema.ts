@@ -87,7 +87,10 @@ export class Order {
   @Prop({ type: [AppliedCouponSchema], default: [] })
   appliedCoupons: AppliedCoupon[];
 
-  /** Final payable amount = subtotal - discountAmount */
+  /** Shipping fee added on top of product subtotal */
+  @Prop({ default: 0, min: 0 }) shippingFee: number;
+
+  /** Final payable amount = subtotal - discountAmount + shippingFee */
   @Prop({ required: true, min: 0 }) total: number;
 
   @Prop({ default: OrderStatus.PENDING, enum: Object.values(OrderStatus) })

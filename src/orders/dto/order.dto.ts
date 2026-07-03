@@ -112,4 +112,7 @@ export class AdminCreateOrderDto {
   /** Direct discount applied by admin (bypasses coupon system) */
   @IsOptional() @ValidateNested() @Type(() => AdminDirectDiscountDto)
   adminDiscount?: AdminDirectDiscountDto;
+
+  /** Shipping fee added to the order total */
+  @IsOptional() @IsNumber() @Min(0) shippingFee?: number;
 }
