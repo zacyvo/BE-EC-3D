@@ -41,7 +41,14 @@ const DEFAULT_PARTY_B = {
   position: 'Giám đốc',
   phone: '0909064680',
   email: 'trucquach0506@gmail.com',
-  taxCode: '',
+  taxCode: 'xxxxxxx', // tạm thời, sẽ cập nhật sau
+};
+
+/** Thông tin thanh toán cố định (Điều 3.3) */
+const BANK_INFO = {
+  bankAccountNumber: '1017581786',
+  bankName: 'Vietcombank',
+  bankAccountHolder: 'QUACH PHUONG THANH TRUC',
 };
 
 /** Không dùng ký tự dễ nhầm lẫn (0/O, 1/I) */
@@ -169,8 +176,7 @@ export class ContractsService {
       bankAccountNumber: c.bankAccountNumber,
       bankName: c.bankName,
       bankAccountHolder: c.bankAccountHolder,
-      designDays: c.designDays,
-      productionDays: c.productionDays,
+      deliveryDate: c.deliveryDate,
       deliveryAddress: c.deliveryAddress,
       userNote: c.userNote,
       closeReason: c.closeReason,
@@ -228,11 +234,8 @@ export class ContractsService {
           partyB: { ...DEFAULT_PARTY_B, ...(dto.partyB ?? {}) },
           signPlace: dto.signPlace ?? 'TP. Hồ Chí Minh',
           technicalRequirements: dto.technicalRequirements ?? '',
-          designDays: dto.designDays ?? 7,
-          productionDays: dto.productionDays ?? 10,
-          bankAccountNumber: dto.bankAccountNumber ?? '',
-          bankName: dto.bankName ?? '',
-          bankAccountHolder: dto.bankAccountHolder ?? '',
+          deliveryDate: dto.deliveryDate ? new Date(dto.deliveryDate) : undefined,
+          ...BANK_INFO,
           adminNote: dto.adminNote ?? '',
           createdBy: new Types.ObjectId(staffId),
         });
@@ -345,11 +348,7 @@ export class ContractsService {
     if (dto.signPlace !== undefined) contract.signPlace = dto.signPlace;
     if (dto.signDate !== undefined) contract.signDate = new Date(dto.signDate);
     if (dto.technicalRequirements !== undefined) contract.technicalRequirements = dto.technicalRequirements;
-    if (dto.designDays !== undefined) contract.designDays = dto.designDays;
-    if (dto.productionDays !== undefined) contract.productionDays = dto.productionDays;
-    if (dto.bankAccountNumber !== undefined) contract.bankAccountNumber = dto.bankAccountNumber;
-    if (dto.bankName !== undefined) contract.bankName = dto.bankName;
-    if (dto.bankAccountHolder !== undefined) contract.bankAccountHolder = dto.bankAccountHolder;
+    if (dto.deliveryDate !== undefined) contract.deliveryDate = new Date(dto.deliveryDate);
     if (dto.deliveryAddress !== undefined) contract.deliveryAddress = dto.deliveryAddress;
     if (dto.adminNote !== undefined) contract.adminNote = dto.adminNote;
 

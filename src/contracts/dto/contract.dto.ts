@@ -66,11 +66,7 @@ export class CreateContractDto {
 
   @IsOptional() @IsString() @MaxLength(200) signPlace?: string;
   @IsOptional() @IsString() @MaxLength(2000) technicalRequirements?: string;
-  @IsOptional() @IsInt() @Min(0) designDays?: number;
-  @IsOptional() @IsInt() @Min(0) productionDays?: number;
-  @IsOptional() @IsString() @MaxLength(50) bankAccountNumber?: string;
-  @IsOptional() @IsString() @MaxLength(120) bankName?: string;
-  @IsOptional() @IsString() @MaxLength(120) bankAccountHolder?: string;
+  @IsOptional() @IsDateString() deliveryDate?: string;
   @IsOptional() @IsString() @MaxLength(2000) adminNote?: string;
 
   @IsOptional()
@@ -100,11 +96,7 @@ export class UpdateContractDto {
   @IsOptional() @IsString() @MaxLength(200) signPlace?: string;
   @IsOptional() @IsDateString() signDate?: string;
   @IsOptional() @IsString() @MaxLength(2000) technicalRequirements?: string;
-  @IsOptional() @IsInt() @Min(0) designDays?: number;
-  @IsOptional() @IsInt() @Min(0) productionDays?: number;
-  @IsOptional() @IsString() @MaxLength(50) bankAccountNumber?: string;
-  @IsOptional() @IsString() @MaxLength(120) bankName?: string;
-  @IsOptional() @IsString() @MaxLength(120) bankAccountHolder?: string;
+  @IsOptional() @IsDateString() deliveryDate?: string;
   @IsOptional() @IsString() @MaxLength(300) deliveryAddress?: string;
   @IsOptional() @IsString() @MaxLength(2000) adminNote?: string;
 }

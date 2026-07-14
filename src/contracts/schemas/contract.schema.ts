@@ -98,14 +98,13 @@ export class Contract {
   /** Điều 1.2 — yêu cầu kỹ thuật khác */
   @Prop({ trim: true, default: '' }) technicalRequirements: string;
 
-  /** Điều 3.3 — thông tin thanh toán */
+  /** Điều 3.3 — thông tin thanh toán (cố định theo cửa hàng, set khi tạo) */
   @Prop({ trim: true, default: '' }) bankAccountNumber: string;
   @Prop({ trim: true, default: '' }) bankName: string;
   @Prop({ trim: true, default: '' }) bankAccountHolder: string;
 
-  /** Điều 4.1 — thời gian thực hiện (ngày làm việc) */
-  @Prop({ min: 0, default: 7 }) designDays: number;
-  @Prop({ min: 0, default: 10 }) productionDays: number;
+  /** Điều 4.1 — ngày giao hàng */
+  @Prop() deliveryDate?: Date;
 
   /** Điều 4.2 — địa điểm giao hàng (khách điền) */
   @Prop({ trim: true, default: '' }) deliveryAddress: string;
