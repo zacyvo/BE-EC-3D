@@ -80,6 +80,13 @@ export class StaffService {
     return bcrypt.compare(token, staff.refreshToken);
   }
 
+  /** Xác nhận lại mật khẩu của chính staff (dùng cho thao tác nhạy cảm) */
+  async verifyPassword(staffId: string, password: string): Promise<boolean> {
+    const staff = await this.staffModel.findById(staffId).select('+password').exec();
+    if (!staff?.password) return false;
+    return bcrypt.compare(password, staff.password);
+  }
+
   async softDelete(staffId: string, deletedBy: string, requestorRole: StaffRole): Promise<void> {
     if (requestorRole !== StaffRole.SUPER_ADMIN) {
       throw new ForbiddenException('Only SUPER_ADMIN can delete staff');

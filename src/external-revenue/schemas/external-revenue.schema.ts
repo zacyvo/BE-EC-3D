@@ -9,6 +9,8 @@ export enum ExternalSource {
   ZALO = 'ZALO',
   FACEBOOK = 'FACEBOOK',
   INSTAGRAM = 'INSTAGRAM',
+  /** Tự động ghi nhận khi hợp đồng chuyển trạng thái SUCCESS */
+  CONTRACT = 'CONTRACT',
   OTHER = 'OTHER',
 }
 
