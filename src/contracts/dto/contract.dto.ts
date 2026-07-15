@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsDateString,
@@ -11,6 +12,7 @@ import {
   IsOptional,
   IsString,
   Matches,
+  Max,
   MaxLength,
   Min,
   ValidateNested,
@@ -46,6 +48,19 @@ export class ContractPartyDto {
   @IsOptional() @IsString() @MaxLength(50) taxCode?: string;
 }
 
+/** Điều 3.2 — một đợt thanh toán */
+export class PaymentInstallmentDto {
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  percent: number;
+
+  @IsString()
+  @IsNotEmpty({ message: 'Vui lòng nhập mốc thời gian thanh toán' })
+  @MaxLength(200)
+  timing: string;
+}
+
 // ── Admin ─────────────────────────────────────────────────────────────────────
 
 export class CreateContractDto {
@@ -68,6 +83,15 @@ export class CreateContractDto {
   @IsOptional() @IsString() @MaxLength(2000) technicalRequirements?: string;
   @IsOptional() @IsDateString() deliveryDate?: string;
   @IsOptional() @IsString() @MaxLength(2000) adminNote?: string;
+
+  /** Điều 3.2 — lịch thanh toán 3 đợt (mặc định 50/40/10 nếu không truyền) */
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(3, { message: 'Lịch thanh toán phải có đúng 3 đợt' })
+  @ArrayMaxSize(3, { message: 'Lịch thanh toán phải có đúng 3 đợt' })
+  @ValidateNested({ each: true })
+  @Type(() => PaymentInstallmentDto)
+  paymentSchedule?: PaymentInstallmentDto[];
 
   @IsOptional()
   @ValidateNested()
@@ -99,6 +123,15 @@ export class UpdateContractDto {
   @IsOptional() @IsDateString() deliveryDate?: string;
   @IsOptional() @IsString() @MaxLength(300) deliveryAddress?: string;
   @IsOptional() @IsString() @MaxLength(2000) adminNote?: string;
+
+  /** Điều 3.2 — lịch thanh toán 3 đợt */
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(3, { message: 'Lịch thanh toán phải có đúng 3 đợt' })
+  @ArrayMaxSize(3, { message: 'Lịch thanh toán phải có đúng 3 đợt' })
+  @ValidateNested({ each: true })
+  @Type(() => PaymentInstallmentDto)
+  paymentSchedule?: PaymentInstallmentDto[];
 }
 
 export class UpdateContractStatusDto {

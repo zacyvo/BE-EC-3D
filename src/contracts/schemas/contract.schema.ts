@@ -52,6 +52,23 @@ export class ContractStatusHistory {
 
 export const ContractStatusHistorySchema = SchemaFactory.createForClass(ContractStatusHistory);
 
+@Schema({ _id: false })
+export class PaymentInstallment {
+  /** % giá trị hợp đồng của đợt này */
+  @Prop({ required: true, min: 0, max: 100 }) percent: number;
+  /** Mốc thanh toán, VD: "ngay khi ký hợp đồng" */
+  @Prop({ required: true, trim: true }) timing: string;
+}
+
+export const PaymentInstallmentSchema = SchemaFactory.createForClass(PaymentInstallment);
+
+/** Lịch thanh toán mặc định (Điều 3.2) — Đợt 1: 50% ký HĐ, Đợt 2: 40% nghiệm thu, Đợt 3: 10% sau 5 ngày */
+export const DEFAULT_PAYMENT_SCHEDULE: { percent: number; timing: string }[] = [
+  { percent: 50, timing: 'ngay khi ký hợp đồng' },
+  { percent: 40, timing: 'khi nghiệm thu' },
+  { percent: 10, timing: 'sau 05 ngày kể từ ngày nghiệm thu' },
+];
+
 @Schema({ timestamps: true })
 export class Contract {
   _id: Types.ObjectId;
@@ -97,6 +114,10 @@ export class Contract {
 
   /** Điều 1.2 — yêu cầu kỹ thuật khác */
   @Prop({ trim: true, default: '' }) technicalRequirements: string;
+
+  /** Điều 3.2 — lịch thanh toán chia đợt, mặc định 3 đợt (50/40/10) — admin có thể chỉnh % và mốc thời gian */
+  @Prop({ type: [PaymentInstallmentSchema], default: () => DEFAULT_PAYMENT_SCHEDULE })
+  paymentSchedule: PaymentInstallment[];
 
   /** Điều 3.3 — thông tin thanh toán (cố định theo cửa hàng, set khi tạo) */
   @Prop({ trim: true, default: '' }) bankAccountNumber: string;

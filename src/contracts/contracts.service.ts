@@ -14,6 +14,8 @@ import {
   Contract,
   ContractDocument,
   ContractStatus,
+  DEFAULT_PAYMENT_SCHEDULE,
+  PaymentInstallment,
 } from './schemas/contract.schema';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
 import {
@@ -27,6 +29,7 @@ import { AuditService } from '../audit/audit.service';
 import {
   ContractItemDto,
   CreateContractDto,
+  PaymentInstallmentDto,
   PublicUpdateDto,
   PublicVerifyDto,
   UpdateContractDto,
@@ -46,9 +49,9 @@ const DEFAULT_PARTY_B = {
 
 /** Thông tin thanh toán cố định (Điều 3.3) */
 const BANK_INFO = {
-  bankAccountNumber: '1017581786',
-  bankName: 'Vietcombank',
-  bankAccountHolder: 'QUACH PHUONG THANH TRUC',
+  bankAccountNumber: '060346849013',
+  bankName: 'SACOMBANK',
+  bankAccountHolder: 'HO KINH DOANH LUXE GLOW',
 };
 
 /** Không dùng ký tự dễ nhầm lẫn (0/O, 1/I) */
@@ -160,6 +163,14 @@ export class ContractsService {
     return { items, totalAmount };
   }
 
+  /** Điều 3.2 — tổng % các đợt thanh toán phải đúng 100 */
+  private validatePaymentSchedule(schedule: PaymentInstallmentDto[]): void {
+    const sum = schedule.reduce((s, i) => s + i.percent, 0);
+    if (Math.round(sum * 100) / 100 !== 100) {
+      throw new BadRequestException('Tổng % các đợt thanh toán phải bằng 100%');
+    }
+  }
+
   /** Loại bỏ dữ liệu nội bộ trước khi trả về phía user */
   private sanitizeForUser(doc: ContractDocument) {
     const c = doc.toObject();
@@ -173,6 +184,7 @@ export class ContractsService {
       signPlace: c.signPlace,
       signDate: c.signDate,
       technicalRequirements: c.technicalRequirements,
+      paymentSchedule: c.paymentSchedule,
       bankAccountNumber: c.bankAccountNumber,
       bankName: c.bankName,
       bankAccountHolder: c.bankAccountHolder,
@@ -206,6 +218,8 @@ export class ContractsService {
 
     const { items, totalAmount } = await this.buildItems(dto.items);
 
+    if (dto.paymentSchedule) this.validatePaymentSchedule(dto.paymentSchedule);
+
     // Prefill Bên A từ tài khoản khách (guest thì bỏ qua email tạm)
     const isGuestEmail = user.email?.endsWith('@guest.luxe-glow.vn');
     const partyA = {
@@ -235,6 +249,7 @@ export class ContractsService {
           signPlace: dto.signPlace ?? 'TP. Hồ Chí Minh',
           technicalRequirements: dto.technicalRequirements ?? '',
           deliveryDate: dto.deliveryDate ? new Date(dto.deliveryDate) : undefined,
+          paymentSchedule: dto.paymentSchedule ?? DEFAULT_PAYMENT_SCHEDULE,
           ...BANK_INFO,
           adminNote: dto.adminNote ?? '',
           createdBy: new Types.ObjectId(staffId),
@@ -351,6 +366,10 @@ export class ContractsService {
     if (dto.deliveryDate !== undefined) contract.deliveryDate = new Date(dto.deliveryDate);
     if (dto.deliveryAddress !== undefined) contract.deliveryAddress = dto.deliveryAddress;
     if (dto.adminNote !== undefined) contract.adminNote = dto.adminNote;
+    if (dto.paymentSchedule) {
+      this.validatePaymentSchedule(dto.paymentSchedule);
+      contract.paymentSchedule = dto.paymentSchedule as any;
+    }
 
     await contract.save();
 
