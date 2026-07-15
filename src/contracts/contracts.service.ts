@@ -41,7 +41,7 @@ const DEFAULT_PARTY_B = {
   position: 'Giám đốc',
   phone: '0909064680',
   email: 'trucquach0506@gmail.com',
-  taxCode: 'xxxxxxx', // tạm thời, sẽ cập nhật sau
+  taxCode: '079197022908', // tạm thời, sẽ cập nhật sau
 };
 
 /** Thông tin thanh toán cố định (Điều 3.3) */
