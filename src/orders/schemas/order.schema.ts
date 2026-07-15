@@ -27,6 +27,17 @@ export class OrderItem {
 const OrderItemSchema = SchemaFactory.createForClass(OrderItem);
 
 @Schema({ _id: false })
+export class OldAddress {
+  @Prop() ward?: string;
+  @Prop({ required: true }) district: string;
+  @Prop({ required: true }) province: string;
+  @Prop() wardCode?: number;
+  @Prop({ required: true }) districtCode: number;
+}
+
+const OldAddressSchema = SchemaFactory.createForClass(OldAddress);
+
+@Schema({ _id: false })
 export class ShippingInfo {
   @Prop({ required: true }) recipientName: string;
   @Prop({ required: true }) phone: string;
@@ -35,6 +46,8 @@ export class ShippingInfo {
   @Prop({ default: '' }) district: string;
   @Prop({ required: true }) city: string;
   @Prop() note?: string;
+  /** Pre-merger (2025) address this was entered/converted from, if any. Absent = new address entered directly. */
+  @Prop({ type: OldAddressSchema }) oldAddress?: OldAddress;
 }
 
 const ShippingInfoSchema = SchemaFactory.createForClass(ShippingInfo);

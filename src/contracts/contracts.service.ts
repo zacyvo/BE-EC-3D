@@ -36,7 +36,7 @@ import {
 /** Bên B mặc định — thông tin cửa hàng */
 const DEFAULT_PARTY_B = {
   name: 'Luxe Glow',
-  address: '119 Bình Long, Bình Trị Đông, TP. Hồ Chí Minh',
+  address: '315/3 Vườn Lài, Phú Thọ Hòa, TP. Hồ Chí Minh',
   representative: 'Quách Phương Thanh Trúc',
   position: 'Giám đốc',
   phone: '0909064680',

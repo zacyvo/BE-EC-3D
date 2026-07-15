@@ -4,12 +4,25 @@ import { Document, Types } from 'mongoose';
 export type UserDocument = User & Document;
 
 @Schema({ _id: false })
+export class OldAddress {
+  @Prop() ward?: string;
+  @Prop({ required: true }) district: string;
+  @Prop({ required: true }) province: string;
+  @Prop() wardCode?: number;
+  @Prop({ required: true }) districtCode: number;
+}
+
+const OldAddressSchema = SchemaFactory.createForClass(OldAddress);
+
+@Schema({ _id: false })
 export class Address {
   @Prop({ required: true }) street: string;
   @Prop({ required: true }) ward: string;
   @Prop({ default: '' }) district: string;
   @Prop({ required: true }) city: string;
   @Prop({ default: false }) isDefault: boolean;
+  /** Pre-merger (2025) address this was entered/converted from, if any. Absent = new address entered directly. */
+  @Prop({ type: OldAddressSchema }) oldAddress?: OldAddress;
 }
 
 const AddressSchema = SchemaFactory.createForClass(Address);

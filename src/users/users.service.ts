@@ -4,12 +4,14 @@ import { Model, Types } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import { User, UserDocument } from './schemas/user.schema';
 import { MailService } from '../mail/mail.service';
+import { AddressConversionService } from '../locations/address-conversion.service';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     private readonly mailService: MailService,
+    private readonly addressConversionService: AddressConversionService,
   ) {}
 
   async create(data: {
@@ -309,14 +311,47 @@ export class UsersService {
     await user.save();
   }
 
+  /** If `oldAddress` (districtCode/wardCode) is present, resolves it via
+   * AddressConversionService and overwrites ward/city with the authoritative
+   * result -- client-submitted ward/city are ignored in that case. */
+  private resolveOldAddress<
+    T extends { ward?: string; city?: string; oldAddress?: { districtCode: number; wardCode?: number } },
+  >(address: T): T {
+    if (!address.oldAddress) return address;
+    const entry = this.addressConversionService.resolve(
+      address.oldAddress.districtCode,
+      address.oldAddress.wardCode,
+    );
+    return {
+      ...address,
+      ward: entry.newWard,
+      city: entry.newProvince,
+      oldAddress: {
+        province: entry.oldProvince,
+        district: entry.oldDistrict,
+        ward: entry.oldWard,
+        districtCode: entry.districtCode,
+        wardCode: entry.wardCode,
+      } as any,
+    };
+  }
+
   async addAddress(
     userId: string,
-    address: { street: string; ward: string; district?: string; city: string; isDefault: boolean },
+    address: {
+      street: string;
+      ward?: string;
+      district?: string;
+      city?: string;
+      isDefault: boolean;
+      oldAddress?: { districtCode: number; wardCode?: number };
+    },
   ): Promise<UserDocument> {
+    const resolved = this.resolveOldAddress(address);
     const user = await this.userModel
       .findByIdAndUpdate(
         userId,
-        { $push: { addresses: address } },
+        { $push: { addresses: resolved } },
         { new: true },
       )
       .exec();
@@ -327,7 +362,14 @@ export class UsersService {
   async updateAddress(
     userId: string,
     index: number,
-    data: { street?: string; ward?: string; district?: string; city?: string; isDefault?: boolean },
+    data: {
+      street?: string;
+      ward?: string;
+      district?: string;
+      city?: string;
+      isDefault?: boolean;
+      oldAddress?: { districtCode: number; wardCode?: number };
+    },
   ): Promise<UserDocument> {
     const user = await this.userModel.findById(userId).exec();
     if (!user) throw new NotFoundException('User not found');
@@ -339,10 +381,12 @@ export class UsersService {
         (user.addresses[i] as any).isDefault = i === index;
       });
     }
-    if (data.street !== undefined) (user.addresses[index] as any).street = data.street;
-    if (data.ward !== undefined) (user.addresses[index] as any).ward = data.ward;
-    if (data.district !== undefined) (user.addresses[index] as any).district = data.district;
-    if (data.city !== undefined) (user.addresses[index] as any).city = data.city;
+    const resolved = this.resolveOldAddress(data);
+    if (resolved.street !== undefined) (user.addresses[index] as any).street = resolved.street;
+    if (resolved.ward !== undefined) (user.addresses[index] as any).ward = resolved.ward;
+    if (resolved.district !== undefined) (user.addresses[index] as any).district = resolved.district;
+    if (resolved.city !== undefined) (user.addresses[index] as any).city = resolved.city;
+    if (resolved.oldAddress !== undefined) (user.addresses[index] as any).oldAddress = resolved.oldAddress;
     user.markModified('addresses');
     await user.save();
     return user;

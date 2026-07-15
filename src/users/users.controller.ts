@@ -18,7 +18,9 @@ import { JwtAuthGuard, JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { IsBoolean, IsDateString, IsOptional, IsString, MaxLength, MinLength, Length } from 'class-validator';
+import { IsBoolean, IsDateString, IsOptional, IsString, MaxLength, MinLength, Length, ValidateIf, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+import { OldAddressInputDto } from '../locations/dto/old-address-input.dto';
 
 class UpdateProfileDto {
   @IsOptional() @IsString() @MaxLength(64) name?: string;
@@ -36,18 +38,24 @@ class ConfirmDeleteAccountDto {
 
 class AddAddressDto {
   @IsString() street: string;
-  @IsString() ward: string;
+  @ValidateIf((o) => !o.oldAddress) @IsString() ward: string;
   @IsOptional() @IsString() district?: string;
-  @IsString() city: string;
+  @ValidateIf((o) => !o.oldAddress) @IsString() city: string;
   @IsOptional() @IsBoolean() isDefault?: boolean;
+
+  /** Old (pre-2025-merger) address selection. When present, the server resolves
+   * and overwrites ward/city — the client's ward/city values above are ignored. */
+  @IsOptional() @ValidateNested() @Type(() => OldAddressInputDto) oldAddress?: OldAddressInputDto;
 }
 
 class UpdateAddressDto {
   @IsOptional() @IsString() street?: string;
-  @IsOptional() @IsString() ward?: string;
+  @ValidateIf((o) => !o.oldAddress) @IsOptional() @IsString() ward?: string;
   @IsOptional() @IsString() district?: string;
-  @IsOptional() @IsString() city?: string;
+  @ValidateIf((o) => !o.oldAddress) @IsOptional() @IsString() city?: string;
   @IsOptional() @IsBoolean() isDefault?: boolean;
+
+  @IsOptional() @ValidateNested() @Type(() => OldAddressInputDto) oldAddress?: OldAddressInputDto;
 }
 
 @Controller('users')

@@ -15,6 +15,7 @@ import { AuditService } from '../audit/audit.service';
 import { StaffRole } from '../auth/decorators/roles.decorator';
 import { PromotionsService } from '../promotions/promotions.service';
 import { UsersService } from '../users/users.service';
+import { AddressConversionService } from '../locations/address-conversion.service';
 
 @Injectable()
 export class OrdersService {
@@ -27,7 +28,31 @@ export class OrdersService {
     private readonly auditService: AuditService,
     private readonly promotionsService: PromotionsService,
     private readonly usersService: UsersService,
+    private readonly addressConversionService: AddressConversionService,
   ) {}
+
+  /** If shippingInfo carries an `oldAddress` selection, resolves it via
+   * AddressConversionService and overwrites ward/city with the authoritative
+   * result -- client-submitted ward/city are ignored in that case. */
+  private resolveShippingInfo(shippingInfo: CreateOrderDto['shippingInfo']) {
+    if (!shippingInfo.oldAddress) return shippingInfo;
+    const entry = this.addressConversionService.resolve(
+      shippingInfo.oldAddress.districtCode,
+      shippingInfo.oldAddress.wardCode,
+    );
+    return {
+      ...shippingInfo,
+      ward: entry.newWard,
+      city: entry.newProvince,
+      oldAddress: {
+        province: entry.oldProvince,
+        district: entry.oldDistrict,
+        ward: entry.oldWard,
+        districtCode: entry.districtCode,
+        wardCode: entry.wardCode,
+      },
+    };
+  }
 
   async create(userId: string, dto: CreateOrderDto): Promise<OrderDocument> {
     // Validate and compute items
@@ -68,7 +93,7 @@ export class OrdersService {
     const order = await this.orderModel.create({
       userId: new Types.ObjectId(userId),
       items,
-      shippingInfo: dto.shippingInfo,
+      shippingInfo: this.resolveShippingInfo(dto.shippingInfo),
       subtotal,
       discountAmount,
       appliedCoupons,
@@ -162,7 +187,7 @@ export class OrdersService {
     const order = await this.orderModel.create({
       userId: new Types.ObjectId(targetUserId),
       items,
-      shippingInfo: dto.shippingInfo,
+      shippingInfo: this.resolveShippingInfo(dto.shippingInfo),
       subtotal,
       discountAmount: adminDiscountAmount,
       appliedCoupons: [],

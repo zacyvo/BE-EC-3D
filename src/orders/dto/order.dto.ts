@@ -5,6 +5,7 @@ import {
   IsNumber,
   IsOptional,
   ValidateNested,
+  ValidateIf,
   ArrayMinSize,
   Min,
   Max,
@@ -15,6 +16,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { OrderStatus } from '../schemas/order.schema';
+import { OldAddressInputDto } from '../../locations/dto/old-address-input.dto';
 
 export class OrderItemDto {
   @IsMongoId() productId: string;
@@ -30,10 +32,14 @@ export class ShippingInfoDto {
   })
   phone: string;
   @IsString() street: string;
-  @IsString() ward: string;
+  @ValidateIf((o) => !o.oldAddress) @IsString() ward: string;
   @IsOptional() @IsString() district?: string;
-  @IsString() city: string;
+  @ValidateIf((o) => !o.oldAddress) @IsString() city: string;
   @IsOptional() @IsString() note?: string;
+
+  /** Old (pre-2025-merger) address selection. When present, the server resolves
+   * and overwrites ward/city — the client's ward/city values above are ignored. */
+  @IsOptional() @ValidateNested() @Type(() => OldAddressInputDto) oldAddress?: OldAddressInputDto;
 }
 
 export class CreateOrderDto {

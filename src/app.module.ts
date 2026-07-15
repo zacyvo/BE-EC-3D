@@ -20,6 +20,7 @@ import { PromotionsModule } from './promotions/promotions.module';
 import { InvoicesModule } from './invoices/invoices.module';
 import { WarehouseExportsModule } from './warehouse-exports/warehouse-exports.module';
 import { ContractsModule } from './contracts/contracts.module';
+import { LocationsModule } from './locations/locations.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -77,6 +78,7 @@ import { HealthController } from './health.controller';
     InvoicesModule,
     WarehouseExportsModule,
     ContractsModule,
+    LocationsModule,
   ],
   controllers: [HealthController],
 })
