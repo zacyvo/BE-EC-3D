@@ -17,7 +17,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { ContractStatus } from '../schemas/contract.schema';
+import { ContractStatus, PaymentInfoType } from '../schemas/contract.schema';
 
 const PHONE_REGEX = /^(0|\+84)\d{9}$/;
 
@@ -93,6 +93,11 @@ export class CreateContractDto {
   @Type(() => PaymentInstallmentDto)
   paymentSchedule?: PaymentInstallmentDto[];
 
+  /** Điều 3.3 — bộ thông tin thanh toán: Công ty (mặc định) hoặc Cá nhân */
+  @IsOptional()
+  @IsEnum(PaymentInfoType)
+  paymentInfoType?: PaymentInfoType;
+
   @IsOptional()
   @ValidateNested()
   @Type(() => ContractPartyDto)
@@ -132,6 +137,11 @@ export class UpdateContractDto {
   @ValidateNested({ each: true })
   @Type(() => PaymentInstallmentDto)
   paymentSchedule?: PaymentInstallmentDto[];
+
+  /** Điều 3.3 — bộ thông tin thanh toán: Công ty hoặc Cá nhân */
+  @IsOptional()
+  @IsEnum(PaymentInfoType)
+  paymentInfoType?: PaymentInfoType;
 }
 
 export class UpdateContractStatusDto {

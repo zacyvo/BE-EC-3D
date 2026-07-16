@@ -12,6 +12,12 @@ export enum ContractStatus {
   CLOSED  = 'CLOSED',   // Đã hủy hợp đồng
 }
 
+/** Điều 3.3 — bộ thông tin thanh toán admin chọn khi tạo/sửa hợp đồng */
+export enum PaymentInfoType {
+  COMPANY    = 'COMPANY',    // Công ty — HO KINH DOANH LUXE GLOW
+  INDIVIDUAL = 'INDIVIDUAL', // Cá nhân — QUACH PHUONG THANH TRUC
+}
+
 @Schema({ _id: false })
 export class ContractItem {
   @Prop({ required: true }) productId: string;
@@ -119,7 +125,10 @@ export class Contract {
   @Prop({ type: [PaymentInstallmentSchema], default: () => DEFAULT_PAYMENT_SCHEDULE })
   paymentSchedule: PaymentInstallment[];
 
-  /** Điều 3.3 — thông tin thanh toán (cố định theo cửa hàng, set khi tạo) */
+  /** Điều 3.3 — thông tin thanh toán: admin chọn Công ty hoặc Cá nhân, giá trị bên dưới set theo lựa chọn */
+  @Prop({ enum: Object.values(PaymentInfoType), default: PaymentInfoType.COMPANY })
+  paymentInfoType: PaymentInfoType;
+
   @Prop({ trim: true, default: '' }) bankAccountNumber: string;
   @Prop({ trim: true, default: '' }) bankName: string;
   @Prop({ trim: true, default: '' }) bankAccountHolder: string;

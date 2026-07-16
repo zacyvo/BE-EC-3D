@@ -15,6 +15,7 @@ import {
   ContractDocument,
   ContractStatus,
   DEFAULT_PAYMENT_SCHEDULE,
+  PaymentInfoType,
   PaymentInstallment,
 } from './schemas/contract.schema';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
@@ -47,11 +48,21 @@ const DEFAULT_PARTY_B = {
   taxCode: '079197022908', // tạm thời, sẽ cập nhật sau
 };
 
-/** Thông tin thanh toán cố định (Điều 3.3) */
-const BANK_INFO = {
-  bankAccountNumber: '060346849013',
-  bankName: 'SACOMBANK',
-  bankAccountHolder: 'HO KINH DOANH LUXE GLOW',
+/** Thông tin thanh toán (Điều 3.3) — admin chọn Công ty hoặc Cá nhân, giá trị mỗi bộ cố định */
+const BANK_INFO_PRESETS: Record<
+  PaymentInfoType,
+  { bankAccountNumber: string; bankName: string; bankAccountHolder: string }
+> = {
+  [PaymentInfoType.COMPANY]: {
+    bankAccountNumber: '060346849013',
+    bankName: 'SACOMBANK',
+    bankAccountHolder: 'HO KINH DOANH LUXE GLOW',
+  },
+  [PaymentInfoType.INDIVIDUAL]: {
+    bankAccountNumber: '0909064680',
+    bankName: 'VIETINBANK',
+    bankAccountHolder: 'QUACH PHUONG THANH TRUC',
+  },
 };
 
 /** Không dùng ký tự dễ nhầm lẫn (0/O, 1/I) */
@@ -220,6 +231,8 @@ export class ContractsService {
 
     if (dto.paymentSchedule) this.validatePaymentSchedule(dto.paymentSchedule);
 
+    const paymentInfoType = dto.paymentInfoType ?? PaymentInfoType.COMPANY;
+
     // Prefill Bên A từ tài khoản khách (guest thì bỏ qua email tạm)
     const isGuestEmail = user.email?.endsWith('@guest.luxe-glow.vn');
     const partyA = {
@@ -250,7 +263,8 @@ export class ContractsService {
           technicalRequirements: dto.technicalRequirements ?? '',
           deliveryDate: dto.deliveryDate ? new Date(dto.deliveryDate) : undefined,
           paymentSchedule: dto.paymentSchedule ?? DEFAULT_PAYMENT_SCHEDULE,
-          ...BANK_INFO,
+          paymentInfoType,
+          ...BANK_INFO_PRESETS[paymentInfoType],
           adminNote: dto.adminNote ?? '',
           createdBy: new Types.ObjectId(staffId),
         });
@@ -369,6 +383,10 @@ export class ContractsService {
     if (dto.paymentSchedule) {
       this.validatePaymentSchedule(dto.paymentSchedule);
       contract.paymentSchedule = dto.paymentSchedule as any;
+    }
+    if (dto.paymentInfoType) {
+      contract.paymentInfoType = dto.paymentInfoType;
+      Object.assign(contract, BANK_INFO_PRESETS[dto.paymentInfoType]);
     }
 
     await contract.save();
