@@ -44,7 +44,7 @@ const DEFAULT_PARTY_B = {
   representative: 'Quách Phương Thanh Trúc',
   position: 'Giám đốc',
   phone: '0909064680',
-  email: 'trucquach0506@gmail.com',
+  email: 'support@luxe-glow.vn',
   taxCode: '079197022908', // tạm thời, sẽ cập nhật sau
 };
 
