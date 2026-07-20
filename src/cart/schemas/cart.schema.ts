@@ -11,6 +11,9 @@ export class CartItem {
   @Prop({ required: true, min: 1 }) quantity: number;
   @Prop({ required: true }) price: number; // finalPrice at time of add
   @Prop({ required: true }) slug: string;
+  /** Selected color/size variant, if the product has variant options. */
+  @Prop() color?: string;
+  @Prop() size?: string;
 }
 
 const CartItemSchema = SchemaFactory.createForClass(CartItem);

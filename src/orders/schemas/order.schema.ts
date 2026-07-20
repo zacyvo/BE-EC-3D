@@ -22,6 +22,9 @@ export class OrderItem {
   @Prop({ required: true }) unitPrice: number;
   @Prop({ required: true }) subtotal: number;
   @Prop() note?: string;
+  /** Selected color/size variant, if the product had variant options at purchase time. */
+  @Prop() color?: string;
+  @Prop() size?: string;
 }
 
 const OrderItemSchema = SchemaFactory.createForClass(OrderItem);

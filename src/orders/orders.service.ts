@@ -31,6 +31,31 @@ export class OrdersService {
     private readonly addressConversionService: AddressConversionService,
   ) {}
 
+  /** Validates the selected color/size against the product's configured options
+   * (if any) and resolves the image to snapshot for this order item. */
+  private resolveVariant(
+    product: { colors: { name: string; images: string[] }[]; sizes: string[]; images: string[]; name: string },
+    color?: string,
+    size?: string,
+  ): { color?: string; size?: string; image: string } {
+    let matchedColor: { name: string; images: string[] } | undefined;
+    if (product.colors?.length) {
+      matchedColor = product.colors.find((c) => c.name === color);
+      if (!matchedColor) {
+        throw new BadRequestException(`Vui lòng chọn màu hợp lệ cho ${product.name}`);
+      }
+    }
+    if (product.sizes?.length && !product.sizes.includes(size || '')) {
+      throw new BadRequestException(`Vui lòng chọn size hợp lệ cho ${product.name}`);
+    }
+    const image = matchedColor?.images?.[0] || product.images[0] || '';
+    return {
+      ...(matchedColor ? { color: matchedColor.name } : {}),
+      ...(product.sizes?.length ? { size } : {}),
+      image,
+    };
+  }
+
   /** If shippingInfo carries an `oldAddress` selection, resolves it via
    * AddressConversionService and overwrites ward/city with the authoritative
    * result -- client-submitted ward/city are ignored in that case. */
@@ -62,14 +87,17 @@ export class OrdersService {
         if (product.stock < item.quantity) {
           throw new BadRequestException(`Insufficient stock for ${product.name}`);
         }
+        const variant = this.resolveVariant(product, item.color, item.size);
         return {
           productId: new Types.ObjectId(item.productId),
           productName: product.name,
-          productImage: product.images[0] || '',
+          productImage: variant.image,
           productSlug: product.slug,
           quantity: item.quantity,
           unitPrice: product.finalPrice,
           subtotal: product.finalPrice * item.quantity,
+          ...(variant.color ? { color: variant.color } : {}),
+          ...(variant.size ? { size: variant.size } : {}),
         };
       }),
     );
@@ -153,15 +181,18 @@ export class OrdersService {
         if (product.stock < item.quantity) {
           throw new BadRequestException(`Không đủ hàng: ${product.name}`);
         }
+        const variant = this.resolveVariant(product, item.color, item.size);
         return {
           productId: new Types.ObjectId(item.productId),
           productName: product.name,
-          productImage: product.images[0] || '',
+          productImage: variant.image,
           productSlug: product.slug,
           quantity: item.quantity,
           unitPrice: product.finalPrice,
           subtotal: product.finalPrice * item.quantity,
           ...(item.note ? { note: item.note } : {}),
+          ...(variant.color ? { color: variant.color } : {}),
+          ...(variant.size ? { size: variant.size } : {}),
         };
       }),
     );

@@ -44,6 +44,41 @@ export class ProductsService {
     return { finalPrice, profit, profitPercent };
   }
 
+  /** Trims/drops blank entries and de-dupes by name (case-insensitive), keeping the first occurrence. */
+  private sanitizeColors(colors?: CreateProductDto['colors']) {
+    if (!colors) return undefined;
+    const seen = new Set<string>();
+    const cleaned: { name: string; hexCode?: string; images: string[] }[] = [];
+    for (const c of colors) {
+      const name = c.name?.trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cleaned.push({
+        name,
+        ...(c.hexCode ? { hexCode: c.hexCode } : {}),
+        images: (c.images ?? []).filter(Boolean),
+      });
+    }
+    return cleaned;
+  }
+
+  private sanitizeSizes(sizes?: string[]) {
+    if (!sizes) return undefined;
+    const seen = new Set<string>();
+    const cleaned: string[] = [];
+    for (const raw of sizes) {
+      const s = raw?.trim();
+      if (!s) continue;
+      const key = s.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cleaned.push(s);
+    }
+    return cleaned;
+  }
+
   async create(dto: CreateProductDto, staffId: string): Promise<ProductDocument> {
     let slug = slugify(dto.name, { lower: true, strict: true });
     const existing = await this.productModel.findOne({ slug }).exec();
@@ -57,6 +92,8 @@ export class ProductsService {
 
     const product = new this.productModel({
       ...dto,
+      colors: this.sanitizeColors(dto.colors) ?? [],
+      sizes: this.sanitizeSizes(dto.sizes) ?? [],
       slug,
       category: new Types.ObjectId(dto.category),
       ...pricing,
@@ -220,6 +257,8 @@ export class ProductsService {
 
     const updates = { ...dto, ...pricing, slug };
     if (dto.category) updates.category = new Types.ObjectId(dto.category) as any;
+    if (dto.colors !== undefined) updates.colors = this.sanitizeColors(dto.colors) as any;
+    if (dto.sizes !== undefined) updates.sizes = this.sanitizeSizes(dto.sizes) as any;
 
     const updated = await this.productModel
       .findByIdAndUpdate(id, { $set: updates }, { new: true })

@@ -9,7 +9,24 @@ import {
   MaxLength,
   MinLength,
   IsMongoId,
+  ValidateNested,
+  Matches,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class ProductColorDto {
+  @IsString() @MinLength(1) @MaxLength(50) name: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/, { message: 'hexCode must be a valid hex color, e.g. #FF0000' })
+  hexCode?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  images?: string[];
+}
 
 export class CreateProductDto {
   @IsString() @MinLength(2) @MaxLength(200) name: string;
@@ -19,6 +36,17 @@ export class CreateProductDto {
   @IsArray()
   @IsString({ each: true })
   images?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductColorDto)
+  colors?: ProductColorDto[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  sizes?: string[];
 
   @IsNumber() @Min(0) costPrice: number;
   @IsNumber() @Min(0) sellingPrice: number;
@@ -35,6 +63,18 @@ export class UpdateProductDto {
   @IsOptional() @IsString() @MinLength(2) @MaxLength(200) name?: string;
   @IsOptional() @IsMongoId() category?: string;
   @IsOptional() @IsArray() @IsString({ each: true }) images?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductColorDto)
+  colors?: ProductColorDto[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  sizes?: string[];
+
   @IsOptional() @IsNumber() @Min(0) costPrice?: number;
   @IsOptional() @IsNumber() @Min(0) sellingPrice?: number;
   @IsOptional() @IsNumber() @Min(0) @Max(100) discountPercent?: number;

@@ -22,6 +22,8 @@ export class OrderItemDto {
   @IsMongoId() productId: string;
   @IsNumber() @Min(1) quantity: number;
   @IsOptional() @IsString() note?: string;
+  @IsOptional() @IsString() color?: string;
+  @IsOptional() @IsString() size?: string;
 }
 
 export class ShippingInfoDto {

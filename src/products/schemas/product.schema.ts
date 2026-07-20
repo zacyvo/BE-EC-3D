@@ -3,6 +3,18 @@ import { Document, Types } from 'mongoose';
 
 export type ProductDocument = Product & Document;
 
+/** A selectable color option. When `images` is non-empty, selecting this color
+ * in the storefront swaps the product gallery to these images; otherwise the
+ * product's default `images` are shown. */
+@Schema({ _id: false })
+export class ProductColor {
+  @Prop({ required: true, trim: true }) name: string;
+  @Prop() hexCode?: string;
+  @Prop({ type: [String], default: [] }) images: string[];
+}
+
+export const ProductColorSchema = SchemaFactory.createForClass(ProductColor);
+
 @Schema({ timestamps: true })
 export class Product {
   _id: Types.ObjectId;
@@ -11,6 +23,14 @@ export class Product {
   @Prop({ required: true, unique: true, lowercase: true }) slug: string;
   @Prop({ type: [String], default: [] })
   images: string[];
+
+  /** Selectable color variants. Empty = product has no color options (default behavior). */
+  @Prop({ type: [ProductColorSchema], default: [] })
+  colors: ProductColor[];
+
+  /** Selectable size labels (e.g. "S", "M", "L"). Empty = no size options (default behavior). */
+  @Prop({ type: [String], default: [] })
+  sizes: string[];
 
   @Prop({ type: Types.ObjectId, ref: 'Category', required: true })
   category: Types.ObjectId;
