@@ -26,6 +26,15 @@ export class ProductsService {
     private readonly auditService: AuditService,
   ) {}
 
+  /** Guarantees colors/sizes are arrays on the response. Products saved before this
+   * feature existed have no such fields in MongoDB, and `.lean()` queries (unlike
+   * hydrated Mongoose documents) don't apply schema defaults for missing paths. */
+  private withVariantDefaults<T extends { colors?: unknown; sizes?: unknown }>(doc: T): T {
+    if (doc.colors === undefined) (doc as { colors?: unknown }).colors = [];
+    if (doc.sizes === undefined) (doc as { sizes?: unknown }).sizes = [];
+    return doc;
+  }
+
   /** Resolve a category value (ObjectId string or slug) → ObjectId, or null if not found */
   private async resolveCategoryId(category: string): Promise<Types.ObjectId | null> {
     if (Types.ObjectId.isValid(category)) return new Types.ObjectId(category);
@@ -130,8 +139,11 @@ export class ProductsService {
     // Try cache for user queries
     if (!forAdmin && !search && !minPrice && !maxPrice) {
       const cacheKey = `${CACHE_KEY_LIST}:${page}:${limit}:${category || 'all'}`;
-      const cached = await this.cacheManager.get(cacheKey);
-      if (cached) return cached;
+      const cached = await this.cacheManager.get<{ data: Array<{ colors?: unknown; sizes?: unknown }> }>(cacheKey);
+      if (cached) {
+        cached.data.forEach((p) => this.withVariantDefaults(p));
+        return cached;
+      }
     }
 
     const filter: Record<string, unknown> = {};
@@ -188,6 +200,7 @@ export class ProductsService {
       this.productModel.countDocuments(filter).exec(),
     ]);
 
+    data.forEach((p) => this.withVariantDefaults(p));
     const result = { data, total, page, limit, totalPages: Math.ceil(total / limit) };
 
     if (!forAdmin && !search && !minPrice && !maxPrice) {
@@ -201,7 +214,7 @@ export class ProductsService {
   async findBySlug(slug: string, forAdmin = false): Promise<ProductDocument> {
     if (!forAdmin) {
       const cached = await this.cacheManager.get<ProductDocument>(CACHE_KEY_DETAIL(slug));
-      if (cached) return cached;
+      if (cached) return this.withVariantDefaults(cached);
     }
 
     const selectFields = forAdmin ? '' : USER_EXCLUDED_FIELDS;
@@ -212,6 +225,7 @@ export class ProductsService {
       .exec();
 
     if (!product) throw new NotFoundException('Product not found');
+    this.withVariantDefaults(product);
 
     // Increment view count (non-blocking)
     this.productModel.findByIdAndUpdate(product._id, { $inc: { viewCount: 1 } }).exec();
@@ -228,7 +242,7 @@ export class ProductsService {
     const selectFields = forAdmin ? '' : USER_EXCLUDED_FIELDS;
     const product = await this.productModel.findById(id).select(selectFields).exec();
     if (!product) throw new NotFoundException('Product not found');
-    return product;
+    return this.withVariantDefaults(product);
   }
 
   async update(
