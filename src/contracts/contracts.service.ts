@@ -182,6 +182,29 @@ export class ContractsService {
     }
   }
 
+  /**
+   * Tên hiển thị tại mục ký "ĐẠI DIỆN BÊN A (Ký, ghi rõ họ tên)" của văn bản hợp đồng
+   * (xem ContractDocument.tsx) — ưu tiên representative, fallback name.
+   */
+  private partyASignerName(partyA?: { name?: string; representative?: string }): string {
+    return partyA?.representative?.trim() || partyA?.name?.trim() || '';
+  }
+
+  /**
+   * Bắt buộc Bên A phải có họ và tên đầy đủ (tối thiểu 2 từ, VD: "Nguyễn Văn A") trước khi
+   * hợp đồng được gửi duyệt / chốt chính thức — tránh trường hợp chỉ điền một từ (tên, không
+   * có họ) hoặc tên placeholder bị in vào phần chữ ký.
+   */
+  private assertPartyAFullName(partyA?: { name?: string; representative?: string }): void {
+    const signer = this.partyASignerName(partyA);
+    const wordCount = signer.split(/\s+/).filter(Boolean).length;
+    if (wordCount < 2) {
+      throw new BadRequestException(
+        'Vui lòng điền đầy đủ họ và tên của Bên A (VD: Nguyễn Văn A), không chỉ một từ, để hiển thị đúng tại mục ký tên hợp đồng',
+      );
+    }
+  }
+
   /** Loại bỏ dữ liệu nội bộ trước khi trả về phía user */
   private sanitizeForUser(doc: ContractDocument) {
     const c = doc.toObject();
@@ -414,6 +437,9 @@ export class ContractsService {
     if (!STATUS_TRANSITIONS[from].includes(to)) {
       throw new BadRequestException(`Không thể chuyển trạng thái từ ${from} sang ${to}`);
     }
+    if (to === ContractStatus.REVIEW || to === ContractStatus.FINAL) {
+      this.assertPartyAFullName(contract.partyA);
+    }
 
     const now = new Date();
     contract.status = to;
@@ -615,6 +641,7 @@ export class ContractsService {
         'Vui lòng điền đầy đủ Tên, Địa chỉ và Số điện thoại của Bên A trước khi gửi',
       );
     }
+    this.assertPartyAFullName(contract.partyA);
 
     const now = new Date();
     contract.status = ContractStatus.REVIEW;
