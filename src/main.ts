@@ -42,7 +42,7 @@ async function bootstrap() {
     origin: corsList,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Contract-Access'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Contract-Access', 'X-Einvoice-Access'],
   });
 
   app.setGlobalPrefix('api/v1');
