@@ -158,6 +158,13 @@ export class EasyInvoiceClientService {
     return this.config.get<string>('EASYINVOICE_SELLER_TAX_CODE', '');
   }
 
+  get sellerAddress(): string {
+    return this.config.get<string>(
+      'EASYINVOICE_SELLER_ADDRESS',
+      '315/3 Vườn Lài, Phường Phú Thọ Hòa, Thành phố Hồ Chí Minh, Việt Nam',
+    );
+  }
+
   // ─── Xác thực ────────────────────────────────────────────────────────────
 
   private buildAuthHeader(httpMethod: string): string {

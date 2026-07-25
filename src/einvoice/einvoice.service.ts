@@ -13,6 +13,7 @@ import * as crypto from 'crypto';
 import {
   EInvoice,
   EInvoiceDocument,
+  EInvoiceKind,
   EInvoiceLocalStatus,
 } from './schemas/einvoice.schema';
 import { Contract, ContractDocument } from '../contracts/schemas/contract.schema';
@@ -22,6 +23,7 @@ import { AuditService } from '../audit/audit.service';
 import {
   EasyInvoiceClientService,
   EasyInvoiceDownloadOption,
+  EasyInvoiceInvoiceObject,
   EasyInvoiceProductInput,
 } from './easyinvoice-client.service';
 import { numberToVietnameseWords } from './number-to-words.util';
@@ -67,6 +69,16 @@ export class EInvoiceService {
 
   private genIkey(): string {
     return `INV${Date.now().toString(36).toUpperCase()}${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
+  }
+
+  /** Số hoá đơn bán hàng nội bộ — 6 chữ số ngẫu nhiên, không tuần tự (giống cách sinh contractNo) */
+  private async genSalesInvoiceNo(): Promise<string> {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const no = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+      const exists = await this.model.exists({ invoiceNo: no, invoiceKind: EInvoiceKind.SALES });
+      if (!exists) return no;
+    }
+    throw new BadRequestException('Không thể sinh số hoá đơn, vui lòng thử lại');
   }
 
   private publicUrl(accessToken: string): string {
@@ -158,7 +170,13 @@ export class EInvoiceService {
   private toAdminResponse(doc: EInvoiceDocument) {
     const e = doc.toObject();
     delete (e as any).securityCode;
-    return { ...e, publicUrl: this.publicUrl(e.accessToken) };
+    return {
+      ...e,
+      publicUrl: this.publicUrl(e.accessToken),
+      sellerName: this.easyInvoiceClient.sellerName,
+      sellerTaxCode: this.easyInvoiceClient.sellerTaxCode,
+      sellerAddress: this.easyInvoiceClient.sellerAddress,
+    };
   }
 
   // ─── Admin ──────────────────────────────────────────────────────────────────
@@ -189,47 +207,60 @@ export class EInvoiceService {
     const ikey = this.genIkey();
     const pattern = this.easyInvoiceClient.defaultPattern;
     const serial = this.easyInvoiceClient.defaultSerial;
+    const kind = dto.invoiceKind ?? EInvoiceKind.TAX_AUTHORITY;
 
-    const products: EasyInvoiceProductInput[] = computed.map((c) => ({
-      code: c.code,
-      no: c.no,
-      feature: c.feature,
-      name: c.name,
-      unit: c.unit,
-      quantity: c.quantity,
-      price: c.unitPrice,
-      discountPercent: c.discountPercent,
-      discountAmount: c.discountAmount,
-      total: c.total,
-      vatRate: c.vatRate,
-      vatRateOther: c.vatRateOther,
-      vatAmount: c.vatAmount,
-      amount: c.amount,
-    }));
+    let issued: EasyInvoiceInvoiceObject | undefined;
+    let invoiceNo: string | undefined;
+    let issueDate: Date;
 
-    const result = await this.easyInvoiceClient.importAndIssueInvoice(
-      {
-        ikey,
-        buyer: dto.buyerName,
-        cusName: dto.customerName,
-        cusTaxCode: dto.customerTaxCode,
-        cusAddress: dto.customerAddress,
-        cusPhone: dto.customerPhone,
-        cusEmail: dto.customerEmail,
-        paymentMethod: dto.paymentMethod,
-        arisingDate,
-        currencyUnit: dto.currencyUnit || 'VND',
-        products,
-        total: totalBeforeTax,
-        vatAmount,
-        amount: totalAmount,
-        amountInWords: numberToVietnameseWords(totalAmount),
-      },
-      pattern,
-      serial,
-    );
+    if (kind === EInvoiceKind.SALES) {
+      // Hoá đơn bán hàng nội bộ — KHÔNG gọi EasyInvoice, tự sinh số hoá đơn 6 chữ số.
+      invoiceNo = await this.genSalesInvoiceNo();
+      issueDate = arisingDate;
+    } else {
+      const products: EasyInvoiceProductInput[] = computed.map((c) => ({
+        code: c.code,
+        no: c.no,
+        feature: c.feature,
+        name: c.name,
+        unit: c.unit,
+        quantity: c.quantity,
+        price: c.unitPrice,
+        discountPercent: c.discountPercent,
+        discountAmount: c.discountAmount,
+        total: c.total,
+        vatRate: c.vatRate,
+        vatRateOther: c.vatRateOther,
+        vatAmount: c.vatAmount,
+        amount: c.amount,
+      }));
 
-    const issued = result.Invoices?.[0];
+      const result = await this.easyInvoiceClient.importAndIssueInvoice(
+        {
+          ikey,
+          buyer: dto.buyerName,
+          cusName: dto.customerName,
+          cusTaxCode: dto.customerTaxCode,
+          cusAddress: dto.customerAddress,
+          cusPhone: dto.customerPhone,
+          cusEmail: dto.customerEmail,
+          paymentMethod: dto.paymentMethod,
+          arisingDate,
+          currencyUnit: dto.currencyUnit || 'VND',
+          products,
+          total: totalBeforeTax,
+          vatAmount,
+          amount: totalAmount,
+          amountInWords: numberToVietnameseWords(totalAmount),
+        },
+        pattern,
+        serial,
+      );
+
+      issued = result.Invoices?.[0];
+      invoiceNo = issued?.No;
+      issueDate = this.parseVNDate(issued?.IssueDate) ?? new Date();
+    }
 
     // Khoá mở hoá đơn: liên kết hợp đồng -> dùng CHUNG khoá bảo mật của hợp đồng.
     // Không liên kết -> sinh khoá riêng cho hoá đơn.
@@ -238,10 +269,11 @@ export class EInvoiceService {
     const accessToken = crypto.randomBytes(24).toString('hex');
 
     const invoice = await this.model.create({
+      invoiceKind: kind,
       ikey,
       pattern: issued?.Pattern || pattern,
       serial: issued?.Serial || serial,
-      invoiceNo: issued?.No,
+      invoiceNo,
       lookupCode: issued?.LookupCode,
       linkView: issued?.LinkView,
       easyInvoiceStatus: issued?.InvoiceStatus,
@@ -261,7 +293,7 @@ export class EInvoiceService {
       paymentMethod: dto.paymentMethod,
       currencyUnit: dto.currencyUnit || 'VND',
       arisingDate,
-      issueDate: this.parseVNDate(issued?.IssueDate) ?? new Date(),
+      issueDate,
       note: dto.note ?? '',
       accessToken,
       securityCode,
@@ -275,7 +307,7 @@ export class EInvoiceService {
       action: 'EINVOICE_CREATE',
       module: 'einvoice',
       targetId: invoice._id.toString(),
-      afterData: { ikey, invoiceNo: issued?.No, totalAmount, contractId: dto.contractId, orderId: dto.orderId },
+      afterData: { ikey, invoiceKind: kind, invoiceNo: invoice.invoiceNo, totalAmount, contractId: dto.contractId, orderId: dto.orderId },
     });
 
     return this.toAdminResponse(invoice);
@@ -288,10 +320,12 @@ export class EInvoiceService {
     search?: string;
     orderId?: string;
     contractId?: string;
+    invoiceKind?: string;
   }) {
-    const { page, limit, localStatus, search, orderId, contractId } = params;
+    const { page, limit, localStatus, search, orderId, contractId, invoiceKind } = params;
     const filter: Record<string, unknown> = {};
     if (localStatus) filter.localStatus = localStatus;
+    if (invoiceKind) filter.invoiceKind = invoiceKind;
     if (orderId && Types.ObjectId.isValid(orderId)) filter.orderId = new Types.ObjectId(orderId);
     if (contractId && Types.ObjectId.isValid(contractId)) filter.contractId = new Types.ObjectId(contractId);
     if (search) {
@@ -359,17 +393,20 @@ export class EInvoiceService {
       throw new BadRequestException('Hoá đơn đã được huỷ trước đó');
     }
 
-    const result = await this.easyInvoiceClient.cancelInvoice(
-      invoice.ikey,
-      invoice.pattern,
-      invoice.serial,
-    );
-    const cancelled = result.Invoices?.[0];
+    // Hoá đơn bán hàng nội bộ không được phát hành qua EasyInvoice nên chỉ huỷ cục bộ.
+    if (invoice.invoiceKind !== EInvoiceKind.SALES) {
+      const result = await this.easyInvoiceClient.cancelInvoice(
+        invoice.ikey,
+        invoice.pattern,
+        invoice.serial,
+      );
+      const cancelled = result.Invoices?.[0];
+      if (cancelled?.InvoiceStatus !== undefined) invoice.easyInvoiceStatus = cancelled.InvoiceStatus;
+    }
 
     invoice.localStatus = EInvoiceLocalStatus.CANCELLED;
     invoice.cancelReason = dto.reason ?? '';
     invoice.cancelledAt = new Date();
-    if (cancelled?.InvoiceStatus !== undefined) invoice.easyInvoiceStatus = cancelled.InvoiceStatus;
     await invoice.save();
 
     await this.auditService.log({
@@ -389,6 +426,9 @@ export class EInvoiceService {
   async syncStatus(id: string, staffId: string) {
     const invoice = await this.model.findById(id).exec();
     if (!invoice) throw new NotFoundException('Hoá đơn không tồn tại');
+    if (invoice.invoiceKind === EInvoiceKind.SALES) {
+      throw new BadRequestException('Hoá đơn mua bán không đồng bộ với cơ quan thuế');
+    }
 
     const result = await this.easyInvoiceClient.getInvoicesByIkeys([invoice.ikey]);
     const found = result.Invoices?.[0];
@@ -419,6 +459,11 @@ export class EInvoiceService {
   }
 
   private async downloadFile(invoice: EInvoiceDocument, format: DownloadFormat) {
+    if (invoice.invoiceKind === EInvoiceKind.SALES) {
+      throw new BadRequestException(
+        'Hoá đơn mua bán không có bản PDF/XML từ cơ quan thuế — vui lòng dùng chức năng In hoá đơn',
+      );
+    }
     const option = FORMAT_TO_OPTION[format] ?? EasyInvoiceDownloadOption.PDF;
     const { buffer, contentType } = await this.easyInvoiceClient.getInvoicePdf(
       invoice.ikey,
@@ -435,6 +480,7 @@ export class EInvoiceService {
   async getPublicMeta(token: string) {
     const invoice = await this.model.findOne({ accessToken: token }).exec();
     if (!invoice) throw new NotFoundException('Liên kết không hợp lệ hoặc đã bị xóa');
+    this.assertPublicAccessible(invoice);
     return {
       sellerName: this.easyInvoiceClient.sellerName,
       localStatus: invoice.localStatus,
@@ -449,6 +495,7 @@ export class EInvoiceService {
       .select('+securityCode')
       .exec();
     if (!invoice) throw new NotFoundException('Liên kết không hợp lệ hoặc đã bị xóa');
+    this.assertPublicAccessible(invoice);
 
     if (invoice.lockedUntil && invoice.lockedUntil > new Date()) {
       const minutes = Math.ceil((invoice.lockedUntil.getTime() - Date.now()) / 60000);
@@ -498,7 +545,15 @@ export class EInvoiceService {
     const invoice = await this.model.findOne({ accessToken: token }).exec();
     if (!invoice) throw new NotFoundException('Liên kết không hợp lệ hoặc đã bị xóa');
     if (payload.sub !== invoice._id.toString()) throw new UnauthorizedException('Phiên không hợp lệ');
+    this.assertPublicAccessible(invoice);
     return invoice;
+  }
+
+  /** Hoá đơn bán hàng nội bộ không có mục đích xác thực công khai — ẩn hoàn toàn khỏi route public */
+  private assertPublicAccessible(invoice: EInvoiceDocument): void {
+    if (invoice.invoiceKind === EInvoiceKind.SALES) {
+      throw new NotFoundException('Liên kết không hợp lệ hoặc đã bị xóa');
+    }
   }
 
   async getPublicInvoice(token: string, jwt?: string) {

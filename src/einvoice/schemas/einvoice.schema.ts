@@ -22,6 +22,16 @@ export enum EasyInvoiceStatus {
   APPROVED = 6,
 }
 
+/**
+ * Loại hoá đơn:
+ * - TAX_AUTHORITY: hoá đơn điện tử hợp lệ, phát hành + đồng bộ qua EasyInvoice/cơ quan thuế (mặc định).
+ * - SALES: hoá đơn bán hàng nội bộ — KHÔNG gọi EasyInvoice, KHÔNG có giá trị pháp lý, chỉ lưu tại hệ thống.
+ */
+export enum EInvoiceKind {
+  TAX_AUTHORITY = 'TAX_AUTHORITY',
+  SALES = 'SALES',
+}
+
 @Schema({ _id: false })
 export class EInvoiceItem {
   @Prop({ trim: true }) code?: string;
@@ -49,6 +59,10 @@ export const EInvoiceItemSchema = SchemaFactory.createForClass(EInvoiceItem);
 @Schema({ timestamps: true })
 export class EInvoice {
   _id: Types.ObjectId;
+
+  /** Loại hoá đơn — xem EInvoiceKind. Mặc định TAX_AUTHORITY để tương thích dữ liệu cũ. */
+  @Prop({ default: EInvoiceKind.TAX_AUTHORITY, enum: Object.values(EInvoiceKind) })
+  invoiceKind: EInvoiceKind;
 
   // ─── EasyInvoice integration ──────────────────────────────────────────────
   /** Ikey — khoá tích hợp duy nhất gửi sang EasyInvoice để định danh hoá đơn */
@@ -135,6 +149,7 @@ export class EInvoice {
 export const EInvoiceSchema = SchemaFactory.createForClass(EInvoice);
 
 EInvoiceSchema.index({ localStatus: 1, createdAt: -1 });
+EInvoiceSchema.index({ invoiceKind: 1, createdAt: -1 });
 EInvoiceSchema.index({ orderId: 1 });
 EInvoiceSchema.index({ contractId: 1 });
 EInvoiceSchema.index({ isDeleted: 1 });

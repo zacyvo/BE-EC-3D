@@ -59,8 +59,9 @@ export class AdminEInvoiceController {
     @Query('search') search?: string,
     @Query('orderId') orderId?: string,
     @Query('contractId') contractId?: string,
+    @Query('invoiceKind') invoiceKind?: string,
   ) {
-    return this.service.findAll({ page, limit, localStatus, search, orderId, contractId });
+    return this.service.findAll({ page, limit, localStatus, search, orderId, contractId, invoiceKind });
   }
 
   @Get(':id')

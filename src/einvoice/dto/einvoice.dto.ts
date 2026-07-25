@@ -4,6 +4,7 @@ import {
   IsArray,
   IsDateString,
   IsEmail,
+  IsEnum,
   IsIn,
   IsInt,
   IsMongoId,
@@ -16,6 +17,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { EInvoiceKind } from '../schemas/einvoice.schema';
 
 /** Thuế suất hợp lệ — xem Phụ lục VII.3 tài liệu tích hợp (bỏ qua -5 thuê tài chính, ít dùng) */
 export const ALLOWED_VAT_RATES = [0, 5, 8, 10, -1, -2, -3] as const;
@@ -53,6 +55,10 @@ export class EInvoiceItemDto {
 }
 
 export class CreateEInvoiceDto {
+  /** Loại hoá đơn — mặc định TAX_AUTHORITY nếu không truyền (hoá đơn điện tử hợp lệ qua EasyInvoice) */
+  @IsOptional() @IsEnum(EInvoiceKind)
+  invoiceKind?: EInvoiceKind;
+
   /** Đơn hàng nguồn (tuỳ chọn) — dùng để điền trước thông tin người mua/sản phẩm */
   @IsOptional() @IsMongoId()
   orderId?: string;
