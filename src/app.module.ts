@@ -22,6 +22,7 @@ import { WarehouseExportsModule } from './warehouse-exports/warehouse-exports.mo
 import { ContractsModule } from './contracts/contracts.module';
 import { LocationsModule } from './locations/locations.module';
 import { EInvoiceModule } from './einvoice/einvoice.module';
+import { PrintPlansModule } from './print-plans/print-plans.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -81,6 +82,7 @@ import { HealthController } from './health.controller';
     ContractsModule,
     LocationsModule,
     EInvoiceModule,
+    PrintPlansModule,
   ],
   controllers: [HealthController],
 })
