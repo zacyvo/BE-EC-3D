@@ -74,6 +74,23 @@ export class EInvoiceService {
     return `${base.replace(/\/$/, '')}/invoice/${accessToken}`;
   }
 
+  /**
+   * EasyInvoice trả về ArisingDate/IssueDate dạng chuỗi "dd/MM/yyyy" (xem tài liệu tích hợp
+   * mục "ArisingDate và IssueDate kiểu chuỗi theo format dd/MM/yyyy"). `new Date()` hiểu chuỗi
+   * có dấu "/" theo kiểu MM/dd/yyyy nên phải parse thủ công, nếu không ngày > 12 sẽ ra Invalid Date.
+   */
+  private parseVNDate(value: string | undefined): Date | undefined {
+    if (!value) return undefined;
+    const match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(value.trim());
+    if (!match) {
+      const fallback = new Date(value);
+      return Number.isNaN(fallback.getTime()) ? undefined : fallback;
+    }
+    const [, day, month, year] = match;
+    const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  }
+
   private computeItems(items: CreateEInvoiceDto['items']) {
     const computed = items.map((it, idx) => {
       const gross = it.quantity * it.unitPrice;
@@ -244,7 +261,7 @@ export class EInvoiceService {
       paymentMethod: dto.paymentMethod,
       currencyUnit: dto.currencyUnit || 'VND',
       arisingDate,
-      issueDate: issued?.IssueDate ? new Date(issued.IssueDate) : new Date(),
+      issueDate: this.parseVNDate(issued?.IssueDate) ?? new Date(),
       note: dto.note ?? '',
       accessToken,
       securityCode,
