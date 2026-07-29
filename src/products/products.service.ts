@@ -5,7 +5,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Inject } from '@nestjs/common';
 import { Cache } from 'cache-manager';
 import slugify from 'slugify';
-import { Product, ProductDocument } from './schemas/product.schema';
+import { Product, ProductDocument, SocialPlatform } from './schemas/product.schema';
 import { CreateProductDto, UpdateProductDto } from './dto/product.dto';
 import { AuditService } from '../audit/audit.service';
 import { Category, CategoryDocument } from '../categories/schemas/category.schema';
@@ -29,9 +29,10 @@ export class ProductsService {
   /** Guarantees colors/sizes are arrays on the response. Products saved before this
    * feature existed have no such fields in MongoDB, and `.lean()` queries (unlike
    * hydrated Mongoose documents) don't apply schema defaults for missing paths. */
-  private withVariantDefaults<T extends { colors?: unknown; sizes?: unknown }>(doc: T): T {
+  private withVariantDefaults<T extends { colors?: unknown; sizes?: unknown; socials?: unknown }>(doc: T): T {
     if (doc.colors === undefined) (doc as { colors?: unknown }).colors = [];
     if (doc.sizes === undefined) (doc as { sizes?: unknown }).sizes = [];
+    if (doc.socials === undefined) (doc as { socials?: unknown }).socials = [];
     return doc;
   }
 
@@ -73,6 +74,26 @@ export class ProductsService {
     return cleaned;
   }
 
+  /** Drops entries with neither an id nor a link, and de-dupes by platform, keeping the first occurrence. */
+  private sanitizeSocials(socials?: CreateProductDto['socials']) {
+    if (!socials) return undefined;
+    const seen = new Set<string>();
+    const cleaned: { name: SocialPlatform; id?: string; link?: string }[] = [];
+    for (const s of socials) {
+      const id = s.id?.trim();
+      const link = s.link?.trim();
+      if (!id && !link) continue;
+      if (seen.has(s.name)) continue;
+      seen.add(s.name);
+      cleaned.push({
+        name: s.name,
+        ...(id ? { id } : {}),
+        ...(link ? { link } : {}),
+      });
+    }
+    return cleaned;
+  }
+
   private sanitizeSizes(sizes?: string[]) {
     if (!sizes) return undefined;
     const seen = new Set<string>();
@@ -103,6 +124,7 @@ export class ProductsService {
       ...dto,
       colors: this.sanitizeColors(dto.colors) ?? [],
       sizes: this.sanitizeSizes(dto.sizes) ?? [],
+      socials: this.sanitizeSocials(dto.socials) ?? [],
       slug,
       category: new Types.ObjectId(dto.category),
       ...pricing,
@@ -273,6 +295,7 @@ export class ProductsService {
     if (dto.category) updates.category = new Types.ObjectId(dto.category) as any;
     if (dto.colors !== undefined) updates.colors = this.sanitizeColors(dto.colors) as any;
     if (dto.sizes !== undefined) updates.sizes = this.sanitizeSizes(dto.sizes) as any;
+    if (dto.socials !== undefined) updates.socials = this.sanitizeSocials(dto.socials) as any;
 
     const updated = await this.productModel
       .findByIdAndUpdate(id, { $set: updates }, { new: true })

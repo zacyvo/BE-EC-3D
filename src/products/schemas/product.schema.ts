@@ -15,6 +15,23 @@ export class ProductColor {
 
 export const ProductColorSchema = SchemaFactory.createForClass(ProductColor);
 
+export enum SocialPlatform {
+  SHOPEE = 'SHOPEE',
+  THREADS = 'THREADS',
+  FACEBOOK = 'FACEBOOK',
+  TIKTOK = 'TIKTOK',
+  OTHER = 'OTHER',
+}
+
+@Schema({ _id: false })
+export class ProductSocial {
+  @Prop({ required: true, enum: SocialPlatform, type: String }) name: SocialPlatform;
+  @Prop() id?: string;
+  @Prop() link?: string;
+}
+
+export const ProductSocialSchema = SchemaFactory.createForClass(ProductSocial);
+
 @Schema({ timestamps: true })
 export class Product {
   _id: Types.ObjectId;
@@ -31,6 +48,10 @@ export class Product {
   /** Selectable size labels (e.g. "S", "M", "L"). Empty = no size options (default behavior). */
   @Prop({ type: [String], default: [] })
   sizes: string[];
+
+  /** Linked social/marketplace channels for this product (e.g. its Shopee listing). */
+  @Prop({ type: [ProductSocialSchema], default: [] })
+  socials: ProductSocial[];
 
   @Prop({ type: Types.ObjectId, ref: 'Category', required: true })
   category: Types.ObjectId;

@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsArray,
   IsBoolean,
+  IsEnum,
   Min,
   Max,
   MaxLength,
@@ -13,6 +14,7 @@ import {
   Matches,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { SocialPlatform } from '../schemas/product.schema';
 
 export class ProductColorDto {
   @IsString() @MinLength(1) @MaxLength(50) name: string;
@@ -26,6 +28,12 @@ export class ProductColorDto {
   @IsArray()
   @IsString({ each: true })
   images?: string[];
+}
+
+export class ProductSocialDto {
+  @IsEnum(SocialPlatform) name: SocialPlatform;
+  @IsOptional() @IsString() id?: string;
+  @IsOptional() @IsString() link?: string;
 }
 
 export class CreateProductDto {
@@ -47,6 +55,12 @@ export class CreateProductDto {
   @IsArray()
   @IsString({ each: true })
   sizes?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductSocialDto)
+  socials?: ProductSocialDto[];
 
   @IsNumber() @Min(0) costPrice: number;
   @IsNumber() @Min(0) sellingPrice: number;
@@ -74,6 +88,12 @@ export class UpdateProductDto {
   @IsArray()
   @IsString({ each: true })
   sizes?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductSocialDto)
+  socials?: ProductSocialDto[];
 
   @IsOptional() @IsNumber() @Min(0) costPrice?: number;
   @IsOptional() @IsNumber() @Min(0) sellingPrice?: number;
