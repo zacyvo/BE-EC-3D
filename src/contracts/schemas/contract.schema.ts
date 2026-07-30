@@ -68,6 +68,83 @@ export class PaymentInstallment {
 
 export const PaymentInstallmentSchema = SchemaFactory.createForClass(PaymentInstallment);
 
+// ── Ký số (PAdES) — xem backend/src/document-signing/ ───────────────────────
+
+export enum SignatureMode {
+  PKI = 'PKI', // chữ ký số thật (USB token), ký ngoài hệ thống rồi upload
+  SIMPLE = 'SIMPLE', // chữ ký điện tử đơn giản (canvas) — không phải PKI thật
+}
+
+export enum PartySignatureStatus {
+  PENDING = 'PENDING',
+  UPLOADED = 'UPLOADED',
+  VERIFIED = 'VERIFIED',
+  REJECTED = 'REJECTED',
+}
+
+@Schema({ _id: false })
+export class PartyBSignature {
+  @Prop({ default: PartySignatureStatus.PENDING, enum: Object.values(PartySignatureStatus) })
+  status: PartySignatureStatus;
+  @Prop() signedPdfUrl?: string;
+  @Prop() signedPdfPublicId?: string;
+  @Prop({ trim: true, default: '' }) signerCertCN: string;
+  @Prop({ trim: true, default: '' }) signerCertSerial: string;
+  @Prop({ trim: true, default: '' }) signerCertIssuer: string;
+  @Prop() certNotBefore?: Date;
+  @Prop() certNotAfter?: Date;
+  /** Thời điểm ký theo CMS signed attributes — không phải thời điểm upload */
+  @Prop() signingTime?: Date;
+  @Prop() uploadedAt?: Date;
+  @Prop() verifiedAt?: Date;
+  /** Luôn false ở MVP — chưa xác minh chuỗi CA gốc, xem document-signing/pades/pades.types.ts */
+  @Prop({ default: false }) chainValidated: boolean;
+  @Prop({ trim: true, default: '' }) rejectReason: string;
+  @Prop({ trim: true, default: '' }) uploadedBy: string;
+}
+
+export const PartyBSignatureSchema = SchemaFactory.createForClass(PartyBSignature);
+
+@Schema({ _id: false })
+export class SimpleSignatureRecord {
+  @Prop({ required: true }) canvasImageUrl: string;
+  @Prop({ required: true, trim: true }) confirmedName: string;
+  @Prop({ required: true }) ipAddress: string;
+  @Prop({ required: true }) userAgent: string;
+  @Prop({ required: true }) confirmedAt: Date;
+  /** sha256(canvasImageUrl + confirmedName + contractId + confirmedAt) — chống sửa bản ghi này */
+  @Prop({ required: true }) integrityHash: string;
+}
+
+export const SimpleSignatureRecordSchema = SchemaFactory.createForClass(SimpleSignatureRecord);
+
+@Schema({ _id: false })
+export class PartyASignature {
+  @Prop({ default: PartySignatureStatus.PENDING, enum: Object.values(PartySignatureStatus) })
+  status: PartySignatureStatus;
+  @Prop({ enum: Object.values(SignatureMode) }) mode?: SignatureMode;
+
+  // Mode PKI — giống PartyBSignature
+  @Prop() signedPdfUrl?: string;
+  @Prop() signedPdfPublicId?: string;
+  @Prop({ trim: true, default: '' }) signerCertCN: string;
+  @Prop({ trim: true, default: '' }) signerCertSerial: string;
+  @Prop({ trim: true, default: '' }) signerCertIssuer: string;
+  @Prop() certNotBefore?: Date;
+  @Prop() certNotAfter?: Date;
+  @Prop() signingTime?: Date;
+  @Prop({ default: false }) chainValidated: boolean;
+
+  // Mode SIMPLE
+  @Prop({ type: SimpleSignatureRecordSchema }) simpleSignature?: SimpleSignatureRecord;
+
+  @Prop() uploadedAt?: Date;
+  @Prop() verifiedAt?: Date;
+  @Prop({ trim: true, default: '' }) rejectReason: string;
+}
+
+export const PartyASignatureSchema = SchemaFactory.createForClass(PartyASignature);
+
 /** Lịch thanh toán mặc định (Điều 3.2) — Đợt 1: 50% ký HĐ, Đợt 2: 40% nghiệm thu, Đợt 3: 10% sau 5 ngày */
 export const DEFAULT_PAYMENT_SCHEDULE: { percent: number; timing: string }[] = [
   { percent: 50, timing: 'ngay khi ký hợp đồng' },
@@ -165,6 +242,18 @@ export class Contract {
 
   @Prop({ type: Types.ObjectId, ref: 'Staff', required: true })
   createdBy: Types.ObjectId;
+
+  // ── Ký số (PAdES) ──────────────────────────────────────────────────────────
+  /** PDF chính tắc chưa ký — sinh 1 lần duy nhất khi chuyển FINAL, không regenerate sau đó */
+  @Prop() unsignedPdfUrl?: string;
+  @Prop() unsignedPdfPublicId?: string;
+  @Prop() unsignedPdfGeneratedAt?: Date;
+
+  @Prop({ type: PartyBSignatureSchema, default: () => ({}) })
+  partyBSignature: PartyBSignature;
+
+  @Prop({ type: PartyASignatureSchema, default: () => ({}) })
+  partyASignature: PartyASignature;
 
   @Prop({ default: false }) isDeleted: boolean;
   @Prop() deletedAt?: Date;

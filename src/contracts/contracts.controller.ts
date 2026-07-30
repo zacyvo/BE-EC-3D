@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   DefaultValuePipe,
@@ -10,8 +11,14 @@ import {
   Patch,
   Post,
   Query,
+  Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import type { Response } from 'express';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { ContractsService } from './contracts.service';
 import {
@@ -93,6 +100,67 @@ export class AdminContractsController {
   async remove(@Param('id') id: string, @CurrentUser() staff: { sub: string }) {
     await this.service.remove(id, staff.sub);
     return { message: 'Đã xóa hợp đồng' };
+  }
+
+  // ─── Tài liệu & Ký số ────────────────────────────────────────────────────────
+
+  @Get(':id/document/status')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
+  getDocumentStatus(@Param('id') id: string) {
+    return this.service.getDocumentStatus(id);
+  }
+
+  @Post(':id/document/generate')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  generateDocument(@Param('id') id: string, @CurrentUser() staff: { sub: string }) {
+    return this.service.generateDocument(id, staff.sub);
+  }
+
+  @Get(':id/document/unsigned')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
+  async downloadUnsigned(@Param('id') id: string, @Res() res: Response) {
+    const { buffer, filename } = await this.service.getUnsignedPdfBuffer(id);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+      'Content-Length': String(buffer.length),
+    });
+    res.send(buffer);
+  }
+
+  @Get(':id/document/party-b-signed')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
+  async downloadPartyBSigned(@Param('id') id: string, @Res() res: Response) {
+    const { buffer, filename } = await this.service.getPartyBSignedPdfBuffer(id);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+      'Content-Length': String(buffer.length),
+    });
+    res.send(buffer);
+  }
+
+  @Post(':id/document/party-b-signed')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
+      fileFilter: (_req, file, cb) => {
+        if (file.mimetype !== 'application/pdf') {
+          return cb(new BadRequestException('Chỉ chấp nhận file PDF'), false);
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadPartyBSigned(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    if (!file) throw new BadRequestException('Vui lòng chọn file PDF đã ký');
+    return this.service.uploadPartyBSigned(id, file.buffer, staff.sub);
   }
 }
 

@@ -12,6 +12,7 @@ import { UsersModule } from '../users/users.module';
 import { StaffModule } from '../staff/staff.module';
 import { AuditModule } from '../audit/audit.module';
 import { ExternalRevenueModule } from '../external-revenue/external-revenue.module';
+import { DocumentSigningModule } from '../document-signing/document-signing.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { ExternalRevenueModule } from '../external-revenue/external-revenue.modu
     StaffModule,
     AuditModule,
     ExternalRevenueModule, // exports ExternalRevenue model — dùng ghi nhận tài chính khi SUCCESS
+    DocumentSigningModule, // PDF generation + PAdES verify — xem backend/src/document-signing/
   ],
   controllers: [AdminContractsController, PublicContractsController],
   providers: [ContractsService],

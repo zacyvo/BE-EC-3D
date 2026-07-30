@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -15,6 +16,7 @@ import {
   ContractDocument,
   ContractStatus,
   DEFAULT_PAYMENT_SCHEDULE,
+  PartySignatureStatus,
   PaymentInfoType,
   PaymentInstallment,
 } from './schemas/contract.schema';
@@ -27,6 +29,11 @@ import {
 import { UsersService } from '../users/users.service';
 import { StaffService } from '../staff/staff.service';
 import { AuditService } from '../audit/audit.service';
+import { PdfGenerationService } from '../document-signing/pdf-generation/pdf-generation.service';
+import { ContractPdfInput } from '../document-signing/pdf-generation/contract-pdf.definition';
+import { DocumentStorageService } from '../document-signing/storage/document-storage.service';
+import { PadesVerifyService } from '../document-signing/pades/pades-verify.service';
+import { TamperCheckService } from '../document-signing/pades/tamper-check.service';
 import {
   ContractItemDto,
   CreateContractDto,
@@ -99,6 +106,8 @@ const STATUS_TRANSITIONS: Record<ContractStatus, ContractStatus[]> = {
 
 @Injectable()
 export class ContractsService {
+  private readonly logger = new Logger(ContractsService.name);
+
   constructor(
     @InjectModel(Contract.name)
     private readonly contractModel: Model<ContractDocument>,
@@ -111,6 +120,10 @@ export class ContractsService {
     private readonly auditService: AuditService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly pdfGenerationService: PdfGenerationService,
+    private readonly documentStorageService: DocumentStorageService,
+    private readonly padesVerifyService: PadesVerifyService,
+    private readonly tamperCheckService: TamperCheckService,
   ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -205,6 +218,42 @@ export class ContractsService {
     }
   }
 
+  /**
+   * Sinh PDF hợp đồng chưa ký và lưu vào Cloudinary — CHỈ gọi khi contract.unsignedPdfUrl
+   * chưa tồn tại (regenerate sau khi đã có chữ ký sẽ làm mất hiệu lực chữ ký số đã ký).
+   */
+  private async generateAndStoreUnsignedPdf(contract: ContractDocument): Promise<void> {
+    const input: ContractPdfInput = {
+      contractNo: contract.contractNo,
+      items: contract.items.map((i) => ({
+        productCode: i.productCode,
+        productName: i.productName,
+        quantity: i.quantity,
+        unitPrice: i.unitPrice,
+        subtotal: i.subtotal,
+      })),
+      totalAmount: contract.totalAmount,
+      partyA: contract.partyA,
+      partyB: contract.partyB,
+      signPlace: contract.signPlace,
+      signDate: contract.signDate,
+      technicalRequirements: contract.technicalRequirements,
+      paymentSchedule: contract.paymentSchedule,
+      bankAccountNumber: contract.bankAccountNumber,
+      bankName: contract.bankName,
+      bankAccountHolder: contract.bankAccountHolder,
+      deliveryDate: contract.deliveryDate,
+    };
+    const buffer = await this.pdfGenerationService.generateContractPdf(input);
+    const stored = await this.documentStorageService.uploadPdf(
+      buffer,
+      `${contract._id.toString()}/unsigned`,
+    );
+    contract.unsignedPdfUrl = stored.url;
+    contract.unsignedPdfPublicId = stored.publicId;
+    contract.unsignedPdfGeneratedAt = new Date();
+  }
+
   /** Loại bỏ dữ liệu nội bộ trước khi trả về phía user */
   private sanitizeForUser(doc: ContractDocument) {
     const c = doc.toObject();
@@ -230,6 +279,17 @@ export class ContractsService {
       finalizedAt: c.finalizedAt,
       successAt: c.successAt,
       closedAt: c.closedAt,
+      unsignedPdfUrl: c.unsignedPdfUrl,
+      partyBSignature: c.partyBSignature && {
+        status: c.partyBSignature.status,
+        signerCertCN: c.partyBSignature.signerCertCN,
+        signingTime: c.partyBSignature.signingTime,
+        verifiedAt: c.partyBSignature.verifiedAt,
+      },
+      partyASignature: c.partyASignature && {
+        status: c.partyASignature.status,
+        mode: c.partyASignature.mode,
+      },
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
     };
@@ -440,6 +500,11 @@ export class ContractsService {
     if (to === ContractStatus.REVIEW || to === ContractStatus.FINAL) {
       this.assertPartyAFullName(contract.partyA);
     }
+    if (to === ContractStatus.SUCCESS && contract.partyBSignature?.status !== PartySignatureStatus.VERIFIED) {
+      throw new BadRequestException(
+        'Hợp đồng cần được Bên B ký số (đã xác thực) trước khi chuyển sang Hoàn tất',
+      );
+    }
 
     const now = new Date();
     contract.status = to;
@@ -451,6 +516,16 @@ export class ContractsService {
       case ContractStatus.FINAL:
         contract.finalizedAt = now;
         if (!contract.signDate) contract.signDate = now;
+        if (!contract.unsignedPdfUrl) {
+          try {
+            await this.generateAndStoreUnsignedPdf(contract);
+          } catch (err) {
+            // Không chặn việc chốt hợp đồng — admin có thể tạo lại PDF thủ công qua endpoint /document/generate
+            this.logger.error(
+              `Sinh PDF chưa ký thất bại cho hợp đồng ${contract._id.toString()}: ${(err as Error).message}`,
+            );
+          }
+        }
         break;
       case ContractStatus.SUCCESS: {
         contract.successAt = now;
@@ -524,6 +599,145 @@ export class ContractsService {
       targetId: id,
       beforeData: { contractNo: contract.contractNo, status: contract.status },
     });
+  }
+
+  // ─── Tài liệu & Ký số (PAdES) ────────────────────────────────────────────────
+
+  /** Trạng thái ký số tóm tắt — dùng cho panel "Tài liệu & Ký số" ở admin */
+  async getDocumentStatus(id: string) {
+    const contract = await this.contractModel
+      .findById(id)
+      .select('contractNo status unsignedPdfUrl unsignedPdfGeneratedAt partyBSignature partyASignature')
+      .exec();
+    if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    return {
+      contractNo: contract.contractNo,
+      status: contract.status,
+      unsignedPdfUrl: contract.unsignedPdfUrl,
+      unsignedPdfGeneratedAt: contract.unsignedPdfGeneratedAt,
+      partyBSignature: contract.partyBSignature,
+      partyASignature: contract.partyASignature,
+    };
+  }
+
+  /** Tạo lại PDF chưa ký thủ công — fallback khi auto-gen lúc chuyển FINAL bị lỗi */
+  async generateDocument(id: string, staffId: string) {
+    const contract = await this.contractModel.findById(id).exec();
+    if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    if (EDITABLE_STATUSES.includes(contract.status)) {
+      throw new BadRequestException('Hợp đồng chưa chốt bản chính thức, chưa thể tạo PDF');
+    }
+    if (contract.unsignedPdfUrl) {
+      throw new BadRequestException(
+        'PDF chưa ký đã được tạo trước đó — không thể tạo lại (sẽ làm mất hiệu lực chữ ký số nếu đã có)',
+      );
+    }
+
+    await this.generateAndStoreUnsignedPdf(contract);
+    await contract.save();
+
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'CONTRACT_DOCUMENT_GENERATE',
+      module: 'contracts',
+      targetId: id,
+    });
+
+    return this.toAdminResponse(contract);
+  }
+
+  async getUnsignedPdfBuffer(id: string): Promise<{ buffer: Buffer; filename: string }> {
+    const contract = await this.contractModel.findById(id).select('unsignedPdfUrl contractNo').exec();
+    if (!contract?.unsignedPdfUrl) throw new NotFoundException('Chưa có file PDF chưa ký cho hợp đồng này');
+    const buffer = await this.documentStorageService.downloadPdf(contract.unsignedPdfUrl);
+    return { buffer, filename: `hop-dong-${contract.contractNo.replace(/\//g, '-')}-chua-ky.pdf` };
+  }
+
+  async getPartyBSignedPdfBuffer(id: string): Promise<{ buffer: Buffer; filename: string }> {
+    const contract = await this.contractModel.findById(id).select('partyBSignature contractNo').exec();
+    if (!contract?.partyBSignature?.signedPdfUrl) {
+      throw new NotFoundException('Hợp đồng chưa có file đã ký Bên B');
+    }
+    const buffer = await this.documentStorageService.downloadPdf(contract.partyBSignature.signedPdfUrl);
+    return { buffer, filename: `hop-dong-${contract.contractNo.replace(/\//g, '-')}-da-ky-ben-b.pdf` };
+  }
+
+  /**
+   * Admin upload PDF đã ký bởi Bên B (ký ngoài hệ thống bằng phần mềm ký số riêng trên máy có
+   * cắm USB token). Xác thực: (1) file là bản nối thêm từ đúng PDF chưa ký hệ thống đã tạo —
+   * không bị chỉnh sửa nội dung, (2) chữ ký PAdES/CMS nhúng trong file hợp lệ về mặt mật mã.
+   * KHÔNG xác minh chuỗi CA gốc — xem PartyBSignature.chainValidated.
+   */
+  async uploadPartyBSigned(id: string, fileBuffer: Buffer, staffId: string) {
+    const contract = await this.contractModel.findById(id).exec();
+    if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    if (!contract.unsignedPdfUrl) {
+      throw new BadRequestException('Chưa có PDF chưa ký để đối chiếu — vui lòng tạo PDF trước');
+    }
+    if (contract.partyBSignature?.status === PartySignatureStatus.VERIFIED) {
+      throw new BadRequestException('Hợp đồng đã có chữ ký Bên B hợp lệ, không thể ghi đè');
+    }
+
+    const unsignedBuffer = await this.documentStorageService.downloadPdf(contract.unsignedPdfUrl);
+    this.tamperCheckService.assertIncrementalOnly(unsignedBuffer, fileBuffer);
+
+    const signatures = this.padesVerifyService.verify(fileBuffer);
+    if (signatures.length === 0) {
+      throw new BadRequestException('Không tìm thấy chữ ký số hợp lệ trong file tải lên');
+    }
+    const sig = signatures[signatures.length - 1];
+    if (!sig.coversToEndOfFile || !sig.digestValid || !sig.signatureValid) {
+      contract.partyBSignature = {
+        ...(contract.partyBSignature as any),
+        status: PartySignatureStatus.REJECTED,
+        rejectReason: 'Chữ ký số không hợp lệ (digest hoặc chữ ký không khớp)',
+        uploadedAt: new Date(),
+        uploadedBy: staffId,
+      } as any;
+      await contract.save();
+      throw new BadRequestException(
+        'Chữ ký số trong file không hợp lệ — vui lòng ký trực tiếp trên file gốc tải từ hệ thống, không chỉnh sửa nội dung',
+      );
+    }
+
+    const stored = await this.documentStorageService.uploadPdf(
+      fileBuffer,
+      `${contract._id.toString()}/party-b-signed`,
+    );
+    const now = new Date();
+    contract.partyBSignature = {
+      status: PartySignatureStatus.VERIFIED,
+      signedPdfUrl: stored.url,
+      signedPdfPublicId: stored.publicId,
+      signerCertCN: sig.signerCertCN,
+      signerCertSerial: sig.signerCertSerial,
+      signerCertIssuer: sig.signerCertIssuer,
+      certNotBefore: sig.certNotBefore,
+      certNotAfter: sig.certNotAfter,
+      signingTime: sig.signingTime,
+      uploadedAt: now,
+      verifiedAt: now,
+      chainValidated: false,
+      rejectReason: '',
+      uploadedBy: staffId,
+    } as any;
+    await contract.save();
+
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'CONTRACT_PARTY_B_SIGNED',
+      module: 'contracts',
+      targetId: id,
+      afterData: {
+        signerCertCN: sig.signerCertCN,
+        signerCertIssuer: sig.signerCertIssuer,
+        signingTime: sig.signingTime,
+      },
+    });
+
+    return this.toAdminResponse(contract);
   }
 
   // ─── Public (khách truy cập qua link bảo mật) ───────────────────────────────
