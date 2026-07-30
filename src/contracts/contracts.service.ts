@@ -19,6 +19,7 @@ import {
   PartySignatureStatus,
   PaymentInfoType,
   PaymentInstallment,
+  SignatureMode,
 } from './schemas/contract.schema';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
 import {
@@ -40,6 +41,8 @@ import {
   PaymentInstallmentDto,
   PublicUpdateDto,
   PublicVerifyDto,
+  RejectSignatureDto,
+  SubmitSimpleSignatureDto,
   UpdateContractDto,
   UpdateContractStatusDto,
 } from './dto/contract.dto';
@@ -289,6 +292,16 @@ export class ContractsService {
       partyASignature: c.partyASignature && {
         status: c.partyASignature.status,
         mode: c.partyASignature.mode,
+        signerCertCN: c.partyASignature.signerCertCN,
+        signerCertIssuer: c.partyASignature.signerCertIssuer,
+        signingTime: c.partyASignature.signingTime,
+        verifiedAt: c.partyASignature.verifiedAt,
+        rejectReason: c.partyASignature.rejectReason,
+        simpleSignature: c.partyASignature.simpleSignature && {
+          canvasImageUrl: c.partyASignature.simpleSignature.canvasImageUrl,
+          confirmedName: c.partyASignature.simpleSignature.confirmedName,
+          confirmedAt: c.partyASignature.simpleSignature.confirmedAt,
+        },
       },
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
@@ -740,6 +753,33 @@ export class ContractsService {
     return this.toAdminResponse(contract);
   }
 
+  /**
+   * Admin từ chối chữ ký Bên A đã VERIFIED về mặt mật mã nhưng chứng thư không đáng tin cậy
+   * (chain review thủ công — hệ thống không tự động xác minh chuỗi CA gốc).
+   */
+  async rejectPartyASignature(id: string, dto: RejectSignatureDto, staffId: string) {
+    const contract = await this.contractModel.findById(id).exec();
+    if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    if (contract.partyASignature?.status !== PartySignatureStatus.VERIFIED) {
+      throw new BadRequestException('Hợp đồng chưa có chữ ký Bên A hợp lệ để từ chối');
+    }
+
+    contract.partyASignature.status = PartySignatureStatus.REJECTED;
+    contract.partyASignature.rejectReason = dto.reason;
+    await contract.save();
+
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'CONTRACT_PARTY_A_SIGNATURE_REJECT',
+      module: 'contracts',
+      targetId: id,
+      afterData: { reason: dto.reason },
+    });
+
+    return this.toAdminResponse(contract);
+  }
+
   // ─── Public (khách truy cập qua link bảo mật) ───────────────────────────────
 
   async getPublicMeta(token: string) {
@@ -879,5 +919,175 @@ export class ContractsService {
     });
 
     return this.sanitizeForUser(contract);
+  }
+
+  // ─── Public — Tài liệu & Ký số Bên A ─────────────────────────────────────────
+
+  /** Trạng thái ký số public-safe — dùng để hiển thị tiến trình trên trang khách */
+  async getPublicDocumentStatus(token: string, jwt?: string) {
+    const contract = await this.resolveAuthorized(token, jwt);
+    const sanitized = this.sanitizeForUser(contract);
+    return {
+      status: sanitized.status,
+      unsignedPdfUrl: sanitized.unsignedPdfUrl,
+      partyBSignature: sanitized.partyBSignature,
+      partyASignature: sanitized.partyASignature,
+    };
+  }
+
+  /** PDF khách cần tải về để ký chồng lên (luôn là bản đã có chữ ký Bên B) */
+  async getDocumentToSign(token: string, jwt?: string): Promise<{ buffer: Buffer; filename: string }> {
+    const contract = await this.resolveAuthorized(token, jwt);
+    if (contract.partyBSignature?.status !== PartySignatureStatus.VERIFIED || !contract.partyBSignature.signedPdfUrl) {
+      throw new BadRequestException('Hợp đồng chưa được Bên B ký, chưa thể ký');
+    }
+    const buffer = await this.documentStorageService.downloadPdf(contract.partyBSignature.signedPdfUrl);
+    return { buffer, filename: `hop-dong-${contract.contractNo.replace(/\//g, '-')}-can-ky.pdf` };
+  }
+
+  /**
+   * Khách upload PDF đã ký chồng chữ ký số của mình (Bên A) lên trên bản đã có chữ ký Bên B —
+   * ký ngoài hệ thống bằng phần mềm ký số riêng trên máy có cắm USB token, giống hệt luồng Bên B.
+   */
+  async uploadPartyASigned(token: string, jwt: string | undefined, fileBuffer: Buffer) {
+    const contract = await this.resolveAuthorized(token, jwt);
+    if (contract.partyBSignature?.status !== PartySignatureStatus.VERIFIED || !contract.partyBSignature.signedPdfUrl) {
+      throw new BadRequestException('Hợp đồng chưa được Bên B ký, chưa thể ký');
+    }
+    if (contract.partyASignature?.status === PartySignatureStatus.VERIFIED) {
+      throw new BadRequestException('Hợp đồng đã có chữ ký hợp lệ của Bên A, không thể ghi đè');
+    }
+
+    const partyBBuffer = await this.documentStorageService.downloadPdf(contract.partyBSignature.signedPdfUrl);
+    this.tamperCheckService.assertIncrementalOnly(partyBBuffer, fileBuffer);
+
+    const signatures = this.padesVerifyService.verify(fileBuffer);
+    if (signatures.length < 2) {
+      throw new BadRequestException(
+        'Không tìm thấy chữ ký số của bạn trong file tải lên — vui lòng ký chồng lên đúng file đã tải từ hệ thống (đã có sẵn chữ ký Bên B)',
+      );
+    }
+    const sig = signatures[signatures.length - 1];
+    if (!sig.coversToEndOfFile || !sig.digestValid || !sig.signatureValid) {
+      contract.partyASignature = {
+        ...(contract.partyASignature as any),
+        status: PartySignatureStatus.REJECTED,
+        mode: SignatureMode.PKI,
+        rejectReason: 'Chữ ký số không hợp lệ (digest hoặc chữ ký không khớp)',
+        uploadedAt: new Date(),
+      } as any;
+      await contract.save();
+      throw new BadRequestException(
+        'Chữ ký số trong file không hợp lệ — vui lòng ký trực tiếp trên file gốc tải từ hệ thống, không chỉnh sửa nội dung',
+      );
+    }
+
+    const stored = await this.documentStorageService.uploadPdf(
+      fileBuffer,
+      `${contract._id.toString()}/party-a-signed`,
+    );
+    const now = new Date();
+    contract.partyASignature = {
+      status: PartySignatureStatus.VERIFIED,
+      mode: SignatureMode.PKI,
+      signedPdfUrl: stored.url,
+      signedPdfPublicId: stored.publicId,
+      signerCertCN: sig.signerCertCN,
+      signerCertSerial: sig.signerCertSerial,
+      signerCertIssuer: sig.signerCertIssuer,
+      certNotBefore: sig.certNotBefore,
+      certNotAfter: sig.certNotAfter,
+      signingTime: sig.signingTime,
+      chainValidated: false,
+      uploadedAt: now,
+      verifiedAt: now,
+      rejectReason: '',
+    } as any;
+    await contract.save();
+
+    await this.auditService.log({
+      actorId: contract.userId?.toString() ?? 'unknown',
+      actorType: 'user',
+      action: 'CONTRACT_PARTY_A_SIGNED_PKI',
+      module: 'contracts',
+      targetId: contract._id.toString(),
+      afterData: { signerCertCN: sig.signerCertCN, signerCertIssuer: sig.signerCertIssuer },
+    });
+
+    return this.sanitizeForUser(contract);
+  }
+
+  /**
+   * Chữ ký điện tử đơn giản (canvas vẽ tay) — fallback cho khách không có chữ ký số thật.
+   * KHÔNG đụng vào file PDF đã ký Bên B (sẽ phá vỡ chữ ký số thật đó) — chỉ lưu 1 bản ghi
+   * xác nhận riêng (ảnh + tên + IP + thời điểm + hash toàn vẹn).
+   */
+  async submitPartyASimpleSignature(
+    token: string,
+    jwt: string | undefined,
+    dto: SubmitSimpleSignatureDto,
+    ip: string,
+    userAgent: string,
+  ) {
+    const contract = await this.resolveAuthorized(token, jwt);
+    if (contract.partyBSignature?.status !== PartySignatureStatus.VERIFIED) {
+      throw new BadRequestException('Hợp đồng chưa được Bên B ký, chưa thể ký');
+    }
+    if (contract.partyASignature?.status === PartySignatureStatus.VERIFIED) {
+      throw new BadRequestException('Hợp đồng đã có chữ ký của Bên A, không thể ghi đè');
+    }
+
+    const match = /^data:image\/png;base64,([a-zA-Z0-9+/=]+)$/.exec(dto.canvasImageBase64.trim());
+    if (!match) {
+      throw new BadRequestException('Ảnh chữ ký không hợp lệ (cần định dạng PNG)');
+    }
+    const imageBuffer = Buffer.from(match[1], 'base64');
+    if (imageBuffer.length === 0 || imageBuffer.length > 2 * 1024 * 1024) {
+      throw new BadRequestException('Ảnh chữ ký không hợp lệ hoặc quá lớn');
+    }
+
+    const canvasImageUrl = await this.documentStorageService.uploadSignatureImage(
+      imageBuffer,
+      `${contract._id.toString()}/party-a-simple-signature`,
+    );
+
+    const now = new Date();
+    const integrityHash = crypto
+      .createHash('sha256')
+      .update(`${canvasImageUrl}|${dto.confirmedName}|${contract._id.toString()}|${now.toISOString()}`)
+      .digest('hex');
+
+    contract.partyASignature = {
+      status: PartySignatureStatus.VERIFIED,
+      mode: SignatureMode.SIMPLE,
+      simpleSignature: {
+        canvasImageUrl,
+        confirmedName: dto.confirmedName,
+        ipAddress: ip,
+        userAgent,
+        confirmedAt: now,
+        integrityHash,
+      },
+      chainValidated: false,
+      uploadedAt: now,
+      verifiedAt: now,
+      rejectReason: '',
+    } as any;
+    await contract.save();
+
+    await this.auditService.log({
+      actorId: contract.userId?.toString() ?? 'unknown',
+      actorType: 'user',
+      action: 'CONTRACT_PARTY_A_SIGNED_SIMPLE',
+      module: 'contracts',
+      targetId: contract._id.toString(),
+      afterData: { confirmedName: dto.confirmedName, ip },
+    });
+
+    return {
+      ...this.sanitizeForUser(contract),
+      legalNote:
+        'Đây là chữ ký điện tử đơn giản để xác nhận nội dung hợp đồng, KHÔNG phải chữ ký số (chữ ký điện tử an toàn) theo Nghị định 130/2018.',
+    };
   }
 }

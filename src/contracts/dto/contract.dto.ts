@@ -160,6 +160,13 @@ export class RevealCodeDto {
   password: string;
 }
 
+export class RejectSignatureDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Vui lòng nhập lý do từ chối' })
+  @MaxLength(500)
+  reason: string;
+}
+
 // ── Public (user qua link bảo mật) ───────────────────────────────────────────
 
 export class PublicVerifyDto {
@@ -180,4 +187,16 @@ export class PublicUpdateDto {
 
   @IsOptional() @IsString() @MaxLength(300) deliveryAddress?: string;
   @IsOptional() @IsString() @MaxLength(2000) userNote?: string;
+}
+
+/** Chữ ký điện tử đơn giản (canvas) — fallback khi khách không có chữ ký số thật */
+export class SubmitSimpleSignatureDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Vui lòng ký trước khi xác nhận' })
+  canvasImageBase64: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'Vui lòng nhập họ tên xác nhận' })
+  @MaxLength(120)
+  confirmedName: string;
 }

@@ -65,6 +65,33 @@ export class DocumentStorageService {
     return Buffer.from(arrayBuffer);
   }
 
+  /** Ảnh chữ ký vẽ tay (canvas PNG) — resource_type 'image' bình thường, khác PDF ('raw') */
+  async uploadSignatureImage(buffer: Buffer, publicId: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: 'image',
+          folder: 'web-ec-3d/contracts-signing/signatures',
+          public_id: publicId,
+          overwrite: true,
+        },
+        (error, result: UploadApiResponse | undefined) => {
+          if (error || !result) {
+            this.logger.error('Cloudinary signature image upload error', error);
+            reject(
+              new InternalServerErrorException(
+                error?.message ? `Tải ảnh chữ ký thất bại: ${error.message}` : 'Tải ảnh chữ ký thất bại',
+              ),
+            );
+          } else {
+            resolve(result.secure_url);
+          }
+        },
+      );
+      uploadStream.end(buffer);
+    });
+  }
+
   async deleteRaw(publicId: string): Promise<void> {
     try {
       await cloudinary.uploader.destroy(publicId, { resource_type: 'raw' });

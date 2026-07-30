@@ -11,6 +11,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
   UploadedFile,
   UseGuards,
@@ -18,14 +19,16 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { ContractsService } from './contracts.service';
 import {
   CreateContractDto,
   PublicUpdateDto,
   PublicVerifyDto,
+  RejectSignatureDto,
   RevealCodeDto,
+  SubmitSimpleSignatureDto,
   UpdateContractDto,
   UpdateContractStatusDto,
 } from './dto/contract.dto';
@@ -162,6 +165,16 @@ export class AdminContractsController {
     if (!file) throw new BadRequestException('Vui lòng chọn file PDF đã ký');
     return this.service.uploadPartyBSigned(id, file.buffer, staff.sub);
   }
+
+  @Post(':id/document/party-a-signed/reject')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  rejectPartyASignature(
+    @Param('id') id: string,
+    @Body() dto: RejectSignatureDto,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    return this.service.rejectPartyASignature(id, dto, staff.sub);
+  }
 }
 
 // ─── Public (khách truy cập qua link bảo mật) ─────────────────────────────────
@@ -209,5 +222,70 @@ export class PublicContractsController {
     @Headers('x-contract-access') accessJwt?: string,
   ) {
     return this.service.publicSubmit(token, accessJwt);
+  }
+
+  // ─── Tài liệu & Ký số (Bên A) ─────────────────────────────────────────────────
+
+  @Get(':token/document/status')
+  getDocumentStatus(
+    @Param('token') token: string,
+    @Headers('x-contract-access') accessJwt?: string,
+  ) {
+    return this.service.getPublicDocumentStatus(token, accessJwt);
+  }
+
+  /** PDF khách cần tải về để ký chồng lên (đã có sẵn chữ ký Bên B) */
+  @Get(':token/document/to-sign')
+  async downloadToSign(
+    @Param('token') token: string,
+    @Headers('x-contract-access') accessJwt: string | undefined,
+    @Res() res: Response,
+  ) {
+    const { buffer, filename } = await this.service.getDocumentToSign(token, accessJwt);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+      'Content-Length': String(buffer.length),
+    });
+    res.send(buffer);
+  }
+
+  @Post(':token/document/party-a-signed')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
+      fileFilter: (_req, file, cb) => {
+        if (file.mimetype !== 'application/pdf') {
+          return cb(new BadRequestException('Chỉ chấp nhận file PDF'), false);
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadPartyASigned(
+    @Param('token') token: string,
+    @Headers('x-contract-access') accessJwt: string | undefined,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) throw new BadRequestException('Vui lòng chọn file PDF đã ký');
+    return this.service.uploadPartyASigned(token, accessJwt, file.buffer);
+  }
+
+  /** Chữ ký điện tử đơn giản (canvas) — fallback khi khách không có chữ ký số thật */
+  @Post(':token/document/party-a-simple-signature')
+  submitSimpleSignature(
+    @Param('token') token: string,
+    @Headers('x-contract-access') accessJwt: string | undefined,
+    @Body() dto: SubmitSimpleSignatureDto,
+    @Req() req: Request,
+  ) {
+    return this.service.submitPartyASimpleSignature(
+      token,
+      accessJwt,
+      dto,
+      req.ip ?? '',
+      req.headers['user-agent'] ?? '',
+    );
   }
 }
