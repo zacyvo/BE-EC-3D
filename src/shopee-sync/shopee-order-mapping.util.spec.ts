@@ -60,6 +60,33 @@ describe('parseShopeeOrderWorkbook', () => {
     expect(rows[0][SHOPEE_ORDER_COLUMNS.orderCode]).toBe('ORDER001');
   });
 
+  it('drops rows outside the actual data range even when the sheet dimension claims more rows exist (matches real Order.completed export: !ref was A1:BI208 with only 2 populated rows)', () => {
+    const buffer = buildWorkbookBuffer([baseRow()]);
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const range = XLSX.utils.decode_range(sheet['!ref']!);
+    sheet['!ref'] = XLSX.utils.encode_range({ s: range.s, e: { r: range.e.r + 20, c: range.e.c } });
+    const paddedBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+    const rows = parseShopeeOrderWorkbook(paddedBuffer);
+    expect(rows).toHaveLength(1);
+  });
+
+  it('normalizes inconsistent per-cell Unicode forms to NFC (real gotcha: a re-saved Order.completed export had one header/value pair in NFD while sibling cells stayed NFC, silently breaking exact-string column lookups)', () => {
+    const nfdOfferPriceHeader = SHOPEE_ORDER_COLUMNS.offerPrice.normalize('NFD');
+    expect(nfdOfferPriceHeader).not.toBe(SHOPEE_ORDER_COLUMNS.offerPrice); // sanity: genuinely different bytes
+    const columns = ALL_COLUMNS.map((c) => (c === SHOPEE_ORDER_COLUMNS.offerPrice ? nfdOfferPriceHeader : c));
+    const row = baseRow();
+    const aoa = [columns, ALL_COLUMNS.map((c) => row[c] ?? '')];
+    const sheet = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, 'orders');
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+    const rows = parseShopeeOrderWorkbook(buffer);
+    expect(rows[0][SHOPEE_ORDER_COLUMNS.offerPrice]).toBe('17000.00');
+  });
+
   it('throws ORDER_FILE_INVALID_FORMAT when required columns are missing', () => {
     const buffer = buildWorkbookBuffer([baseRow()], [SHOPEE_ORDER_COLUMNS.orderCode, SHOPEE_ORDER_COLUMNS.status]);
     expect(() => parseShopeeOrderWorkbook(buffer)).toThrow(ShopeeSyncException);
@@ -129,6 +156,21 @@ describe('mapShopeeOrderStatus', () => {
     ['Một trạng thái lạ chưa từng thấy', OrderStatus.PROCESSING],
   ])('maps "%s" to %s', (raw, expected) => {
     expect(mapShopeeOrderStatus(raw)).toBe(expected);
+  });
+
+  it('maps the real Order.completed "still within return window" status to DELIVERED, not CANCELLED', () => {
+    const raw =
+      'Người mua xác nhận đã nhận được hàng, tuy nhiên Người mua vẫn có thể gửi yêu cầu Trả hàng/Hoàn tiền tới ngày 2026-08-02.';
+    expect(mapShopeeOrderStatus(raw)).toBe(OrderStatus.DELIVERED);
+  });
+
+  it('treats a non-empty returnStatus column as authoritative CANCELLED regardless of the main status text', () => {
+    expect(mapShopeeOrderStatus('Hoàn thành', 'Đã hoàn tiền')).toBe(OrderStatus.CANCELLED);
+  });
+
+  it('ignores a blank/whitespace-only returnStatus column', () => {
+    expect(mapShopeeOrderStatus('Hoàn thành', '')).toBe(OrderStatus.DELIVERED);
+    expect(mapShopeeOrderStatus('Hoàn thành', '   ')).toBe(OrderStatus.DELIVERED);
   });
 });
 

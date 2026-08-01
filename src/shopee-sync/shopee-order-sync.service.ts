@@ -14,6 +14,7 @@ import {
   ShopeeOrderIssueItem,
 } from './schemas/shopee-order-sync-issue.schema';
 import { OrdersService, ImportExternalOrderInput, ExternalOrderItemInput } from '../orders/orders.service';
+import { OrderStatus } from '../orders/schemas/order.schema';
 import { ProductsService } from '../products/products.service';
 import { AuditService } from '../audit/audit.service';
 import { ShopeeSyncConfigService } from './shopee-sync.config';
@@ -301,7 +302,7 @@ export class ShopeeOrderSyncService {
   ): Omit<ImportExternalOrderInput, 'items' | 'staffId'> {
     const shippingInfo = buildShippingPreviewFromGroup(rows);
     const money = computeOrderMoney(rows);
-    const status = mapShopeeOrderStatus(rows[0][SHOPEE_ORDER_COLUMNS.status]);
+    const status = mapShopeeOrderStatus(rows[0][SHOPEE_ORDER_COLUMNS.status], rows[0][SHOPEE_ORDER_COLUMNS.returnStatus]);
     const estimatedDeliveryDate = parseShopeeDate(rows[0][SHOPEE_ORDER_COLUMNS.estimatedDeliveryDate]);
     const carrierName = rows[0][SHOPEE_ORDER_COLUMNS.carrierName]?.trim() || undefined;
     const trackingCode = rows[0][SHOPEE_ORDER_COLUMNS.trackingCode]?.trim() || undefined;
@@ -322,6 +323,9 @@ export class ShopeeOrderSyncService {
       discountAmount: money.discountAmount,
       total: money.total,
       status,
+      // A DELIVERED order (Shopee's "Hoàn thành"/"đã nhận được hàng") means Shopee's
+      // escrow has released the money to the seller — reflect it as collected.
+      ...(status === OrderStatus.DELIVERED ? { paidAmount: money.total } : {}),
       ...(carrierName || trackingCode || estimatedDeliveryDate ? { delivery: { carrierName, trackingCode, estimatedDeliveryDate } } : {}),
       ...(orderDate ? { orderDate } : {}),
       buyer: { externalBuyerId: buyerUsername, ...(hasValidPhone ? { phone: normalizeVnPhone(shippingInfo.phone) } : {}) },

@@ -5,19 +5,28 @@ import { ShopeeSyncException } from './shopee-sync.exceptions';
 import { ShopeeSyncErrorCode } from './shopee-sync.constants';
 
 /**
- * Pure, DB-free parsing/matching logic for Shopee's "Order.toship" Excel export —
+ * Pure, DB-free parsing/matching logic for Shopee's bulk order-list Excel exports —
  * kept separate from ShopeeOrderSyncService so it is unit-testable without Mongoose.
  *
- * Column headers below are verified verbatim against a real Shopee export
- * (`Order.toship.<range>.xlsx`, "orders" sheet) — do not "clean up" the Vietnamese
- * strings, Shopee's own template is inconsistent (e.g. two columns differ only by
- * the capitalization of "người"/"Người").
+ * Column headers below are verified verbatim against real Shopee exports — both
+ * `Order.toship.<range>.xlsx` (orders awaiting handover) and
+ * `Order.completed.<range>.xlsx` (finished orders) use the exact same "orders"
+ * sheet/column layout, only the row *contents* differ — so this module handles
+ * any Shopee order-list report generically rather than special-casing a filename.
+ * Do not "clean up" the Vietnamese header strings, Shopee's own template is
+ * inconsistent (e.g. two columns differ only by the capitalization of
+ * "người"/"Người").
  */
 export const SHOPEE_ORDER_COLUMNS = {
   orderCode: 'Mã đơn hàng',
   packageCode: 'Mã Kiện Hàng',
   orderDate: 'Ngày đặt hàng',
   status: 'Trạng Thái Đơn Hàng',
+  /** Separate from `status` above — only populated when a return/refund is actually
+   * in progress for this order. More reliable than keyword-parsing `status` text,
+   * which can also just *mention* "Trả hàng/Hoàn tiền" as a future option (e.g. the
+   * post-delivery grace-period message) without an active return existing. */
+  returnStatus: 'Trạng thái Trả hàng/Hoàn tiền',
   buyerComment: 'Nhận xét từ Người mua',
   trackingCode: 'Mã vận đơn',
   carrierName: 'Đơn Vị Vận Chuyển',
@@ -68,7 +77,7 @@ export function parseShopeeOrderWorkbook(buffer: Buffer): ShopeeOrderRawRow[] {
   } catch {
     throw new ShopeeSyncException(
       ShopeeSyncErrorCode.ORDER_FILE_INVALID_FORMAT,
-      'Không đọc được file — vui lòng chọn đúng file Excel (.xlsx) xuất từ Shopee (Đơn hàng > Vận chuyển > Xuất file)',
+      'Không đọc được file — vui lòng chọn đúng file Excel (.xlsx) danh sách đơn hàng xuất từ Shopee Seller Center (mục Đơn hàng, ví dụ tab "Cần giao"/"Hoàn thành" > Xuất file)',
     );
   }
 
@@ -77,13 +86,27 @@ export function parseShopeeOrderWorkbook(buffer: Buffer): ShopeeOrderRawRow[] {
     throw new ShopeeSyncException(ShopeeSyncErrorCode.ORDER_FILE_EMPTY, 'File Excel không có sheet dữ liệu nào');
   }
 
-  const rows = XLSX.utils.sheet_to_json<ShopeeOrderRawRow>(workbook.Sheets[sheetName], {
+  const rawRows = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets[sheetName], {
     defval: '',
     raw: false,
   });
-  if (rows.length === 0) {
+  if (rawRows.length === 0) {
     throw new ShopeeSyncException(ShopeeSyncErrorCode.ORDER_FILE_EMPTY, 'File không có dữ liệu đơn hàng nào');
   }
+
+  // Real-world gotcha (verified against a re-saved Order.completed export): cells can
+  // have INCONSISTENT Unicode normalization per-cell — some header/value text was
+  // NFD/partially-decomposed (e.g. "á" as "a"+combining-acute) while sibling cells in
+  // the same row stayed NFC, despite being visually identical on screen. Byte-exact
+  // comparisons (Set.has(), String.includes()) against this module's NFC-authored
+  // constants/keywords would silently fail without this normalization pass.
+  const rows: ShopeeOrderRawRow[] = rawRows.map((raw) => {
+    const normalized: ShopeeOrderRawRow = {};
+    for (const [key, value] of Object.entries(raw)) {
+      normalized[key.normalize('NFC')] = typeof value === 'string' ? value.normalize('NFC') : value;
+    }
+    return normalized;
+  });
 
   const headerSet = new Set(Object.keys(rows[0]));
   const missing = REQUIRED_COLUMNS.filter((c) => !headerSet.has(c));
@@ -129,12 +152,31 @@ export function parseShopeeDate(raw: string | undefined): Date | undefined {
  * Our OrderStatus enum has no RETURNED value, so refunds/returns map to CANCELLED.
  * Unrecognized text falls back to PROCESSING (safer default for rows sourced from
  * an active "to ship" export than silently defaulting to PENDING or DELIVERED).
+ *
+ * `returnStatus` (the dedicated "Trạng thái Trả hàng/Hoàn tiền" column) is checked
+ * FIRST and, if non-empty, always wins — it's a real active return/refund, unlike
+ * `rawStatus` which can just *mention* "Trả hàng/Hoàn tiền" as a still-available
+ * option (real example: "Người mua xác nhận đã nhận được hàng, tuy nhiên Người
+ * mua vẫn có thể gửi yêu cầu Trả hàng/Hoàn tiền tới ngày ..." — this is a
+ * DELIVERED order, not a cancelled one, even though it contains those words).
+ * Assumption not yet verified against a real populated `returnStatus` value: any
+ * non-empty value is treated as an active return (no "request rejected" case
+ * seen yet — revisit if that turns out to be common).
  */
-export function mapShopeeOrderStatus(rawStatus: string): OrderStatus {
+export function mapShopeeOrderStatus(rawStatus: string, returnStatus?: string): OrderStatus {
+  if ((returnStatus || '').trim()) return OrderStatus.CANCELLED;
+
   const s = (rawStatus || '').toLowerCase();
-  if (s.includes('hoàn tiền') || s.includes('trả hàng')) return OrderStatus.CANCELLED;
   if (s.includes('hủy')) return OrderStatus.CANCELLED;
-  if (s.includes('hoàn thành') || s.includes('giao thành công') || s.includes('đã giao')) return OrderStatus.DELIVERED;
+  if (
+    s.includes('xác nhận đã nhận được hàng') ||
+    s.includes('hoàn thành') ||
+    s.includes('giao thành công') ||
+    s.includes('đã giao')
+  ) {
+    return OrderStatus.DELIVERED;
+  }
+  if (s.includes('hoàn tiền') || s.includes('trả hàng')) return OrderStatus.CANCELLED;
   if (s.includes('đang giao') || s.includes('vận chuyển') || s.includes('đã lấy hàng')) return OrderStatus.SHIPPED;
   if (s.includes('chờ giao hàng') || s.includes('chờ lấy hàng') || s.includes('đang xử lý') || s.includes('đang chuẩn bị')) {
     return OrderStatus.PROCESSING;
