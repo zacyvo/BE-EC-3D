@@ -30,7 +30,9 @@ export class MarketplaceDimensionDto {
 }
 
 export class TierVariationUploadDto {
-  @IsString() @IsNotEmpty() @MaxLength(200)
+  // Not required non-empty: this is purely a display label (never read by
+  // buildColorsAndSizes(), which only uses `options`) — Shopee can send it blank.
+  @IsString() @MaxLength(200)
   name: string;
 
   @IsArray() @IsString({ each: true })

@@ -107,6 +107,21 @@ describe('MarketplaceProductUploadDto', () => {
     const errors = await validate(dto, VALIDATION_OPTIONS);
     expect(errors.length).toBeGreaterThan(0);
   });
+
+  it('accepts a tierVariations entry with a blank name (not a required field, only options matters)', async () => {
+    const dto = plainToInstance(
+      MarketplaceProductUploadDto,
+      validProductPayload({ tierVariations: [{ name: '', options: ['Xanh lá', 'Hồng', 'Cam'] }] }),
+    );
+    const errors = await validate(dto, VALIDATION_OPTIONS);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('accepts a payload with no tierVariations at all (no-variation product)', async () => {
+    const dto = plainToInstance(MarketplaceProductUploadDto, validProductPayload({ tierVariations: [] }));
+    const errors = await validate(dto, VALIDATION_OPTIONS);
+    expect(errors).toHaveLength(0);
+  });
 });
 
 describe('UploadProductDetailDto', () => {
