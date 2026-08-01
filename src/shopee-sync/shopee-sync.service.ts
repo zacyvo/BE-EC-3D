@@ -27,6 +27,7 @@ import {
   nextSyncStatusWhenMissing,
 } from './shopee-sync-diff.util';
 import { resolveShopeeImageUrl } from './shopee-image-resolver';
+import { resolveShopeeVideoUrl } from './shopee-video-resolver';
 import { diffImageIds, diffProductFields, diffVariants } from './shopee-sync-preview.util';
 import { ShopeeCatalogPublishService } from './shopee-catalog-publish.service';
 
@@ -287,6 +288,7 @@ export class ShopeeSyncService {
         ...img,
         sourceUrl: resolveShopeeImageUrl(img.sourceImageId, img.sourceUrl, cfg.imageUrlTemplate),
       })),
+      videoUrl: resolveShopeeVideoUrl(product.videoId, cfg.videoUrlTemplate),
       variants: product.variants.map((v) => ({
         ...v,
         imageUrl: v.imageId ? resolveShopeeImageUrl(v.imageId, v.imageUrl ?? '', cfg.imageUrlTemplate) : null,
@@ -562,6 +564,8 @@ export class ShopeeSyncService {
             parentSku: payload.parentSku ?? null,
             coverImageId: payload.coverImageId ?? null,
             coverImageUrl: cover?.sourceUrl ?? null,
+            videoId: payload.videoId ?? null,
+            videoUrl: payload.videoUrl ?? null,
             description: payload.description ?? null,
             descriptionType: payload.descriptionType ?? null,
             categoryIds: payload.categoryIds,

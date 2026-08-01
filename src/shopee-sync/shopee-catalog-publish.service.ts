@@ -125,6 +125,7 @@ export class ShopeeCatalogPublishService {
           name: marketplaceProduct.name,
           category: categoryId.toString(),
           images: galleryImages,
+          video: marketplaceProduct.videoUrl ?? undefined,
           colors,
           sizes,
           socials: [shopeeSocial],
@@ -151,6 +152,7 @@ export class ShopeeCatalogPublishService {
       const updateDto: UpdateProductDto = {
         name: marketplaceProduct.name,
         images: galleryImages,
+        video: marketplaceProduct.videoUrl ?? undefined,
         colors,
         sizes,
         socials: mergeShopeeSocial(existing.socials ?? [], shopeeSocial),

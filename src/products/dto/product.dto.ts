@@ -45,6 +45,8 @@ export class CreateProductDto {
   @IsString({ each: true })
   images?: string[];
 
+  @IsOptional() @IsString() @MaxLength(2000) video?: string;
+
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
@@ -77,6 +79,7 @@ export class UpdateProductDto {
   @IsOptional() @IsString() @MinLength(2) @MaxLength(200) name?: string;
   @IsOptional() @IsMongoId() category?: string;
   @IsOptional() @IsArray() @IsString({ each: true }) images?: string[];
+  @IsOptional() @IsString() @MaxLength(2000) video?: string;
 
   @IsOptional()
   @IsArray()

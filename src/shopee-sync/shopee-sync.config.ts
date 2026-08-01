@@ -10,6 +10,9 @@ export interface ShopeeSyncConfigSnapshot {
   maxPages: number;
   maxProducts: number;
   imageUrlTemplate: string;
+  /** `{video_id}` placeholder — see shopee-video-resolver.ts. Unlike images, there is no
+   * "trust the client's own URL" fallback for video: it is always rebuilt from this template. */
+  videoUrlTemplate: string;
   uploadTokenTtlMinutes: number;
   shopId: string;
   /** `{shop_id}`/`{product_id}` placeholders — used to fill `Product.socials` (SHOPEE entry)
@@ -46,6 +49,7 @@ export class ShopeeSyncConfigService {
         'SHOPEE_IMAGE_URL_TEMPLATE',
         'https://down-vn.img.susercontent.com/file/{image_id}',
       ),
+      videoUrlTemplate: this.config.get<string>('SHOPEE_VIDEO_URL_TEMPLATE', 'https://cvf.shopee.vn/file/{video_id}'),
       uploadTokenTtlMinutes: Number(this.config.get<string>('SHOPEE_SYNC_UPLOAD_TOKEN_TTL_MINUTES', '25')),
       shopId: this.config.get<string>('SHOPEE_SYNC_DEFAULT_SHOP_ID', 'default'),
       productUrlTemplate: this.config.get<string>(

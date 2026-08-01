@@ -41,6 +41,9 @@ export class Product {
   @Prop({ type: [String], default: [] })
   images: string[];
 
+  /** Optional product video URL (e.g. synced from Shopee's `video_list`). */
+  @Prop() video?: string;
+
   /** Selectable color variants. Empty = product has no color options (default behavior). */
   @Prop({ type: [ProductColorSchema], default: [] })
   colors: ProductColor[];

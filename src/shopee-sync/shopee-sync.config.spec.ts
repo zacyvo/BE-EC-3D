@@ -17,6 +17,7 @@ describe('ShopeeSyncConfigService', () => {
     expect(cfg.maxPages).toBe(30);
     expect(cfg.maxProducts).toBe(5000);
     expect(cfg.imageUrlTemplate).toContain('{image_id}');
+    expect(cfg.videoUrlTemplate).toContain('{video_id}');
   });
 
   it('is disabled when SHOPEE_SYNC_ENABLED=false (kill switch)', () => {

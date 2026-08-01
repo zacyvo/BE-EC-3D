@@ -74,6 +74,14 @@ export class MarketplaceProduct {
   @Prop({ type: String, default: null })
   coverImageUrl: string | null;
 
+  /** Raw Shopee `video_list[0].video_id` (a CDN path, not a bare id) — see shopee-video-resolver.ts. */
+  @Prop({ type: String, default: null })
+  videoId: string | null;
+
+  /** Always rebuilt server-side from videoId + SHOPEE_VIDEO_URL_TEMPLATE — never trusts a client-supplied URL. */
+  @Prop({ type: String, default: null })
+  videoUrl: string | null;
+
   @Prop({ type: String, default: null })
   description: string | null;
 

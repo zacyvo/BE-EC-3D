@@ -128,6 +128,16 @@ export class MarketplaceProductUploadDto {
   @IsOptional() @IsString() @MaxLength(200)
   coverImageId?: string | null;
 
+  /** Raw Shopee `video_list[0].video_id` — a CDN path (contains `/`), only safe path
+   * characters allowed; the only source of truth for the video, never a full/foreign URL. */
+  @IsOptional() @Matches(/^[A-Za-z0-9/._-]*$/) @MaxLength(500)
+  videoId?: string | null;
+
+  /** Always recomputed server-side from videoId (see hardenProductPayload) — declared
+   * here only so the DTO shape matches the staged payload 1:1, like variants[].effectivePrice. */
+  @IsOptional() @IsString() @MaxLength(2000)
+  videoUrl?: string | null;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => MarketplaceImageUploadDto)

@@ -122,7 +122,29 @@ describe('MarketplaceProductUploadDto', () => {
     const errors = await validate(dto, VALIDATION_OPTIONS);
     expect(errors).toHaveLength(0);
   });
+
+  it('accepts a well-formed videoId (a CDN path containing "/")', async () => {
+    const dto = plainToInstance(
+      MarketplaceProductUploadDto,
+      validProductPayload({ videoId: 'api/v4/11110107/mms/vn-11110107-6va08-mr1ciuzjh7nwd2.16000081784879360.mp4' }),
+    );
+    const errors = await validate(dto, VALIDATION_OPTIONS);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('accepts a payload with no videoId (product has no video)', async () => {
+    const dto = plainToInstance(MarketplaceProductUploadDto, validProductPayload({ videoId: null }));
+    const errors = await validate(dto, VALIDATION_OPTIONS);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('rejects a videoId containing characters outside a safe CDN path (e.g. a foreign URL)', async () => {
+    const dto = plainToInstance(MarketplaceProductUploadDto, validProductPayload({ videoId: 'https://evil.com/x' }));
+    const errors = await validate(dto, VALIDATION_OPTIONS);
+    expect(errors.some((e) => e.property === 'videoId')).toBe(true);
+  });
 });
+
 
 describe('UploadProductDetailDto', () => {
   it('accepts a failure report without a product payload', async () => {
