@@ -14,7 +14,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ShopeeSyncService } from './shopee-sync.service';
-import { CreateSyncSessionDto } from './dto/create-sync-session.dto';
+import { CreateManualSyncSessionDto, CreateSyncSessionDto } from './dto/create-sync-session.dto';
 import { ListSnapshotDto } from './dto/list-snapshot.dto';
 import { UploadProductDetailDto } from './dto/marketplace-product-upload.dto';
 import { ShopeeUploadTokenGuard, UploadSession } from './guards/shopee-upload-token.guard';
@@ -55,6 +55,14 @@ export class AdminIntegrationsShopeeController {
   @Roles(...STAFF_WRITE_ROLES)
   create(@Body() dto: CreateSyncSessionDto, @CurrentUser() staff: StaffPrincipal) {
     return this.service.createSession(dto, staff.sub, staff.role === StaffRole.SUPER_ADMIN);
+  }
+
+  /** "Đồng bộ theo Product ID" — admin supplies exact Shopee product_id(s), no List phase. */
+  @Post('sync-sessions/manual')
+  @UseGuards(JwtStaffGuard, RolesGuard)
+  @Roles(...STAFF_WRITE_ROLES)
+  createManual(@Body() dto: CreateManualSyncSessionDto, @CurrentUser() staff: StaffPrincipal) {
+    return this.service.createManualSession(dto, staff.sub);
   }
 
   /** Called directly by the Chrome Extension's service worker — upload-token auth, not staff JWT. */

@@ -11,11 +11,11 @@ import {
 import { MarketplaceImageType, MarketplaceProductImage, MarketplaceProductImageDocument } from './schemas/marketplace-product-image.schema';
 import { MarketplaceVariant, MarketplaceVariantDocument } from './schemas/marketplace-variant.schema';
 import { ShopeeSyncItem, ShopeeSyncItemDocument, ShopeeSyncItemStatus } from './schemas/shopee-sync-item.schema';
-import { ShopeeSyncSession, ShopeeSyncSessionDocument, ShopeeSyncSessionStatus } from './schemas/shopee-sync-session.schema';
-import { CreateSyncSessionDto } from './dto/create-sync-session.dto';
+import { ShopeeSyncMode, ShopeeSyncSession, ShopeeSyncSessionDocument, ShopeeSyncSessionStatus } from './schemas/shopee-sync-session.schema';
+import { CreateManualSyncSessionDto, CreateSyncSessionDto } from './dto/create-sync-session.dto';
 import { ListSnapshotDto } from './dto/list-snapshot.dto';
 import { MarketplaceProductUploadDto, UploadProductDetailDto } from './dto/marketplace-product-upload.dto';
-import { ShopeeSyncConfigService } from './shopee-sync.config';
+import { ShopeeSyncConfigService, ShopeeSyncConfigSnapshot } from './shopee-sync.config';
 import { ShopeeSyncErrorCode, SHOPEE_SYNC_AUDIT_MODULE } from './shopee-sync.constants';
 import { ShopeeSyncException } from './shopee-sync.exceptions';
 import { generateUploadToken } from './shopee-sync-token.util';
@@ -23,6 +23,7 @@ import {
   assertSnapshotIntegrity,
   computeEffectivePrice,
   computeSourceHash,
+  decideManualSyncStatus,
   decideProductIndexStatus,
   nextSyncStatusWhenMissing,
 } from './shopee-sync-diff.util';
@@ -37,6 +38,11 @@ export interface CreateSessionResult {
   expiresAt: string;
   shopId: string;
   config: { pageSize: number; maxPages: number; maxProducts: number; adapterVersion: string; imageUrlTemplate: string };
+}
+
+export interface CreateManualSessionResult extends CreateSessionResult {
+  /** Same list the admin submitted, deduped — the extension fetches Detail for exactly these ids. */
+  detailProductIds: string[];
 }
 
 @Injectable()
@@ -61,7 +67,8 @@ export class ShopeeSyncService {
 
   // ── Session lifecycle ──────────────────────────────────────────────────────
 
-  async createSession(dto: CreateSyncSessionDto, adminId: string, isSuperAdmin: boolean): Promise<CreateSessionResult> {
+  /** Shared kill-switch + minimum-extension-version gate for both FULL and MANUAL session creation. */
+  private assertSyncAllowed(extensionVersion: string): ShopeeSyncConfigSnapshot {
     const cfg = this.configService.get();
 
     if (!cfg.enabled) {
@@ -72,13 +79,19 @@ export class ShopeeSyncService {
       );
     }
 
-    if (!this.configService.isExtensionVersionSupported(dto.extensionVersion)) {
+    if (!this.configService.isExtensionVersionSupported(extensionVersion)) {
       throw new ShopeeSyncException(
         ShopeeSyncErrorCode.SHOPEE_SYNC_EXTENSION_OUTDATED,
         `Vui lòng cập nhật Chrome Extension lên phiên bản tối thiểu ${cfg.minimumExtensionVersion}`,
         426, // Upgrade Required — not present in this @nestjs/common version's HttpStatus enum
       );
     }
+
+    return cfg;
+  }
+
+  async createSession(dto: CreateSyncSessionDto, adminId: string, isSuperAdmin: boolean): Promise<CreateSessionResult> {
+    const cfg = this.assertSyncAllowed(dto.extensionVersion);
 
     if (dto.forceFullSync && !isSuperAdmin) {
       throw new ForbiddenException('Chỉ Super Admin được chọn Force Full Sync');
@@ -92,6 +105,7 @@ export class ShopeeSyncService {
       shopId: cfg.shopId,
       adminId: new Types.ObjectId(adminId),
       status: ShopeeSyncSessionStatus.CREATED,
+      syncMode: ShopeeSyncMode.FULL,
       forceFullSync: !!dto.forceFullSync,
       uploadTokenHash: tokenHash,
       uploadTokenExpiresAt: expiresAt,
@@ -114,6 +128,74 @@ export class ShopeeSyncService {
       },
     };
   }
+
+  /**
+   * "Đồng bộ theo Product ID" — admin supplies exact Shopee product_id(s) directly,
+   * bypassing the List phase entirely. The backend already knows exactly which ids
+   * need a Detail fetch, so the session is created straight into
+   * LIST_SNAPSHOT_UPLOADED (mirroring the point processListSnapshot() would normally
+   * reach) and `pendingDetailProductIds`/ShopeeSyncItem rows are staged up front.
+   */
+  async createManualSession(dto: CreateManualSyncSessionDto, adminId: string): Promise<CreateManualSessionResult> {
+    const cfg = this.assertSyncAllowed(dto.extensionVersion);
+
+    const productIds = Array.from(new Set(dto.productIds));
+
+    const existingProducts = await this.productModel
+      .find({ channel: MarketplaceChannel.SHOPEE, shopId: cfg.shopId, externalProductId: { $in: productIds } })
+      .select('externalProductId')
+      .lean()
+      .exec();
+    const existingIds = new Set(existingProducts.map((p) => p.externalProductId));
+
+    const { token, tokenHash } = generateUploadToken();
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + cfg.uploadTokenTtlMinutes * 60_000);
+
+    const session = await this.sessionModel.create({
+      shopId: cfg.shopId,
+      adminId: new Types.ObjectId(adminId),
+      status: ShopeeSyncSessionStatus.LIST_SNAPSHOT_UPLOADED,
+      syncMode: ShopeeSyncMode.MANUAL,
+      forceFullSync: false,
+      uploadTokenHash: tokenHash,
+      uploadTokenExpiresAt: expiresAt,
+      expectedTotal: productIds.length,
+      collectedTotal: productIds.length,
+      newCount: productIds.filter((id) => !existingIds.has(id)).length,
+      changedCount: productIds.filter((id) => existingIds.has(id)).length,
+      pendingDetailProductIds: productIds,
+      extensionVersion: dto.extensionVersion,
+      adapterVersion: cfg.adapterVersion,
+      startedAt: now,
+    });
+
+    await this.itemModel.insertMany(
+      productIds.map((externalProductId) => ({
+        syncSessionId: session._id,
+        externalProductId,
+        status: decideManualSyncStatus(existingIds.has(externalProductId)),
+        sourceModifiedAt: 0, // sentinel: manual sync never diffs on modifyTime, see decideManualSyncStatus()
+        detailUploaded: false,
+      })),
+    );
+
+    return {
+      id: session._id.toString(),
+      uploadToken: token,
+      expiresAt: expiresAt.toISOString(),
+      shopId: cfg.shopId,
+      config: {
+        pageSize: cfg.pageSize,
+        maxPages: cfg.maxPages,
+        maxProducts: cfg.maxProducts,
+        adapterVersion: cfg.adapterVersion,
+        imageUrlTemplate: cfg.imageUrlTemplate,
+      },
+      detailProductIds: productIds,
+    };
+  }
+
 
   async getLatestSession(shopId?: string) {
     const filter = shopId ? { shopId } : {};
@@ -381,16 +463,22 @@ export class ShopeeSyncService {
     });
 
     // Products previously known for this shop but absent from the current full snapshot.
-    const missingProducts = await this.productModel
-      .find({
-        channel: MarketplaceChannel.SHOPEE,
-        shopId: session.shopId,
-        externalProductId: { $nin: seenExternalIds },
-        syncStatus: { $ne: MarketplaceProductSyncStatus.ARCHIVED },
-      })
-      .select('externalProductId name syncStatus')
-      .lean()
-      .exec();
+    // MANUAL sessions only ever cover a handful of admin-picked ids — never the whole
+    // catalog — so missing-product detection MUST be skipped entirely for them, or every
+    // other already-synced product would be false-positively flagged as no-longer-on-Shopee.
+    const missingProducts =
+      session.syncMode === ShopeeSyncMode.MANUAL
+        ? []
+        : await this.productModel
+            .find({
+              channel: MarketplaceChannel.SHOPEE,
+              shopId: session.shopId,
+              externalProductId: { $nin: seenExternalIds },
+              syncStatus: { $ne: MarketplaceProductSyncStatus.ARCHIVED },
+            })
+            .select('externalProductId name syncStatus')
+            .lean()
+            .exec();
 
     const missingEntries = missingProducts.map((p) => ({
       externalProductId: p.externalProductId,
@@ -459,15 +547,21 @@ export class ShopeeSyncService {
           }
         }
 
-        const missingProducts = await this.productModel
-          .find({
-            channel: MarketplaceChannel.SHOPEE,
-            shopId: session.shopId,
-            externalProductId: { $nin: seenExternalIds },
-            syncStatus: { $ne: MarketplaceProductSyncStatus.ARCHIVED },
-          })
-          .session(mongoSession)
-          .exec();
+        // Same MANUAL guard as preview() — a targeted product_id sync must never mark
+        // every other existing product as missing just because it's absent from this
+        // tiny, deliberately-partial snapshot.
+        const missingProducts =
+          session.syncMode === ShopeeSyncMode.MANUAL
+            ? []
+            : await this.productModel
+                .find({
+                  channel: MarketplaceChannel.SHOPEE,
+                  shopId: session.shopId,
+                  externalProductId: { $nin: seenExternalIds },
+                  syncStatus: { $ne: MarketplaceProductSyncStatus.ARCHIVED },
+                })
+                .session(mongoSession)
+                .exec();
 
         for (const product of missingProducts) {
           const nextStatus = nextSyncStatusWhenMissing(product.syncStatus);

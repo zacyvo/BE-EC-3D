@@ -24,6 +24,21 @@ export enum ShopeeSyncSessionStatus {
   EXPIRED = 'EXPIRED',
 }
 
+/**
+ * FULL   — the "usual" flow: extension pages through Shopee's whole product List,
+ *          uploads the list-snapshot, and any previously-synced product absent from
+ *          that snapshot is eligible to be marked MISSING (see ShopeeSyncService.preview/commit).
+ * MANUAL — admin supplies exact Shopee product_id(s) to fetch/sync (no List phase at
+ *          all). Missing-product detection MUST be skipped entirely for these sessions —
+ *          a snapshot of 1-2 explicitly-picked ids must never be treated as "the full
+ *          catalog" or every other already-synced product would be false-positively
+ *          flagged as no-longer-on-Shopee.
+ */
+export enum ShopeeSyncMode {
+  FULL = 'FULL',
+  MANUAL = 'MANUAL',
+}
+
 @Schema({ timestamps: true, collection: 'shopee_sync_sessions' })
 export class ShopeeSyncSession {
   _id: Types.ObjectId;
@@ -36,6 +51,9 @@ export class ShopeeSyncSession {
 
   @Prop({ required: true, enum: Object.values(ShopeeSyncSessionStatus), type: String, default: ShopeeSyncSessionStatus.CREATED })
   status: ShopeeSyncSessionStatus;
+
+  @Prop({ required: true, enum: Object.values(ShopeeSyncMode), type: String, default: ShopeeSyncMode.FULL })
+  syncMode: ShopeeSyncMode;
 
   @Prop({ default: false })
   forceFullSync: boolean;

@@ -30,6 +30,22 @@ export function decideProductIndexStatus(
   return ShopeeSyncItemStatus.UNCHANGED;
 }
 
+/**
+ * Decides NEW/CHANGED for a MANUAL sync (admin-supplied product_id, no List phase).
+ *
+ * Deliberately does NOT reuse `decideProductIndexStatus`'s modify-time comparison:
+ * manually-synced items have no List `modify_time` (Detail API doesn't expose it),
+ * so `sourceModifiedAt` is persisted as the sentinel `0`. Comparing `0 !== 0` on a
+ * *second* manual sync of the same product would wrongly evaluate to UNCHANGED and
+ * silently skip the refresh the admin explicitly asked for. A manual sync always
+ * means "go fetch this product now", so it is always NEW or CHANGED, never UNCHANGED.
+ */
+export function decideManualSyncStatus(
+  alreadyExists: boolean,
+): ShopeeSyncItemStatus.NEW | ShopeeSyncItemStatus.CHANGED {
+  return alreadyExists ? ShopeeSyncItemStatus.CHANGED : ShopeeSyncItemStatus.NEW;
+}
+
 /** Section 14: promotionPrice never overwrites normalPrice; effectivePrice is derived. */
 export function computeEffectivePrice(normalPrice: string, promotionPrice: string): string {
   const promo = Number(promotionPrice);

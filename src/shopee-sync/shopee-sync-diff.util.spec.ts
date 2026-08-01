@@ -5,6 +5,7 @@ import {
   assertSnapshotIntegrity,
   computeEffectivePrice,
   computeSourceHash,
+  decideManualSyncStatus,
   decideProductIndexStatus,
   nextSyncStatusWhenMissing,
 } from './shopee-sync-diff.util';
@@ -80,6 +81,21 @@ describe('nextSyncStatusWhenMissing (test #25 — never hard delete)', () => {
     expect(nextSyncStatusWhenMissing(MarketplaceProductSyncStatus.ARCHIVE_CANDIDATE)).toBe(
       MarketplaceProductSyncStatus.ARCHIVE_CANDIDATE,
     );
+  });
+});
+
+describe('decideManualSyncStatus (manual sync-by-product_id)', () => {
+  it('marks a not-yet-synced product as NEW', () => {
+    expect(decideManualSyncStatus(false)).toBe(ShopeeSyncItemStatus.NEW);
+  });
+
+  it('marks an already-synced product as CHANGED so the refresh is never skipped', () => {
+    expect(decideManualSyncStatus(true)).toBe(ShopeeSyncItemStatus.CHANGED);
+  });
+
+  it('never returns UNCHANGED, unlike decideProductIndexStatus — manual sync always re-fetches (sourceModifiedAt=0 sentinel would otherwise false-positive on repeat syncs)', () => {
+    expect(decideManualSyncStatus(true)).not.toBe(ShopeeSyncItemStatus.UNCHANGED);
+    expect(decideManualSyncStatus(false)).not.toBe(ShopeeSyncItemStatus.UNCHANGED);
   });
 });
 
