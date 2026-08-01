@@ -15,10 +15,15 @@ export interface ShopeeSyncConfigSnapshot {
   videoUrlTemplate: string;
   uploadTokenTtlMinutes: number;
   shopId: string;
-  /** `{shop_id}`/`{product_id}` placeholders — used to fill `Product.socials` (SHOPEE entry)
-   * when publishing to the real catalog. Not verified against a real Shopee shop; edit here
-   * if the public product link format turns out to be different. */
+  /** `{shop_id}`/`{product_id}`/`{product_slug}` placeholders — used to fill `Product.socials`
+   * (SHOPEE entry) when publishing to the real catalog. Confirmed real format:
+   * `https://shopee.vn/{product_slug}-i.{shop_id}.{product_id}`. */
   productUrlTemplate: string;
+  /** Shopee's own PUBLIC numeric shop id (as seen in shopee.vn product URLs) — used ONLY
+   * to fill `productUrlTemplate`'s `{shop_id}`. Deliberately separate from `shopId` above
+   * (the internal sync-partition key): changing this can never re-partition or duplicate
+   * already-synced `marketplace_products`. */
+  publicShopId: string;
 }
 
 /**
@@ -54,8 +59,9 @@ export class ShopeeSyncConfigService {
       shopId: this.config.get<string>('SHOPEE_SYNC_DEFAULT_SHOP_ID', 'default'),
       productUrlTemplate: this.config.get<string>(
         'SHOPEE_SYNC_PRODUCT_URL_TEMPLATE',
-        'https://shopee.vn/product/{shop_id}/{product_id}',
+        'https://shopee.vn/{product_slug}-i.{shop_id}.{product_id}',
       ),
+      publicShopId: this.config.get<string>('SHOPEE_SYNC_PUBLIC_SHOP_ID', '76624421'),
     };
   }
 

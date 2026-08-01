@@ -54,10 +54,17 @@ describe('buildColorsAndSizes', () => {
   });
 });
 
-describe('buildShopeeSocialLink', () => {
-  it('fills the shop_id/product_id placeholders', () => {
-    const url = buildShopeeSocialLink('12345', '53060703063', 'https://shopee.vn/product/{shop_id}/{product_id}');
-    expect(url).toBe('https://shopee.vn/product/12345/53060703063');
+describe('buildShopeeSocialLink (real Shopee URL format: https://shopee.vn/{slug}-i.{shop_id}.{product_id})', () => {
+  const TEMPLATE = 'https://shopee.vn/{product_slug}-i.{shop_id}.{product_id}';
+
+  it('fills product_slug/shop_id/product_id from the product name + confirmed public shop id', () => {
+    const url = buildShopeeSocialLink('76624421', '53060703063', 'Đèn bàn cổ điển', TEMPLATE);
+    expect(url).toBe('https://shopee.vn/djen-ban-co-djien-i.76624421.53060703063');
+  });
+
+  it('falls back to a generic slug when the product name has no sluggable characters', () => {
+    const url = buildShopeeSocialLink('76624421', '1', '!!!', TEMPLATE);
+    expect(url).toBe('https://shopee.vn/san-pham-i.76624421.1');
   });
 });
 

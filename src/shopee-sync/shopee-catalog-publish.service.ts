@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import slugify from 'slugify';
 import { ProductsService } from '../products/products.service';
 import { CreateProductDto, ProductColorDto, ProductSocialDto, UpdateProductDto } from '../products/dto/product.dto';
 import { SocialPlatform } from '../products/schemas/product.schema';
@@ -44,10 +45,20 @@ export function buildColorsAndSizes(
   return { colors, sizes };
 }
 
-/** Builds the Shopee entry for `Product.socials` — link format is configurable
- * (`SHOPEE_SYNC_PRODUCT_URL_TEMPLATE`), not verified against a real shop. */
-export function buildShopeeSocialLink(shopId: string, externalProductId: string, template: string): string {
-  return template.replace('{shop_id}', encodeURIComponent(shopId)).replace('{product_id}', encodeURIComponent(externalProductId));
+/** Builds the Shopee entry for `Product.socials` — real Shopee URL format confirmed
+ * by the shop owner: `https://shopee.vn/{product_slug}-i.{shop_id}.{product_id}`.
+ * `shopId` here is Shopee's own PUBLIC numeric shop id (`ShopeeSyncConfigSnapshot.
+ * publicShopId`) — deliberately NOT the internal sync-partition `shopId`, so the link
+ * stays correct regardless of that value. The slug text itself is cosmetic only
+ * (Shopee resolves the product from the `-i.{shop_id}.{product_id}` suffix alone), so
+ * any reasonable ASCII slug works — falls back to `san-pham` if the name has no
+ * sluggable characters at all. */
+export function buildShopeeSocialLink(shopId: string, externalProductId: string, productName: string, template: string): string {
+  const productSlug = slugify(productName, { lower: true, strict: true }) || 'san-pham';
+  return template
+    .replace('{product_slug}', productSlug)
+    .replace('{shop_id}', encodeURIComponent(shopId))
+    .replace('{product_id}', encodeURIComponent(externalProductId));
 }
 
 /** Replaces any existing SHOPEE entry with the fresh one, leaving every other
@@ -116,7 +127,7 @@ export class ShopeeCatalogPublishService {
       const shopeeSocial: ProductSocialDto = {
         name: SocialPlatform.SHOPEE,
         id: externalProductId,
-        link: buildShopeeSocialLink(marketplaceProduct.shopId, externalProductId, cfg.productUrlTemplate),
+        link: buildShopeeSocialLink(cfg.publicShopId, externalProductId, marketplaceProduct.name, cfg.productUrlTemplate),
       };
 
       if (!marketplaceProduct.internalProductId) {

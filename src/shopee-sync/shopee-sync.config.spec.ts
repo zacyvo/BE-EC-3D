@@ -18,6 +18,8 @@ describe('ShopeeSyncConfigService', () => {
     expect(cfg.maxProducts).toBe(5000);
     expect(cfg.imageUrlTemplate).toContain('{image_id}');
     expect(cfg.videoUrlTemplate).toContain('{video_id}');
+    expect(cfg.productUrlTemplate).toBe('https://shopee.vn/{product_slug}-i.{shop_id}.{product_id}');
+    expect(cfg.publicShopId).toBe('76624421');
   });
 
   it('is disabled when SHOPEE_SYNC_ENABLED=false (kill switch)', () => {
