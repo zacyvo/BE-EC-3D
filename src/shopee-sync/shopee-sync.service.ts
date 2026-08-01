@@ -518,6 +518,10 @@ export class ShopeeSyncService {
 
     const mongoSession = await this.connection.startSession();
     const publishableExternalIds: string[] = [];
+    // Detail-fetch failures (Shopee call itself failed/schema mismatch) — distinct from
+    // catalog-publish failures below. Previously only counted (`session.failedCount`),
+    // never surfaced anywhere the admin could actually read the reason.
+    const detailFailures: { externalProductId: string; errorCode: string | null; errorMessage: string | null }[] = [];
     try {
       await mongoSession.withTransaction(async () => {
         const items = await this.itemModel.find({ syncSessionId: session._id }).session(mongoSession).exec();
@@ -529,6 +533,7 @@ export class ShopeeSyncService {
             await this.commitOneProduct(item.productPayload as unknown as MarketplaceProductUploadDto, session, mongoSession);
             publishableExternalIds.push(item.externalProductId);
           } else if (item.status === ShopeeSyncItemStatus.FAILED) {
+            detailFailures.push({ externalProductId: item.externalProductId, errorCode: item.errorCode, errorMessage: item.errorMessage });
             await this.productModel
               .updateOne(
                 { channel: MarketplaceChannel.SHOPEE, shopId: session.shopId, externalProductId: item.externalProductId },
@@ -590,6 +595,7 @@ export class ShopeeSyncService {
     // back the (already-committed) marketplace mirror data or block the others.
     let publishedCount = 0;
     let publishFailedCount = 0;
+    const publishErrors: { externalProductId: string; error: string }[] = [];
     if (publishableExternalIds.length > 0) {
       const products = await this.productModel
         .find({ channel: MarketplaceChannel.SHOPEE, shopId: session.shopId, externalProductId: { $in: publishableExternalIds } })
@@ -603,8 +609,10 @@ export class ShopeeSyncService {
         const productVariants = variants.filter((v) => v.marketplaceProductId.equals(product._id));
         const productImages = images.filter((img) => img.marketplaceProductId.equals(product._id));
         const result = await this.catalogPublishService.publishProduct(product, productVariants, productImages, adminId);
-        if (result.action === 'skipped') publishFailedCount += 1;
-        else publishedCount += 1;
+        if (result.action === 'skipped') {
+          publishFailedCount += 1;
+          publishErrors.push({ externalProductId: result.externalProductId, error: result.error ?? 'Lỗi không xác định' });
+        } else publishedCount += 1;
       }
     }
 
@@ -622,6 +630,10 @@ export class ShopeeSyncService {
         failedCount: session.failedCount,
         publishedCount,
         publishFailedCount,
+        // Previously only counts were logged — the actual reason was discarded, leaving
+        // admins with no way to see WHY something failed from the Audit Logs page.
+        detailFailures: detailFailures.length > 0 ? detailFailures : undefined,
+        publishErrors: publishErrors.length > 0 ? publishErrors : undefined,
       },
     });
 
@@ -631,11 +643,13 @@ export class ShopeeSyncService {
       committedAt: session.committedAt,
       publishedCount,
       publishFailedCount,
+      publishErrors,
       newCount: session.newCount,
       changedCount: session.changedCount,
       unchangedCount: session.unchangedCount,
       missingCount: session.missingCount,
       failedCount: session.failedCount,
+      detailFailures,
     };
   }
 
