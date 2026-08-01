@@ -7,6 +7,7 @@ const VALIDATION_OPTIONS = { whitelist: true, forbidNonWhitelisted: true };
 
 function validProductPayload(overrides: Record<string, unknown> = {}) {
   return {
+    source: 'SHOPEE',
     externalProductId: '53060703063',
     name: 'Đèn bàn cổ điển',
     rawStatus: 1,

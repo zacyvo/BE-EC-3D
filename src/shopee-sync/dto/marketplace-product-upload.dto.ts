@@ -4,6 +4,7 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsNumber,
@@ -96,6 +97,11 @@ export class MarketplaceVariantUploadDto {
 }
 
 export class MarketplaceProductUploadDto {
+  /** Only Shopee today — validated (not just documented) so a future adapter can't silently
+   * upload under the wrong channel label. */
+  @IsIn(['SHOPEE'])
+  source: 'SHOPEE';
+
   /** Must equal the `:productId` route param — checked in the service (SHOPEE_PRODUCT_ID_MISMATCH). */
   @IsString() @IsNotEmpty()
   externalProductId: string;
