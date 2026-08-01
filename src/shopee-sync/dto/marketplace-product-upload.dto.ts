@@ -29,6 +29,14 @@ export class MarketplaceDimensionDto {
   @IsOptional() @IsString() height?: string | null;
 }
 
+export class TierVariationUploadDto {
+  @IsString() @IsNotEmpty() @MaxLength(200)
+  name: string;
+
+  @IsArray() @IsString({ each: true })
+  options: string[];
+}
+
 export class MarketplaceImageUploadDto {
   @IsString() @IsNotEmpty() @MaxLength(200)
   sourceImageId: string;
@@ -166,6 +174,14 @@ export class MarketplaceProductUploadDto {
   @ValidateNested()
   @Type(() => MarketplaceDimensionDto)
   dimension: MarketplaceDimensionDto;
+
+  /** Shopee variation dimensions (e.g. "Màu sắc"/"Kích thước") — used only to publish
+   * colors/sizes to the real catalog; empty for products with no variation. */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => TierVariationUploadDto)
+  tierVariations?: TierVariationUploadDto[];
 
   @IsBoolean()
   preOrder: boolean;

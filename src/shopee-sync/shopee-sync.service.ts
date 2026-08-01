@@ -28,6 +28,7 @@ import {
 } from './shopee-sync-diff.util';
 import { resolveShopeeImageUrl } from './shopee-image-resolver';
 import { diffImageIds, diffProductFields, diffVariants } from './shopee-sync-preview.util';
+import { ShopeeCatalogPublishService } from './shopee-catalog-publish.service';
 
 export interface CreateSessionResult {
   id: string;
@@ -48,6 +49,7 @@ export class ShopeeSyncService {
     @InjectConnection() private readonly connection: Connection,
     private readonly configService: ShopeeSyncConfigService,
     private readonly auditService: AuditService,
+    private readonly catalogPublishService: ShopeeCatalogPublishService,
   ) {}
 
   // ── Config ──────────────────────────────────────────────────────────────────
@@ -425,6 +427,7 @@ export class ShopeeSyncService {
     }
 
     const mongoSession = await this.connection.startSession();
+    const publishableExternalIds: string[] = [];
     try {
       await mongoSession.withTransaction(async () => {
         const items = await this.itemModel.find({ syncSessionId: session._id }).session(mongoSession).exec();
@@ -434,6 +437,7 @@ export class ShopeeSyncService {
           if (item.status === ShopeeSyncItemStatus.NEW || item.status === ShopeeSyncItemStatus.CHANGED) {
             if (!item.productPayload) continue; // detail never actually arrived — leave as failed-equivalent, retried next sync
             await this.commitOneProduct(item.productPayload as unknown as MarketplaceProductUploadDto, session, mongoSession);
+            publishableExternalIds.push(item.externalProductId);
           } else if (item.status === ShopeeSyncItemStatus.FAILED) {
             await this.productModel
               .updateOne(
@@ -484,6 +488,30 @@ export class ShopeeSyncService {
       await mongoSession.endSession();
     }
 
+    // Publish to the real catalog AFTER the mirror transaction has committed —
+    // ProductsService calls don't participate in `mongoSession`, so this stays a
+    // separate, best-effort phase: one product failing to publish must never roll
+    // back the (already-committed) marketplace mirror data or block the others.
+    let publishedCount = 0;
+    let publishFailedCount = 0;
+    if (publishableExternalIds.length > 0) {
+      const products = await this.productModel
+        .find({ channel: MarketplaceChannel.SHOPEE, shopId: session.shopId, externalProductId: { $in: publishableExternalIds } })
+        .exec();
+      const productIds = products.map((p) => p._id);
+      const [variants, images] = await Promise.all([
+        this.variantModel.find({ marketplaceProductId: { $in: productIds } }).exec(),
+        this.imageModel.find({ marketplaceProductId: { $in: productIds } }).exec(),
+      ]);
+      for (const product of products) {
+        const productVariants = variants.filter((v) => v.marketplaceProductId.equals(product._id));
+        const productImages = images.filter((img) => img.marketplaceProductId.equals(product._id));
+        const result = await this.catalogPublishService.publishProduct(product, productVariants, productImages, adminId);
+        if (result.action === 'skipped') publishFailedCount += 1;
+        else publishedCount += 1;
+      }
+    }
+
     await this.auditService.log({
       actorId: adminId,
       actorType: 'staff',
@@ -496,6 +524,8 @@ export class ShopeeSyncService {
         unchangedCount: session.unchangedCount,
         missingCount: session.missingCount,
         failedCount: session.failedCount,
+        publishedCount,
+        publishFailedCount,
       },
     });
 
@@ -503,6 +533,8 @@ export class ShopeeSyncService {
       id: session._id.toString(),
       status: session.status,
       committedAt: session.committedAt,
+      publishedCount,
+      publishFailedCount,
       newCount: session.newCount,
       changedCount: session.changedCount,
       unchangedCount: session.unchangedCount,
@@ -550,6 +582,7 @@ export class ShopeeSyncService {
             weightValue: payload.weightValue ?? null,
             weightUnit: payload.weightUnit ?? null,
             dimension: payload.dimension,
+            tierVariations: payload.tierVariations ?? [],
             preOrder: payload.preOrder,
             daysToShip: payload.daysToShip ?? null,
             sourceCreatedAt: payload.sourceCreatedAt,

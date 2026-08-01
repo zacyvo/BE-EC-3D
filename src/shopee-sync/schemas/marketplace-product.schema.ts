@@ -26,6 +26,16 @@ export class MarketplaceDimension {
 }
 export const MarketplaceDimensionSchema = SchemaFactory.createForClass(MarketplaceDimension);
 
+/** One Shopee variation dimension (e.g. "Màu sắc" → ["Đỏ","Xanh"]) — `MarketplaceVariant.tierIndexes[n]`
+ * indexes into dimension `n`'s `options`. Needed to publish colors/sizes to the real catalog
+ * (see `ShopeeCatalogPublishService`); Shopee caps this at 2 dimensions in practice. */
+@Schema({ _id: false })
+export class MarketplaceTierVariation {
+  @Prop({ required: true, trim: true }) name: string;
+  @Prop({ type: [String], default: [] }) options: string[];
+}
+export const MarketplaceTierVariationSchema = SchemaFactory.createForClass(MarketplaceTierVariation);
+
 /**
  * Read-only mirror of a Shopee product, upserted only by the sync commit step.
  * Product key is `channel + shopId + externalProductId` — deliberately NOT name/SKU
@@ -103,6 +113,9 @@ export class MarketplaceProduct {
 
   @Prop({ type: MarketplaceDimensionSchema, default: () => ({ width: null, length: null, height: null }) })
   dimension: MarketplaceDimension;
+
+  @Prop({ type: [MarketplaceTierVariationSchema], default: [] })
+  tierVariations: MarketplaceTierVariation[];
 
   @Prop({ default: false }) preOrder: boolean;
   @Prop({ type: Number, default: null }) daysToShip: number | null;
