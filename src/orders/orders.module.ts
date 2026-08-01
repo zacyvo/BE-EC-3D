@@ -26,5 +26,6 @@ import { LocationsModule } from '../locations/locations.module';
   ],
   controllers: [OrdersController, AdminOrdersController],
   providers: [OrdersService],
+  exports: [OrdersService],
 })
 export class OrdersModule {}

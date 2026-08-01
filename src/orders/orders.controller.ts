@@ -3,7 +3,7 @@ import {
   Query, UseGuards, ParseIntPipe, DefaultValuePipe,
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
-import { CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto } from './dto/order.dto';
+import { CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto } from './dto/order.dto';
 import { OrderStatus } from './schemas/order.schema';
 import { JwtAuthGuard, JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -75,6 +75,16 @@ export class AdminOrdersController {
     @CurrentUser() staff: { sub: string; role: StaffRole },
   ) {
     return this.ordersService.updateStatus(id, dto, staff.sub, staff.role);
+  }
+
+  @Patch(':id/shipping-info')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS)
+  updateShippingInfo(
+    @Param('id') id: string,
+    @Body() dto: ShippingInfoDto,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    return this.ordersService.updateShippingInfo(id, dto, staff.sub);
   }
 
   @Get(':id/versions')

@@ -18,6 +18,10 @@ import { Type } from 'class-transformer';
 import { OrderStatus } from '../schemas/order.schema';
 import { OldAddressInputDto } from '../../locations/dto/old-address-input.dto';
 
+/** Shared with shopee-order-mapping.util.ts (masked/invalid Shopee phone detection) —
+ * keep both in sync if this ever changes. */
+export const VN_MOBILE_REGEX = /^(0|\+84)(3[2-9]|5[25689]|7[06-9]|8[0-9]|9[0-9])\d{7}$/;
+
 export class OrderItemDto {
   @IsMongoId() productId: string;
   @IsNumber() @Min(1) quantity: number;
@@ -29,7 +33,7 @@ export class OrderItemDto {
 export class ShippingInfoDto {
   @IsString() recipientName: string;
   @IsString()
-  @Matches(/^(0|\+84)(3[2-9]|5[25689]|7[06-9]|8[0-9]|9[0-9])\d{7}$/, {
+  @Matches(VN_MOBILE_REGEX, {
     message: 'Số điện thoại không hợp lệ (VD: 0912345678)',
   })
   phone: string;
@@ -79,7 +83,7 @@ export class UpdateOrderStatusDto {
 
 export class GuestInfoDto {
   @IsString()
-  @Matches(/^(0|\+84)(3[2-9]|5[25689]|7[06-9]|8[0-9]|9[0-9])\d{7}$/, {
+  @Matches(VN_MOBILE_REGEX, {
     message: 'Số điện thoại không hợp lệ (VD: 0912345678)',
   })
   phone: string;

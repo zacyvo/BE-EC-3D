@@ -85,6 +85,17 @@ export class AdminDirectDiscount {
 
 const AdminDirectDiscountSchema = SchemaFactory.createForClass(AdminDirectDiscount);
 
+/** Identifies the order on the marketplace it was imported from (e.g. Shopee's own
+ * "Mã đơn hàng"), so a re-uploaded export updates the same Order instead of duplicating it. */
+@Schema({ _id: false })
+export class OrderExternalRef {
+  @Prop({ required: true }) channel: string;
+  @Prop({ required: true }) code: string;
+  @Prop() packageCode?: string;
+}
+
+const OrderExternalRefSchema = SchemaFactory.createForClass(OrderExternalRef);
+
 @Schema({ timestamps: true })
 export class Order {
   _id: Types.ObjectId;
@@ -127,6 +138,10 @@ export class Order {
 
   @Prop({ default: 0, min: 0 }) paidAmount: number;
 
+  /** Set when this order was imported/synced from a marketplace (e.g. Shopee) instead
+   * of placed directly on Luxe Glow. Absent = a normal order. */
+  @Prop({ type: OrderExternalRefSchema }) externalRef?: OrderExternalRef;
+
   @Prop({ default: false }) isDeleted: boolean;
   @Prop() deletedAt?: Date;
   @Prop() deletedBy?: string;
@@ -141,6 +156,9 @@ export const OrderSchema = SchemaFactory.createForClass(Order);
 OrderSchema.index({ userId: 1, createdAt: -1 });
 OrderSchema.index({ status: 1 });
 OrderSchema.index({ isDeleted: 1 });
+// Sparse: only orders imported from a marketplace carry externalRef, so this never
+// collides with plain orders (which omit the field entirely).
+OrderSchema.index({ 'externalRef.channel': 1, 'externalRef.code': 1 }, { unique: true, sparse: true });
 OrderSchema.pre(/^find/, function (this: any, next: () => void) {
   if (this.getFilter().isDeleted === undefined) this.where({ isDeleted: false });
   next();

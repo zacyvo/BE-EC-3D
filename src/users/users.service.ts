@@ -86,6 +86,34 @@ export class UsersService {
     return { user, created: true };
   }
 
+  /** Like findOrCreateByPhone, but keyed on a marketplace's own buyer id instead of a
+   * phone number. Used for imported orders (e.g. Shopee) whose recipient phone is
+   * masked by the source for privacy — matching/creating by the lossy masked string
+   * would risk merging unrelated buyers, so identity is anchored on the channel's
+   * (unmasked, stable) buyer id instead. `phone` is stored only if it is a real,
+   * unmasked value — never the masked display string. */
+  async findOrCreateByExternalBuyer(
+    channel: string,
+    externalBuyerId: string,
+    name: string,
+    phone?: string,
+  ): Promise<{ user: UserDocument; created: boolean }> {
+    const sanitized = externalBuyerId.toLowerCase().replace(/[^a-z0-9._-]/g, '').replace(/^\.+|\.+$/g, '') || 'buyer';
+    const email = `${channel.toLowerCase()}_${sanitized}@guest.luxe-glow.vn`;
+    const existing = await this.userModel.findOne({ email }).exec();
+    if (existing) return { user: existing, created: false };
+
+    const user = new this.userModel({
+      email,
+      name: name || `Khách ${channel} ${externalBuyerId}`,
+      ...(phone ? { phone } : {}),
+      provider: 'local',
+      isGuest: true,
+    });
+    await user.save();
+    return { user, created: true };
+  }
+
   async findOrCreateOAuthUser(data: {
     email: string;
     name: string;
