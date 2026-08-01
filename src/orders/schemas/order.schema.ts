@@ -12,6 +12,15 @@ export enum OrderStatus {
   CANCELLED = 'CANCELLED',
 }
 
+/** Statuses that count as an actual (non-cancelled, non-pending) sale — used
+ * wherever revenue/sold-quantity is computed from order data. */
+export const SOLD_ORDER_STATUSES = [
+  OrderStatus.DELIVERED,
+  OrderStatus.CONFIRMED,
+  OrderStatus.SHIPPED,
+  OrderStatus.PROCESSING,
+];
+
 @Schema({ _id: false })
 export class OrderItem {
   @Prop({ type: Types.ObjectId, ref: 'Product', required: true }) productId: Types.ObjectId;

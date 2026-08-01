@@ -9,6 +9,7 @@ import { Product, ProductDocument, SocialPlatform } from './schemas/product.sche
 import { CreateProductDto, UpdateProductDto } from './dto/product.dto';
 import { AuditService } from '../audit/audit.service';
 import { Category, CategoryDocument } from '../categories/schemas/category.schema';
+import { Order, SOLD_ORDER_STATUSES } from '../orders/schemas/order.schema';
 
 const CACHE_KEY_LIST = 'products:list';
 const CACHE_KEY_DETAIL = (slug: string) => `products:detail:${slug}`;
@@ -22,6 +23,7 @@ export class ProductsService {
   constructor(
     @InjectModel(Product.name) private readonly productModel: Model<ProductDocument>,
     @InjectModel(Category.name) private readonly categoryModel: Model<CategoryDocument>,
+    @InjectModel(Order.name) private readonly orderModel: Model<any>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
     private readonly auditService: AuditService,
   ) {}
@@ -34,6 +36,24 @@ export class ProductsService {
     if (doc.sizes === undefined) (doc as { sizes?: unknown }).sizes = [];
     if (doc.socials === undefined) (doc as { socials?: unknown }).socials = [];
     return doc;
+  }
+
+  /** Overwrites `orderCount` on each product with the real quantity sold across
+   * confirmed/completed orders (computed live from Order data). */
+  private async attachRealOrderCounts(
+    products: Array<{ _id: Types.ObjectId; orderCount?: number }>,
+  ): Promise<void> {
+    const ids = products.map((p) => p._id);
+    const sold = await this.orderModel.aggregate([
+      { $match: { status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
+      { $unwind: '$items' },
+      { $match: { 'items.productId': { $in: ids } } },
+      { $group: { _id: '$items.productId', qty: { $sum: '$items.quantity' } } },
+    ]);
+    const soldMap = new Map<string, number>(sold.map((r: any) => [String(r._id), r.qty]));
+    products.forEach((p) => {
+      p.orderCount = soldMap.get(String(p._id)) ?? 0;
+    });
   }
 
   /** Resolve a category value (ObjectId string or slug) → ObjectId, or null if not found */
@@ -223,6 +243,13 @@ export class ProductsService {
     ]);
 
     data.forEach((p) => this.withVariantDefaults(p));
+
+    // Product.orderCount is a stale/legacy counter never updated by the real
+    // order flow — overwrite it with real sold quantity for the admin list.
+    if (forAdmin && data.length) {
+      await this.attachRealOrderCounts(data);
+    }
+
     const result = { data, total, page, limit, totalPages: Math.ceil(total / limit) };
 
     if (!forAdmin && !search && !minPrice && !maxPrice) {

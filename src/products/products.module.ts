@@ -4,6 +4,7 @@ import { ProductsService } from './products.service';
 import { ProductsController, AdminProductsController } from './products.controller';
 import { Product, ProductSchema } from './schemas/product.schema';
 import { Category, CategorySchema } from '../categories/schemas/category.schema';
+import { Order, OrderSchema } from '../orders/schemas/order.schema';
 import { AuditModule } from '../audit/audit.module';
 
 @Module({
@@ -11,6 +12,7 @@ import { AuditModule } from '../audit/audit.module';
     MongooseModule.forFeature([
       { name: Product.name, schema: ProductSchema },
       { name: Category.name, schema: CategorySchema },
+      { name: Order.name, schema: OrderSchema },
     ]),
     AuditModule,
   ],

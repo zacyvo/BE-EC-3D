@@ -4,7 +4,7 @@ import { Model } from 'mongoose';
 import { JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
-import { Order } from '../orders/schemas/order.schema';
+import { Order, SOLD_ORDER_STATUSES } from '../orders/schemas/order.schema';
 import { Product } from '../products/schemas/product.schema';
 import { User } from '../users/schemas/user.schema';
 
@@ -35,7 +35,7 @@ export class AnalyticsController {
       totalProducts,
       totalUsers,
       recentOrders,
-      topProducts,
+      topProductsRaw,
       revenueAggregate,
       monthlyOrdersRaw,
       monthlyRevenueRaw,
@@ -57,17 +57,46 @@ export class AnalyticsController {
         .lean()
         .exec(),
 
-      this.productModel
-        .find()
-        .sort({ orderCount: -1, viewCount: -1 })
-        .limit(6)
-        .select('name slug images finalPrice orderCount viewCount')
-        .lean()
-        .exec(),
+      // Top selling products: computed live from actual order line items
+      // (Product.orderCount is a stale/legacy counter that is never incremented
+      // when real orders are placed, so it no longer reflects real sales).
+      this.orderModel.aggregate([
+        { $match: { status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
+        { $unwind: '$items' },
+        {
+          $group: {
+            _id: '$items.productId',
+            orderCount: { $sum: '$items.quantity' },
+          },
+        },
+        {
+          $lookup: {
+            from: 'products',
+            localField: '_id',
+            foreignField: '_id',
+            as: '_p',
+          },
+        },
+        { $addFields: { _p: { $arrayElemAt: ['$_p', 0] } } },
+        { $match: { '_p': { $ne: null }, '_p.isDeleted': { $ne: true } } },
+        { $sort: { orderCount: -1 } },
+        { $limit: 6 },
+        {
+          $project: {
+            _id: '$_p._id',
+            name: '$_p.name',
+            slug: '$_p.slug',
+            images: '$_p.images',
+            finalPrice: '$_p.finalPrice',
+            viewCount: '$_p.viewCount',
+            orderCount: 1,
+          },
+        },
+      ]),
 
       // All-time revenue (DELIVERED + CONFIRMED)
       this.orderModel.aggregate([
-        { $match: { status: { $in: ['DELIVERED', 'CONFIRMED', 'SHIPPED', 'PROCESSING'] }, isDeleted: { $ne: true } } },
+        { $match: { status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
         { $group: { _id: null, total: { $sum: '$total' } } },
       ]),
 
@@ -80,7 +109,7 @@ export class AnalyticsController {
 
       // Monthly revenue for current year (completed orders)
       this.orderModel.aggregate([
-        { $match: { createdAt: { $gte: startOfYear }, status: { $in: ['DELIVERED', 'CONFIRMED', 'SHIPPED', 'PROCESSING'] }, isDeleted: { $ne: true } } },
+        { $match: { createdAt: { $gte: startOfYear }, status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
         { $group: { _id: { $month: '$createdAt' }, revenue: { $sum: '$total' } } },
         { $sort: { '_id': 1 } },
       ]),
@@ -100,7 +129,7 @@ export class AnalyticsController {
 
       // Current month revenue
       this.orderModel.aggregate([
-        { $match: { createdAt: { $gte: startOfMonth, $lt: startOfNextMonth }, status: { $in: ['DELIVERED', 'CONFIRMED', 'SHIPPED', 'PROCESSING'] }, isDeleted: { $ne: true } } },
+        { $match: { createdAt: { $gte: startOfMonth, $lt: startOfNextMonth }, status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
         { $group: { _id: null, total: { $sum: '$total' } } },
       ]),
 
@@ -151,25 +180,29 @@ export class AnalyticsController {
       monthlyUsers,
       statusBreakdown,
       recentOrders,
-      topProducts,
+      topProducts: topProductsRaw,
     };
   }
 
   @Get('funnel')
   async getFunnel() {
-    const [productViews, addedToCart, ordersCreated] = await Promise.all([
+    const [productViews, unitsSold, ordersCreated] = await Promise.all([
       this.productModel.aggregate([
         { $group: { _id: null, total: { $sum: '$viewCount' } } },
       ]),
-      this.productModel.aggregate([
-        { $group: { _id: null, total: { $sum: '$orderCount' } } },
+      // Units sold across confirmed/completed orders (Product.orderCount is a
+      // stale field that is never incremented by the real order flow).
+      this.orderModel.aggregate([
+        { $match: { status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
+        { $unwind: '$items' },
+        { $group: { _id: null, total: { $sum: '$items.quantity' } } },
       ]),
       this.orderModel.countDocuments(),
     ]);
 
     return {
       productViews: productViews[0]?.total || 0,
-      addToCart: addedToCart[0]?.total || 0,
+      unitsSold: unitsSold[0]?.total || 0,
       ordersCreated,
     };
   }
