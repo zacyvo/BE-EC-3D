@@ -1,0 +1,40 @@
+/**
+ * Machine-readable error codes surfaced to the Chrome Extension and Admin UI.
+ * Codes prefixed SHOPEE_* / EXTENSION_* / SYNC_CANCELLED / LUXE_GLOW_UPLOAD_FAILED
+ * mirror the extension's own `types/sync.types.ts` ShopeeSyncErrorCode 1:1 (see
+ * that file's header comment) — the remaining ones are backend-only additions
+ * for situations the extension can't detect itself (invalid/expired upload
+ * token, session in the wrong state, snapshot count mismatch, etc).
+ */
+export enum ShopeeSyncErrorCode {
+  // Shared with the extension (do not rename without updating extension/src/types/sync.types.ts)
+  EXTENSION_NOT_INSTALLED = 'EXTENSION_NOT_INSTALLED',
+  SHOPEE_TAB_NOT_FOUND = 'SHOPEE_TAB_NOT_FOUND',
+  SHOPEE_CONTEXT_NOT_FOUND = 'SHOPEE_CONTEXT_NOT_FOUND',
+  SHOPEE_SESSION_EXPIRED = 'SHOPEE_SESSION_EXPIRED',
+  SHOPEE_RATE_LIMITED = 'SHOPEE_RATE_LIMITED',
+  SHOPEE_VERIFICATION_REQUIRED = 'SHOPEE_VERIFICATION_REQUIRED',
+  SHOPEE_LIST_API_ERROR = 'SHOPEE_LIST_API_ERROR',
+  SHOPEE_DETAIL_API_ERROR = 'SHOPEE_DETAIL_API_ERROR',
+  SHOPEE_LIST_SCHEMA_CHANGED = 'SHOPEE_LIST_SCHEMA_CHANGED',
+  SHOPEE_DETAIL_SCHEMA_CHANGED = 'SHOPEE_DETAIL_SCHEMA_CHANGED',
+  SHOPEE_CURSOR_MISSING = 'SHOPEE_CURSOR_MISSING',
+  SHOPEE_CURSOR_LOOP = 'SHOPEE_CURSOR_LOOP',
+  SHOPEE_SNAPSHOT_INCOMPLETE = 'SHOPEE_SNAPSHOT_INCOMPLETE',
+  SHOPEE_PRODUCT_ID_MISMATCH = 'SHOPEE_PRODUCT_ID_MISMATCH',
+  LUXE_GLOW_UPLOAD_FAILED = 'LUXE_GLOW_UPLOAD_FAILED',
+  SYNC_SESSION_EXPIRED = 'SYNC_SESSION_EXPIRED',
+  SYNC_CANCELLED = 'SYNC_CANCELLED',
+
+  // Backend-only
+  SHOPEE_SYNC_DISABLED = 'SHOPEE_SYNC_DISABLED',
+  SHOPEE_SYNC_EXTENSION_OUTDATED = 'SHOPEE_SYNC_EXTENSION_OUTDATED',
+  SYNC_SESSION_NOT_FOUND = 'SYNC_SESSION_NOT_FOUND',
+  SYNC_SESSION_INVALID_STATE = 'SYNC_SESSION_INVALID_STATE',
+  UPLOAD_TOKEN_INVALID = 'UPLOAD_TOKEN_INVALID',
+  SNAPSHOT_TOTAL_MISMATCH = 'SNAPSHOT_TOTAL_MISMATCH',
+  SNAPSHOT_DUPLICATE_PRODUCT = 'SNAPSHOT_DUPLICATE_PRODUCT',
+}
+
+/** Audit log `module` value — lowercase snake_case, matching every other module's convention. */
+export const SHOPEE_SYNC_AUDIT_MODULE = 'shopee_sync';

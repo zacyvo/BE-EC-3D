@@ -23,6 +23,7 @@ import { ContractsModule } from './contracts/contracts.module';
 import { LocationsModule } from './locations/locations.module';
 import { EInvoiceModule } from './einvoice/einvoice.module';
 import { PrintPlansModule } from './print-plans/print-plans.module';
+import { ShopeeSyncModule } from './shopee-sync/shopee-sync.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -83,6 +84,7 @@ import { HealthController } from './health.controller';
     LocationsModule,
     EInvoiceModule,
     PrintPlansModule,
+    ShopeeSyncModule,
   ],
   controllers: [HealthController],
 })
