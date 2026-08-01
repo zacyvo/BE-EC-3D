@@ -2,11 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { ProductsService } from '../products/products.service';
-import { CreateProductDto, ProductColorDto } from '../products/dto/product.dto';
+import { CreateProductDto, ProductColorDto, ProductSocialDto, UpdateProductDto } from '../products/dto/product.dto';
+import { SocialPlatform } from '../products/schemas/product.schema';
 import { Category, CategoryDocument } from '../categories/schemas/category.schema';
 import { MarketplaceProductDocument } from './schemas/marketplace-product.schema';
 import { MarketplaceVariantDocument } from './schemas/marketplace-variant.schema';
 import { MarketplaceImageType, MarketplaceProductImageDocument } from './schemas/marketplace-product-image.schema';
+import { ShopeeSyncConfigService } from './shopee-sync.config';
 
 const UNCATEGORIZED_SLUG = 'chua-phan-loai';
 const UNCATEGORIZED_NAME = 'Chưa phân loại';
@@ -42,6 +44,19 @@ export function buildColorsAndSizes(
   return { colors, sizes };
 }
 
+/** Builds the Shopee entry for `Product.socials` — link format is configurable
+ * (`SHOPEE_SYNC_PRODUCT_URL_TEMPLATE`), not verified against a real shop. */
+export function buildShopeeSocialLink(shopId: string, externalProductId: string, template: string): string {
+  return template.replace('{shop_id}', encodeURIComponent(shopId)).replace('{product_id}', encodeURIComponent(externalProductId));
+}
+
+/** Replaces any existing SHOPEE entry with the fresh one, leaving every other
+ * platform (Facebook, TikTok, manually-added...) untouched — `ProductsService`
+ * itself has no merge semantics, `socials` is a full-array replace on update. */
+export function mergeShopeeSocial(existingSocials: ProductSocialDto[], shopeeSocial: ProductSocialDto): ProductSocialDto[] {
+  return [...existingSocials.filter((s) => s.name !== SocialPlatform.SHOPEE), shopeeSocial];
+}
+
 @Injectable()
 export class ShopeeCatalogPublishService {
   private readonly logger = new Logger(ShopeeCatalogPublishService.name);
@@ -50,6 +65,7 @@ export class ShopeeCatalogPublishService {
   constructor(
     @InjectModel(Category.name) private readonly categoryModel: Model<CategoryDocument>,
     private readonly productsService: ProductsService,
+    private readonly configService: ShopeeSyncConfigService,
   ) {}
 
   private async getOrCreateUncategorizedCategoryId(): Promise<Types.ObjectId> {
@@ -69,8 +85,12 @@ export class ShopeeCatalogPublishService {
    * Creates (first sync) or updates (later syncs) the real catalog `Product` for
    * one synced Shopee product, reusing `ProductsService` so pricing/slug/audit-log
    * rules stay identical to a manually-created product. Never touches
-   * category/costPrice/isActive on update — those become Admin-owned decisions
-   * once the product exists (see docs/shopee-sync-flow.md "Đồng bộ vào catalog thật").
+   * category/costPrice on update — those become Admin-owned decisions once the
+   * product exists (see docs/shopee-sync-flow.md "Đồng bộ vào catalog thật").
+   *
+   * `isActive`: forced to `false` whenever `sellingPrice <= 0` (broken/incomplete
+   * price data must never go live for sale); never force-reactivates a product an
+   * Admin deliberately deactivated for other reasons once price data is healthy.
    */
   async publishProduct(
     marketplaceProduct: MarketplaceProductDocument,
@@ -80,6 +100,7 @@ export class ShopeeCatalogPublishService {
   ): Promise<PublishResult> {
     const externalProductId = marketplaceProduct.externalProductId;
     try {
+      const cfg = this.configService.get();
       const activeVariants = variants.filter((v) => v.isActive);
       const { colors, sizes } = buildColorsAndSizes(
         marketplaceProduct.tierVariations,
@@ -91,6 +112,12 @@ export class ShopeeCatalogPublishService {
         .map((img) => img.sourceUrl);
       const sellingPrice = Number(marketplaceProduct.sellingPriceMin) || 0;
       const stock = marketplaceProduct.availableStock;
+      const isActive = sellingPrice > 0;
+      const shopeeSocial: ProductSocialDto = {
+        name: SocialPlatform.SHOPEE,
+        id: externalProductId,
+        link: buildShopeeSocialLink(marketplaceProduct.shopId, externalProductId, cfg.productUrlTemplate),
+      };
 
       if (!marketplaceProduct.internalProductId) {
         const categoryId = await this.getOrCreateUncategorizedCategoryId();
@@ -100,12 +127,13 @@ export class ShopeeCatalogPublishService {
           images: galleryImages,
           colors,
           sizes,
+          socials: [shopeeSocial],
           costPrice: 0,
           sellingPrice,
           discountPercent: 0,
           stock,
           description: marketplaceProduct.description ?? undefined,
-          isActive: true,
+          isActive,
         };
         const created = await this.productsService.create(dto, staffId);
         marketplaceProduct.internalProductId = created._id as Types.ObjectId;
@@ -113,32 +141,26 @@ export class ShopeeCatalogPublishService {
         return { externalProductId, action: 'created', internalProductId: created._id.toString() };
       }
 
-      const updated = await this.productsService
-        .update(
-          marketplaceProduct.internalProductId.toString(),
-          {
-            name: marketplaceProduct.name,
-            images: galleryImages,
-            colors,
-            sizes,
-            sellingPrice,
-            stock,
-            description: marketplaceProduct.description ?? undefined,
-          },
-          staffId,
-        )
-        .catch(async (err) => {
-          // Linked Product was deleted/not found — recreate instead of failing the whole sync.
-          this.logger.warn(`internalProductId ${marketplaceProduct.internalProductId} not found for ${externalProductId}, recreating: ${err.message}`);
-          marketplaceProduct.internalProductId = null;
-          return null;
-        });
-
-      if (!updated) {
+      const existing = await this.productsService.findById(marketplaceProduct.internalProductId.toString(), true).catch(() => null);
+      if (!existing) {
+        this.logger.warn(`internalProductId ${marketplaceProduct.internalProductId} không còn tồn tại cho ${externalProductId}, tạo lại.`);
         marketplaceProduct.internalProductId = null;
         return this.publishProduct(marketplaceProduct, variants, images, staffId);
       }
 
+      const updateDto: UpdateProductDto = {
+        name: marketplaceProduct.name,
+        images: galleryImages,
+        colors,
+        sizes,
+        socials: mergeShopeeSocial(existing.socials ?? [], shopeeSocial),
+        sellingPrice,
+        stock,
+        description: marketplaceProduct.description ?? undefined,
+      };
+      if (!isActive) updateDto.isActive = false;
+
+      const updated = await this.productsService.update(marketplaceProduct.internalProductId.toString(), updateDto, staffId);
       return { externalProductId, action: 'updated', internalProductId: updated._id.toString() };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Lỗi không xác định khi publish sản phẩm';
@@ -147,3 +169,4 @@ export class ShopeeCatalogPublishService {
     }
   }
 }
+

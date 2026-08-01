@@ -12,6 +12,10 @@ export interface ShopeeSyncConfigSnapshot {
   imageUrlTemplate: string;
   uploadTokenTtlMinutes: number;
   shopId: string;
+  /** `{shop_id}`/`{product_id}` placeholders — used to fill `Product.socials` (SHOPEE entry)
+   * when publishing to the real catalog. Not verified against a real Shopee shop; edit here
+   * if the public product link format turns out to be different. */
+  productUrlTemplate: string;
 }
 
 /**
@@ -44,6 +48,10 @@ export class ShopeeSyncConfigService {
       ),
       uploadTokenTtlMinutes: Number(this.config.get<string>('SHOPEE_SYNC_UPLOAD_TOKEN_TTL_MINUTES', '25')),
       shopId: this.config.get<string>('SHOPEE_SYNC_DEFAULT_SHOP_ID', 'default'),
+      productUrlTemplate: this.config.get<string>(
+        'SHOPEE_SYNC_PRODUCT_URL_TEMPLATE',
+        'https://shopee.vn/product/{shop_id}/{product_id}',
+      ),
     };
   }
 
