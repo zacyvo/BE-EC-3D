@@ -693,7 +693,7 @@ export class ContractsService {
     }
 
     const unsignedBuffer = await this.documentStorageService.downloadPdf(contract.unsignedPdfUrl);
-    this.tamperCheckService.assertIncrementalOnly(unsignedBuffer, fileBuffer);
+    await this.tamperCheckService.assertIncrementalOnly(unsignedBuffer, fileBuffer);
 
     const signatures = this.padesVerifyService.verify(fileBuffer);
     if (signatures.length === 0) {
@@ -959,7 +959,7 @@ export class ContractsService {
     }
 
     const partyBBuffer = await this.documentStorageService.downloadPdf(contract.partyBSignature.signedPdfUrl);
-    this.tamperCheckService.assertIncrementalOnly(partyBBuffer, fileBuffer);
+    await this.tamperCheckService.assertIncrementalOnly(partyBBuffer, fileBuffer);
 
     const signatures = this.padesVerifyService.verify(fileBuffer);
     if (signatures.length < 2) {
