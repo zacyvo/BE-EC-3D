@@ -71,6 +71,8 @@ export class DeliveryDto {
   @IsOptional() @IsString() trackingCode?: string;
   @IsOptional() @IsString() trackingUrl?: string;
   @IsOptional() @IsDateString() estimatedDeliveryDate?: string;
+  @IsOptional() @IsNumber() @Min(0) insuranceAmount?: number;
+  @IsOptional() @IsNumber() @Min(0) codAmount?: number;
 }
 
 export class UpdateOrderStatusDto {

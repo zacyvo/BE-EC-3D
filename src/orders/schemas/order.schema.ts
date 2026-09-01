@@ -70,6 +70,13 @@ export class Delivery {
   @Prop() trackingCode?: string;
   @Prop() trackingUrl?: string;
   @Prop() estimatedDeliveryDate?: Date;
+  /** Declared parcel value handed to the carrier (SPX "Giá trị bưu gửi") — kept
+   * separate from `order.total` since it's a point-in-time declaration to the
+   * carrier, not a live derived value. */
+  @Prop({ min: 0 }) insuranceAmount?: number;
+  /** Cash-on-delivery amount handed to the carrier (SPX "Số tiền COD") — may
+   * differ from `order.total` when part of the order was already paid. */
+  @Prop({ min: 0 }) codAmount?: number;
 }
 
 const DeliverySchema = SchemaFactory.createForClass(Delivery);
