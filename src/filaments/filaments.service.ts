@@ -4,7 +4,7 @@ import { Model, Types } from 'mongoose';
 import {
   FilamentImport, FilamentImportDocument,
   FilamentUnit, FilamentUnitDocument,
-  FilamentUnitStatus, FilamentType,
+  FilamentUnitStatus, FilamentType, FilamentColor,
 } from './schemas/filament.schema';
 import { CreateFilamentImportDto, ExportFilamentDto } from './dto/filament.dto';
 import { InvoicesService } from '../invoices/invoices.service';
@@ -16,8 +16,36 @@ const TYPE_LABEL: Record<FilamentType, string> = {
   [FilamentType.PLA_SILK]: 'PLA Silk',
 };
 
+const COLOR_LABEL: Record<FilamentColor, string> = {
+  [FilamentColor.WHITE]: 'Trắng',
+  [FilamentColor.BLACK]: 'Đen',
+  [FilamentColor.GRAY]: 'Xám',
+  [FilamentColor.SILVER]: 'Bạc',
+  [FilamentColor.RED]: 'Đỏ',
+  [FilamentColor.ORANGE]: 'Cam',
+  [FilamentColor.YELLOW]: 'Vàng',
+  [FilamentColor.LIME]: 'Vàng chanh',
+  [FilamentColor.GREEN]: 'Xanh lá',
+  [FilamentColor.DARK_GREEN]: 'Xanh lá đậm',
+  [FilamentColor.TEAL]: 'Xanh ngọc',
+  [FilamentColor.BLUE]: 'Xanh dương',
+  [FilamentColor.LIGHT_BLUE]: 'Xanh dương nhạt',
+  [FilamentColor.NAVY]: 'Xanh navy',
+  [FilamentColor.PURPLE]: 'Tím',
+  [FilamentColor.LAVENDER]: 'Tím pastel',
+  [FilamentColor.PINK]: 'Hồng',
+  [FilamentColor.PASTEL_PINK]: 'Hồng pastel',
+  [FilamentColor.BROWN]: 'Nâu',
+  [FilamentColor.BEIGE]: 'Be',
+  [FilamentColor.GOLD]: 'Vàng gold',
+  [FilamentColor.BRONZE]: 'Đồng',
+  [FilamentColor.CLEAR]: 'Trong suốt',
+  [FilamentColor.OLIVE]: 'Rêu',
+};
+
 interface ProcessedItem {
   type: FilamentType;
+  color: FilamentColor;
   quantity: number;
   unitPrice: number;
   totalPrice: number;
@@ -47,6 +75,7 @@ export class FilamentsService {
     if (unpriced.length === 0) {
       const items = dto.items.map((i) => ({
         type: i.type,
+        color: i.color,
         quantity: i.quantity,
         unitPrice: i.unitPrice as number,
         totalPrice: (i.unitPrice as number) * i.quantity,
@@ -73,7 +102,7 @@ export class FilamentsService {
     const avgUnitPrice = Math.round(remaining / unpricedQty);
     const items = dto.items.map((i) => {
       const unitPrice = i.unitPrice ?? avgUnitPrice;
-      return { type: i.type, quantity: i.quantity, unitPrice, totalPrice: unitPrice * i.quantity };
+      return { type: i.type, color: i.color, quantity: i.quantity, unitPrice, totalPrice: unitPrice * i.quantity };
     });
 
     return { items, totalAmount: dto.totalAmount };
@@ -94,6 +123,7 @@ export class FilamentsService {
     const unitDocs = items.flatMap((item) =>
       Array.from({ length: item.quantity }, () => ({
         type: item.type,
+        color: item.color,
         unitPrice: item.unitPrice,
         status: FilamentUnitStatus.NEW,
         importId: importDoc._id,
@@ -102,7 +132,9 @@ export class FilamentsService {
     if (unitDocs.length) await this.unitModel.insertMany(unitDocs);
 
     // Tự động chuyển phiếu nhập thành 1 hóa đơn trong mục Hóa đơn
-    const summary = items.map((i) => `${TYPE_LABEL[i.type]} x${i.quantity}`).join(', ');
+    const summary = items
+      .map((i) => `${TYPE_LABEL[i.type]} ${COLOR_LABEL[i.color]} x${i.quantity}`)
+      .join(', ');
     const invoice = await this.invoicesService.create(
       {
         title: `Nhập Filament - ${summary}`,
@@ -145,10 +177,11 @@ export class FilamentsService {
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
-  async findUnits(params: { page: number; limit: number; type?: string; status?: string }) {
-    const { page, limit, type, status } = params;
+  async findUnits(params: { page: number; limit: number; type?: string; color?: string; status?: string }) {
+    const { page, limit, type, color, status } = params;
     const filter: Record<string, unknown> = {};
     if (type) filter.type = type;
+    if (color) filter.color = color;
     if (status) filter.status = status;
 
     const [data, total] = await Promise.all([
@@ -167,19 +200,19 @@ export class FilamentsService {
 
   async getStock() {
     return this.unitModel.aggregate([
-      { $group: { _id: { type: '$type', status: '$status' }, count: { $sum: 1 } } },
+      { $group: { _id: { type: '$type', color: '$color', status: '$status' }, count: { $sum: 1 } } },
     ]);
   }
 
   async exportFilament(dto: ExportFilamentDto, staffId: string) {
     const available = await this.unitModel
-      .find({ type: dto.type, status: FilamentUnitStatus.NEW })
+      .find({ type: dto.type, color: dto.color, status: FilamentUnitStatus.NEW })
       .sort({ createdAt: 1 })
       .limit(dto.quantity);
 
     if (available.length < dto.quantity) {
       throw new BadRequestException(
-        `Chỉ còn ${available.length} cuộn ${TYPE_LABEL[dto.type]} ở trạng thái Mới`,
+        `Chỉ còn ${available.length} cuộn ${TYPE_LABEL[dto.type]} màu ${COLOR_LABEL[dto.color]} ở trạng thái Mới`,
       );
     }
 
@@ -237,7 +270,7 @@ export class FilamentsService {
         },
       ]),
       this.unitModel.aggregate([
-        { $group: { _id: { type: '$type', status: '$status' }, count: { $sum: 1 } } },
+        { $group: { _id: { type: '$type', color: '$color', status: '$status' }, count: { $sum: 1 } } },
       ]),
     ]);
 

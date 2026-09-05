@@ -41,9 +41,10 @@ export class FilamentsController {
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
     @Query('type') type?: string,
+    @Query('color') color?: string,
     @Query('status') status?: string,
   ) {
-    return this.service.findUnits({ page, limit, type, status });
+    return this.service.findUnits({ page, limit, type, color, status });
   }
 
   @Get('stock')

@@ -3,11 +3,14 @@ import {
   IsArray, IsDateString, IsEnum, IsInt, IsNumber, IsOptional,
   IsString, Min, ValidateNested, ArrayMinSize, MaxLength,
 } from 'class-validator';
-import { FilamentType } from '../schemas/filament.schema';
+import { FilamentColor, FilamentType } from '../schemas/filament.schema';
 
 export class FilamentImportItemDto {
   @IsEnum(FilamentType)
   type: FilamentType;
+
+  @IsEnum(FilamentColor)
+  color: FilamentColor;
 
   @IsInt()
   @Min(1)
@@ -45,6 +48,9 @@ export class CreateFilamentImportDto {
 export class ExportFilamentDto {
   @IsEnum(FilamentType)
   type: FilamentType;
+
+  @IsEnum(FilamentColor)
+  color: FilamentColor;
 
   @IsInt()
   @Min(1)
