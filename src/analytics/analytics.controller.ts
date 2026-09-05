@@ -7,8 +7,14 @@ import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
 import { Order, SOLD_ORDER_STATUSES } from '../orders/schemas/order.schema';
 import { Product } from '../products/schemas/product.schema';
 import { User } from '../users/schemas/user.schema';
+import { ExternalRevenue, ExternalSource } from '../external-revenue/schemas/external-revenue.schema';
 
 const MONTH_LABELS = ['T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12'];
+
+// Fixed, non-cycled order for the "revenue by source" breakdown — WEBSITE is
+// computed live from Order data, the rest come from manually-entered ExternalRevenue.
+const EXTERNAL_SOURCES = Object.values(ExternalSource);
+const ALL_SOURCES = ['WEBSITE', ...EXTERNAL_SOURCES] as const;
 
 @Controller('admin/analytics')
 @UseGuards(JwtStaffGuard, RolesGuard)
@@ -18,6 +24,7 @@ export class AnalyticsController {
     @InjectModel(Order.name) private orderModel: Model<any>,
     @InjectModel(Product.name) private productModel: Model<any>,
     @InjectModel(User.name) private userModel: Model<any>,
+    @InjectModel(ExternalRevenue.name) private externalRevenueModel: Model<any>,
   ) {}
 
   @Get('dashboard')
@@ -243,7 +250,15 @@ export class AnalyticsController {
       },
     ];
 
-    const [monthlyRaw, byProductRaw, byCategoryRaw, summaryAllTime, summaryYear] =
+    const [
+      monthlyRaw,
+      byProductRaw,
+      byCategoryRaw,
+      summaryAllTime,
+      summaryYear,
+      externalBySourceRaw,
+      externalMonthlyBySourceRaw,
+    ] =
       await Promise.all([
         // Monthly breakdown for the selected year
         this.orderModel.aggregate([
@@ -375,6 +390,29 @@ export class AnalyticsController {
             },
           },
         ]),
+
+        // External revenue — totals per source for the selected year
+        this.externalRevenueModel.aggregate([
+          { $match: { year } },
+          {
+            $group: {
+              _id: '$source',
+              revenue: { $sum: '$revenue' },
+              cost: { $sum: { $add: ['$cost', '$platformFee'] } },
+            },
+          },
+        ]),
+
+        // External revenue — per source, per month, for the selected year
+        this.externalRevenueModel.aggregate([
+          { $match: { year } },
+          {
+            $group: {
+              _id: { source: '$source', month: '$month' },
+              revenue: { $sum: '$revenue' },
+            },
+          },
+        ]),
       ]);
 
     const monthly = Array.from({ length: 12 }, (_, i) => {
@@ -399,11 +437,50 @@ export class AnalyticsController {
       };
     };
 
+    const yearSummary = toSummary(summaryYear[0]);
+
+    // Revenue by source: WEBSITE is computed live from Order data (yearSummary
+    // above); the other sources are manually-entered ExternalRevenue rows.
+    const externalBySourceMap = new Map(
+      externalBySourceRaw.map((r: any) => [r._id, r]),
+    );
+    const bySource = ALL_SOURCES.map((source) => {
+      if (source === 'WEBSITE') {
+        return { source, ...yearSummary };
+      }
+      const raw = externalBySourceMap.get(source) as any;
+      const revenue = raw?.revenue || 0;
+      const cost = raw?.cost || 0;
+      const profit = revenue - cost;
+      return {
+        source,
+        revenue,
+        cost,
+        profit,
+        profitMargin: revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0,
+        quantitySold: 0,
+      };
+    });
+
+    const monthlyBySource = Array.from({ length: 12 }, (_, i) => {
+      const entry: Record<string, number | string> = { month: MONTH_LABELS[i] };
+      entry.WEBSITE = monthly[i].revenue;
+      for (const source of EXTERNAL_SOURCES) {
+        const found = externalMonthlyBySourceRaw.find(
+          (r: any) => r._id.month === i + 1 && r._id.source === source,
+        );
+        entry[source] = found?.revenue || 0;
+      }
+      return entry;
+    });
+
     return {
       year,
       allTime: toSummary(summaryAllTime[0]),
-      yearSummary: toSummary(summaryYear[0]),
+      yearSummary,
       monthly,
+      bySource,
+      monthlyBySource,
       byProduct: byProductRaw.map((p: any) => ({
         productId: String(p._id),
         name: p.name,
