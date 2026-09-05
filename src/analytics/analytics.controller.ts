@@ -250,6 +250,11 @@ export class AnalyticsController {
       },
     ];
 
+    // An order counts as a marketplace channel (e.g. SHOPEE) when it was synced in via
+    // that channel's importer (Order.externalRef.channel); a plain website order has
+    // no externalRef at all.
+    const channelOf = { $ifNull: ['$externalRef.channel', 'WEBSITE'] };
+
     const [
       monthlyRaw,
       byProductRaw,
@@ -258,6 +263,8 @@ export class AnalyticsController {
       summaryYear,
       externalBySourceRaw,
       externalMonthlyBySourceRaw,
+      orderByChannelYearRaw,
+      orderByChannelMonthlyRaw,
     ] =
       await Promise.all([
         // Monthly breakdown for the selected year
@@ -413,6 +420,46 @@ export class AnalyticsController {
             },
           },
         ]),
+
+        // Orders grouped by channel (WEBSITE vs. a marketplace channel like SHOPEE
+        // the order was synced in from) — totals for the selected year
+        this.orderModel.aggregate([
+          {
+            $match: {
+              status: { $in: COMPLETED },
+              isDeleted: { $ne: true },
+              createdAt: { $gte: startOfYear, $lt: endOfYear },
+            },
+          },
+          ...lookupCost,
+          {
+            $group: {
+              _id: channelOf,
+              revenue: { $sum: '$_revenue' },
+              cost: { $sum: '$_cost' },
+              profit: { $sum: '$_profit' },
+              quantitySold: { $sum: '$_qty' },
+            },
+          },
+        ]),
+
+        // Orders grouped by channel, per month, for the selected year
+        this.orderModel.aggregate([
+          {
+            $match: {
+              status: { $in: COMPLETED },
+              isDeleted: { $ne: true },
+              createdAt: { $gte: startOfYear, $lt: endOfYear },
+            },
+          },
+          ...lookupCost,
+          {
+            $group: {
+              _id: { channel: channelOf, month: { $month: '$createdAt' } },
+              revenue: { $sum: '$_revenue' },
+            },
+          },
+        ]),
       ]);
 
     const monthly = Array.from({ length: 12 }, (_, i) => {
@@ -439,18 +486,20 @@ export class AnalyticsController {
 
     const yearSummary = toSummary(summaryYear[0]);
 
-    // Revenue by source: WEBSITE is computed live from Order data (yearSummary
-    // above); the other sources are manually-entered ExternalRevenue rows.
+    // Revenue by source: an order synced in from a marketplace (e.g. Shopee) rolls
+    // up into that marketplace's source instead of WEBSITE (see `channelOf` above),
+    // combined with any manually-entered ExternalRevenue rows for the same source.
+    const orderByChannelYearMap = new Map(
+      orderByChannelYearRaw.map((r: any) => [r._id, r]),
+    );
     const externalBySourceMap = new Map(
       externalBySourceRaw.map((r: any) => [r._id, r]),
     );
     const bySource = ALL_SOURCES.map((source) => {
-      if (source === 'WEBSITE') {
-        return { source, ...yearSummary };
-      }
-      const raw = externalBySourceMap.get(source) as any;
-      const revenue = raw?.revenue || 0;
-      const cost = raw?.cost || 0;
+      const fromOrders = orderByChannelYearMap.get(source) as any;
+      const fromExternal = source === 'WEBSITE' ? undefined : (externalBySourceMap.get(source) as any);
+      const revenue = (fromOrders?.revenue || 0) + (fromExternal?.revenue || 0);
+      const cost = (fromOrders?.cost || 0) + (fromExternal?.cost || 0);
       const profit = revenue - cost;
       return {
         source,
@@ -458,18 +507,23 @@ export class AnalyticsController {
         cost,
         profit,
         profitMargin: revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0,
-        quantitySold: 0,
+        quantitySold: fromOrders?.quantitySold || 0,
       };
     });
 
     const monthlyBySource = Array.from({ length: 12 }, (_, i) => {
       const entry: Record<string, number | string> = { month: MONTH_LABELS[i] };
-      entry.WEBSITE = monthly[i].revenue;
-      for (const source of EXTERNAL_SOURCES) {
-        const found = externalMonthlyBySourceRaw.find(
-          (r: any) => r._id.month === i + 1 && r._id.source === source,
+      for (const source of ALL_SOURCES) {
+        const fromOrders = orderByChannelMonthlyRaw.find(
+          (r: any) => r._id.month === i + 1 && r._id.channel === source,
         );
-        entry[source] = found?.revenue || 0;
+        const fromExternal =
+          source === 'WEBSITE'
+            ? undefined
+            : externalMonthlyBySourceRaw.find(
+                (r: any) => r._id.month === i + 1 && r._id.source === source,
+              );
+        entry[source] = (fromOrders?.revenue || 0) + ((fromExternal as any)?.revenue || 0);
       }
       return entry;
     });
