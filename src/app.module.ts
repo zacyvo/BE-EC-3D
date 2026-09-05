@@ -19,6 +19,7 @@ import { CustomOrdersModule } from './custom-orders/custom-orders.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { InvoicesModule } from './invoices/invoices.module';
 import { WarehouseExportsModule } from './warehouse-exports/warehouse-exports.module';
+import { FilamentsModule } from './filaments/filaments.module';
 import { ContractsModule } from './contracts/contracts.module';
 import { LocationsModule } from './locations/locations.module';
 import { EInvoiceModule } from './einvoice/einvoice.module';
@@ -82,6 +83,7 @@ import { HealthController } from './health.controller';
     PromotionsModule,
     InvoicesModule,
     WarehouseExportsModule,
+    FilamentsModule,
     ContractsModule,
     LocationsModule,
     EInvoiceModule,
