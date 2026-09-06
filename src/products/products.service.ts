@@ -130,7 +130,7 @@ export class ProductsService {
   }
 
   async create(dto: CreateProductDto, staffId: string): Promise<ProductDocument> {
-    let slug = slugify(dto.name, { lower: true, strict: true });
+    let slug = slugify(dto.name, { lower: true, strict: true }) || `san-pham-${Date.now()}`;
     const existing = await this.productModel.findOne({ slug }).exec();
     if (existing) slug = `${slug}-${Date.now()}`;
 
@@ -313,7 +313,7 @@ export class ProductsService {
     // Regenerate slug if name changed
     let slug = product.slug;
     if (dto.name && dto.name !== product.name) {
-      slug = slugify(dto.name, { lower: true, strict: true });
+      slug = slugify(dto.name, { lower: true, strict: true }) || `san-pham-${Date.now()}`;
       const existing = await this.productModel.findOne({ slug, _id: { $ne: id } }).exec();
       if (existing) slug = `${slug}-${Date.now()}`;
     }

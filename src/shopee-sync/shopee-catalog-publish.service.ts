@@ -54,11 +54,34 @@ export function buildColorsAndSizes(
  * any reasonable ASCII slug works — falls back to `san-pham` if the name has no
  * sluggable characters at all. */
 export function buildShopeeSocialLink(shopId: string, externalProductId: string, productName: string, template: string): string {
-  const productSlug = slugify(productName, { lower: true, strict: true }) || 'san-pham';
+  const productSlug = slugify(sanitizeProductName(productName), { lower: true, strict: true }) || 'san-pham';
   return template
     .replace('{product_slug}', productSlug)
     .replace('{shop_id}', encodeURIComponent(shopId))
     .replace('{product_id}', encodeURIComponent(externalProductId));
+}
+
+/** Some Shopee sellers decorate a product name with stylized Unicode font variants
+ * (Mathematical Alphanumeric Symbols, e.g. `𝒞𝒽𝑒𝓇𝓇𝓎`) and emoji/icons for marketing
+ * flair. `NFKC` normalization resolves those font-variant characters back to plain
+ * Latin letters while leaving real Vietnamese diacritics (e.g. `Đèn`) untouched —
+ * those are already in canonical composed form, so NFKC is a no-op on them. The
+ * regex then strips decorative pictographs/emoji that have no plain-text form.
+ * Without this, a name made up entirely of such characters leaves `slugify(name,
+ * { strict: true })` with nothing to work with, producing an empty string that
+ * fails `Product.slug`'s `required` validator (Mongoose treats `''` as missing
+ * for String fields). Falls back to the untouched, trimmed name in the (unlikely)
+ * case sanitizing would empty it out entirely, so `Product.name` is never blanked. */
+const DECORATIVE_SYMBOL_REGEX =
+  /[\u{1F1E6}-\u{1F1FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{FE0F}\u{200D}]/gu;
+
+export function sanitizeProductName(rawName: string): string {
+  const plain = rawName
+    .normalize('NFKC')
+    .replace(DECORATIVE_SYMBOL_REGEX, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return plain || rawName.trim();
 }
 
 /** Replaces any existing SHOPEE entry with the fresh one, leaving every other
@@ -112,6 +135,7 @@ export class ShopeeCatalogPublishService {
     const externalProductId = marketplaceProduct.externalProductId;
     try {
       const cfg = this.configService.get();
+      const productName = sanitizeProductName(marketplaceProduct.name);
       const activeVariants = variants.filter((v) => v.isActive);
       const { colors, sizes } = buildColorsAndSizes(
         marketplaceProduct.tierVariations,
@@ -127,13 +151,13 @@ export class ShopeeCatalogPublishService {
       const shopeeSocial: ProductSocialDto = {
         name: SocialPlatform.SHOPEE,
         id: externalProductId,
-        link: buildShopeeSocialLink(cfg.publicShopId, externalProductId, marketplaceProduct.name, cfg.productUrlTemplate),
+        link: buildShopeeSocialLink(cfg.publicShopId, externalProductId, productName, cfg.productUrlTemplate),
       };
 
       if (!marketplaceProduct.internalProductId) {
         const categoryId = await this.getOrCreateUncategorizedCategoryId();
         const dto: CreateProductDto = {
-          name: marketplaceProduct.name,
+          name: productName,
           category: categoryId.toString(),
           images: galleryImages,
           video: marketplaceProduct.videoUrl ?? undefined,
@@ -161,7 +185,7 @@ export class ShopeeCatalogPublishService {
       }
 
       const updateDto: UpdateProductDto = {
-        name: marketplaceProduct.name,
+        name: productName,
         images: galleryImages,
         video: marketplaceProduct.videoUrl ?? undefined,
         colors,

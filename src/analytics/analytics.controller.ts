@@ -265,6 +265,7 @@ export class AnalyticsController {
       externalMonthlyBySourceRaw,
       orderByChannelYearRaw,
       orderByChannelMonthlyRaw,
+      byProductByChannelRaw,
     ] =
       await Promise.all([
         // Monthly breakdown for the selected year
@@ -460,6 +461,26 @@ export class AnalyticsController {
             },
           },
         ]),
+
+        // By product, by channel — only channels traceable to a real Order line
+        // item (WEBSITE vs. a marketplace sync like SHOPEE); manually-entered
+        // ExternalRevenue rows aren't tied to a product, so they can't appear here.
+        this.orderModel.aggregate([
+          {
+            $match: {
+              status: { $in: COMPLETED },
+              isDeleted: { $ne: true },
+              createdAt: { $gte: startOfYear, $lt: endOfYear },
+            },
+          },
+          ...lookupCost,
+          {
+            $group: {
+              _id: { productId: '$items.productId', channel: channelOf },
+              revenue: { $sum: '$_revenue' },
+            },
+          },
+        ]),
       ]);
 
     const monthly = Array.from({ length: 12 }, (_, i) => {
@@ -528,6 +549,16 @@ export class AnalyticsController {
       return entry;
     });
 
+    // Per-product revenue split by channel — used to show a Web-site / Shopee /
+    // ... column alongside each product's total in the revenue-by-product table.
+    const productSourceMap = new Map<string, Record<string, number>>();
+    for (const r of byProductByChannelRaw as any[]) {
+      const productId = String(r._id.productId);
+      const bucket = productSourceMap.get(productId) ?? {};
+      bucket[r._id.channel] = r.revenue;
+      productSourceMap.set(productId, bucket);
+    }
+
     return {
       year,
       allTime: toSummary(summaryAllTime[0]),
@@ -545,6 +576,7 @@ export class AnalyticsController {
         profit: p.profit,
         profitMargin: p.revenue > 0 ? Math.round((p.profit / p.revenue) * 10000) / 100 : 0,
         quantitySold: p.quantitySold,
+        bySource: productSourceMap.get(String(p._id)) ?? {},
       })),
       byCategory: byCategoryRaw.map((c: any) => ({
         categoryId: c.categoryId ? String(c.categoryId) : null,

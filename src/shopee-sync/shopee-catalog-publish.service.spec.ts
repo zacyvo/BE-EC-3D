@@ -1,4 +1,4 @@
-import { buildColorsAndSizes, buildShopeeSocialLink, mergeShopeeSocial } from './shopee-catalog-publish.service';
+import { buildColorsAndSizes, buildShopeeSocialLink, mergeShopeeSocial, sanitizeProductName } from './shopee-catalog-publish.service';
 import { SocialPlatform } from '../products/schemas/product.schema';
 
 describe('buildColorsAndSizes', () => {
@@ -65,6 +65,20 @@ describe('buildShopeeSocialLink (real Shopee URL format: https://shopee.vn/{slug
   it('falls back to a generic slug when the product name has no sluggable characters', () => {
     const url = buildShopeeSocialLink('76624421', '1', '!!!', TEMPLATE);
     expect(url).toBe('https://shopee.vn/san-pham-i.76624421.1');
+  });
+});
+
+describe('sanitizeProductName (bug: stylized Unicode font + emoji names crash Product.slug required)', () => {
+  it('resolves stylized Mathematical Alphanumeric font variants to plain Latin letters and strips emoji', () => {
+    expect(sanitizeProductName('𝒞𝒽𝑒𝓇𝓇𝓎 𝒢𝓁𝑜𝓌 𝐿𝒶𝓂𝓅 🍒✨')).toBe('Cherry Glow Lamp');
+  });
+
+  it('leaves real Vietnamese diacritics untouched (already canonical composed form)', () => {
+    expect(sanitizeProductName('Đèn bàn cổ điển')).toBe('Đèn bàn cổ điển');
+  });
+
+  it('falls back to the trimmed original when stripping would empty the name entirely', () => {
+    expect(sanitizeProductName('🍒✨')).toBe('🍒✨');
   });
 });
 
