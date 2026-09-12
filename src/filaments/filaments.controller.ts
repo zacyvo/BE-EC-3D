@@ -4,7 +4,7 @@ import {
   ParseIntPipe, DefaultValuePipe,
 } from '@nestjs/common';
 import { FilamentsService } from './filaments.service';
-import { CreateFilamentImportDto, ExportFilamentDto } from './dto/filament.dto';
+import { CreateFilamentImportDto, ExportFilamentDto, AdjustFilamentStockDto } from './dto/filament.dto';
 import { JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
@@ -72,5 +72,23 @@ export class FilamentsController {
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.SELLER)
   depleteUnit(@Param('id') id: string) {
     return this.service.depleteUnit(id);
+  }
+
+  @Post('adjustments')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  adjustStock(
+    @Body() dto: AdjustFilamentStockDto,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    return this.service.adjustStock(dto, staff.sub);
+  }
+
+  @Get('adjustments')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
+  findAdjustments(
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
+  ) {
+    return this.service.findAdjustments({ page, limit });
   }
 }

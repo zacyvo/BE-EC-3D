@@ -3,7 +3,7 @@ import {
   IsArray, IsDateString, IsEnum, IsInt, IsNumber, IsOptional,
   IsString, Min, ValidateNested, ArrayMinSize, MaxLength,
 } from 'class-validator';
-import { FilamentColor, FilamentType } from '../schemas/filament.schema';
+import { FilamentColor, FilamentType, FilamentUnitStatus } from '../schemas/filament.schema';
 
 export class FilamentImportItemDto {
   @IsEnum(FilamentType)
@@ -55,6 +55,28 @@ export class ExportFilamentDto {
   @IsInt()
   @Min(1)
   quantity: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+/** Kiểm kê — đối chiếu số lượng thực đếm với hệ thống cho 1 tổ hợp loại/màu/trạng thái. */
+export class AdjustFilamentStockDto {
+  @IsEnum(FilamentType)
+  type: FilamentType;
+
+  @IsEnum(FilamentColor)
+  color: FilamentColor;
+
+  @IsEnum(FilamentUnitStatus)
+  status: FilamentUnitStatus;
+
+  /** Số lượng đếm được thực tế — hệ thống sẽ tự thêm/bớt cho khớp số này. */
+  @IsInt()
+  @Min(0)
+  actualQuantity: number;
 
   @IsOptional()
   @IsString()

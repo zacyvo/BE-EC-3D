@@ -5,6 +5,7 @@ import { FilamentsController } from './filaments.controller';
 import {
   FilamentImport, FilamentImportSchema,
   FilamentUnit, FilamentUnitSchema,
+  FilamentStockAdjustment, FilamentStockAdjustmentSchema,
 } from './schemas/filament.schema';
 import { InvoicesModule } from '../invoices/invoices.module';
 
@@ -13,6 +14,7 @@ import { InvoicesModule } from '../invoices/invoices.module';
     MongooseModule.forFeature([
       { name: FilamentImport.name, schema: FilamentImportSchema },
       { name: FilamentUnit.name, schema: FilamentUnitSchema },
+      { name: FilamentStockAdjustment.name, schema: FilamentStockAdjustmentSchema },
     ]),
     InvoicesModule,
   ],

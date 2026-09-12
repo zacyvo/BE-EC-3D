@@ -4,9 +4,10 @@ import { Model, Types } from 'mongoose';
 import {
   FilamentImport, FilamentImportDocument,
   FilamentUnit, FilamentUnitDocument,
+  FilamentStockAdjustment, FilamentStockAdjustmentDocument,
   FilamentUnitStatus, FilamentType, FilamentColor,
 } from './schemas/filament.schema';
-import { CreateFilamentImportDto, ExportFilamentDto } from './dto/filament.dto';
+import { CreateFilamentImportDto, ExportFilamentDto, AdjustFilamentStockDto } from './dto/filament.dto';
 import { InvoicesService } from '../invoices/invoices.service';
 import { InvoiceCategory, InvoiceSource } from '../invoices/schemas/invoice.schema';
 
@@ -58,6 +59,8 @@ export class FilamentsService {
     private readonly importModel: Model<FilamentImportDocument>,
     @InjectModel(FilamentUnit.name)
     private readonly unitModel: Model<FilamentUnitDocument>,
+    @InjectModel(FilamentStockAdjustment.name)
+    private readonly adjustmentModel: Model<FilamentStockAdjustmentDocument>,
     private readonly invoicesService: InvoicesService,
   ) {}
 
@@ -229,6 +232,72 @@ export class FilamentsService {
     );
 
     return this.unitModel.find({ _id: { $in: ids } }).populate('exportedBy', 'name email').lean();
+  }
+
+  /**
+   * Kiểm kê: đối chiếu số lượng thực đếm với số lượng hệ thống cho 1 tổ hợp
+   * (loại, màu, trạng thái) rồi tự thêm/bớt cuộn cho khớp. Không liên quan giá tiền —
+   * cuộn được tạo thêm có unitPrice = 0 và không gắn với phiếu nhập/hóa đơn nào.
+   */
+  async adjustStock(dto: AdjustFilamentStockDto, staffId: string): Promise<FilamentStockAdjustmentDocument> {
+    const filter = { type: dto.type, color: dto.color, status: dto.status };
+    const systemQtyBefore = await this.unitModel.countDocuments(filter);
+    const diff = dto.actualQuantity - systemQtyBefore;
+
+    if (diff > 0) {
+      const now = new Date();
+      const note = dto.note || 'Điều chỉnh từ kiểm kê';
+      const extra =
+        dto.status === FilamentUnitStatus.IN_USE
+          ? { exportedAt: now, exportedBy: new Types.ObjectId(staffId) }
+          : dto.status === FilamentUnitStatus.DEPLETED
+            ? { depletedAt: now }
+            : {};
+      const unitDocs = Array.from({ length: diff }, () => ({
+        type: dto.type,
+        color: dto.color,
+        unitPrice: 0,
+        status: dto.status,
+        note,
+        ...extra,
+      }));
+      await this.unitModel.insertMany(unitDocs);
+    } else if (diff < 0) {
+      const excess = await this.unitModel
+        .find(filter)
+        .sort({ createdAt: 1 })
+        .limit(-diff)
+        .select('_id');
+      await this.unitModel.deleteMany({ _id: { $in: excess.map((u) => u._id) } });
+    }
+
+    return this.adjustmentModel.create({
+      type: dto.type,
+      color: dto.color,
+      status: dto.status,
+      systemQtyBefore,
+      actualQty: dto.actualQuantity,
+      diff,
+      note: dto.note ?? '',
+      createdBy: new Types.ObjectId(staffId),
+    });
+  }
+
+  async findAdjustments(params: { page: number; limit: number }) {
+    const { page, limit } = params;
+
+    const [data, total] = await Promise.all([
+      this.adjustmentModel
+        .find()
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .populate('createdBy', 'name email')
+        .lean(),
+      this.adjustmentModel.countDocuments(),
+    ]);
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async depleteUnit(id: string): Promise<FilamentUnitDocument> {

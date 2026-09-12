@@ -106,8 +106,9 @@ export class FilamentUnit {
   @Prop({ default: FilamentUnitStatus.NEW, enum: Object.values(FilamentUnitStatus) })
   status: FilamentUnitStatus;
 
-  @Prop({ type: Types.ObjectId, ref: 'FilamentImport', required: true })
-  importId: Types.ObjectId;
+  /** Không có giá trị với cuộn được tạo ra từ kiểm kê (không xuất phát từ phiếu nhập thật). */
+  @Prop({ type: Types.ObjectId, ref: 'FilamentImport' })
+  importId?: Types.ObjectId;
 
   @Prop()
   exportedAt?: Date;
@@ -130,3 +131,46 @@ FilamentUnitSchema.index({ type: 1, color: 1, status: 1 });
 FilamentUnitSchema.index({ importId: 1 });
 FilamentUnitSchema.index({ createdAt: 1 });
 FilamentUnitSchema.index({ exportedAt: -1 });
+
+export type FilamentStockAdjustmentDocument = FilamentStockAdjustment & Document;
+
+/**
+ * Lịch sử kiểm kê — đối chiếu số lượng cuộn thực tế đếm được với số lượng hệ thống
+ * đang ghi nhận cho 1 tổ hợp (loại, màu, trạng thái) rồi điều chỉnh cho khớp.
+ * Không liên quan đến giá tiền / phiếu nhập / hóa đơn.
+ */
+@Schema({ timestamps: true })
+export class FilamentStockAdjustment {
+  _id: Types.ObjectId;
+
+  @Prop({ required: true, enum: Object.values(FilamentType) })
+  type: FilamentType;
+
+  @Prop({ required: true, enum: Object.values(FilamentColor) })
+  color: FilamentColor;
+
+  @Prop({ required: true, enum: Object.values(FilamentUnitStatus) })
+  status: FilamentUnitStatus;
+
+  @Prop({ required: true, min: 0 })
+  systemQtyBefore: number;
+
+  @Prop({ required: true, min: 0 })
+  actualQty: number;
+
+  @Prop({ required: true })
+  diff: number;
+
+  @Prop({ trim: true, maxlength: 500, default: '' })
+  note: string;
+
+  @Prop({ type: Types.ObjectId, ref: 'Staff', required: true })
+  createdBy: Types.ObjectId;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const FilamentStockAdjustmentSchema = SchemaFactory.createForClass(FilamentStockAdjustment);
+FilamentStockAdjustmentSchema.index({ createdAt: -1 });
+FilamentStockAdjustmentSchema.index({ type: 1, color: 1, status: 1 });
