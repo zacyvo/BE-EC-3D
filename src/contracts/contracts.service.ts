@@ -64,8 +64,8 @@ const BANK_INFO_PRESETS: Record<
   { bankAccountNumber: string; bankName: string; bankAccountHolder: string }
 > = {
   [PaymentInfoType.COMPANY]: {
-    bankAccountNumber: '060346849013',
-    bankName: 'SACOMBANK',
+    bankAccountNumber: '680446431',
+    bankName: 'VPBANK',
     bankAccountHolder: 'HO KINH DOANH LUXE GLOW',
   },
   [PaymentInfoType.INDIVIDUAL]: {
