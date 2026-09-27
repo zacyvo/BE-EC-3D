@@ -220,7 +220,9 @@ describe('computeOrderMoney', () => {
   it('computes a single-item order with no discount', () => {
     const rows = [baseRow()] as ShopeeOrderRawRow[];
     const money = computeOrderMoney(rows);
-    expect(money).toEqual({ subtotal: 17000, shippingFee: 0, discountAmount: 0, total: 17000 });
+    // No fee/tax columns set on baseRow() -> only statutory tax (1% + 0.5%) and the
+    // display-service fee (1.08%) apply: 17000 - 170 - 85 - 184 = 16561.
+    expect(money).toEqual({ subtotal: 17000, shippingFee: 0, discountAmount: 0, total: 17000, sellerRevenue: 16561 });
   });
 
   it('reconciles a multi-item order with shipping fee and a discount', () => {
@@ -253,6 +255,46 @@ describe('computeOrderMoney', () => {
     const money = computeOrderMoney(rows);
     expect(money.total).toBe(17000);
     expect(money.discountAmount).toBe(0);
+  });
+
+  it('matches Shopee\'s real "Thông tin thanh toán" breakdown for a real order (Khay Trang Sức Tai Thỏ 3D from Order.completed.mau.xlsx: 145.000đ giá bán, no Shopee shipping subsidy) — resolves sellerRevenue to the real 104.217đ payout, not the 145.881đ the buyer paid', () => {
+    const rows = [
+      baseRow({
+        [SHOPEE_ORDER_COLUMNS.offerPrice]: '145000.00',
+        [SHOPEE_ORDER_COLUMNS.quantity]: '1',
+        [SHOPEE_ORDER_COLUMNS.shippingFeePaidByBuyer]: '35700.00',
+        [SHOPEE_ORDER_COLUMNS.shippingFeeEstimated]: '35700.00',
+        [SHOPEE_ORDER_COLUMNS.shippingFeeShopeeSubsidized]: '0.00',
+        [SHOPEE_ORDER_COLUMNS.orderTotalPaid]: '145881.00',
+        [SHOPEE_ORDER_COLUMNS.fixedFee]: '23200.00',
+        [SHOPEE_ORDER_COLUMNS.serviceFee]: '3000.00',
+        [SHOPEE_ORDER_COLUMNS.transactionFee]: '10842.00',
+      }),
+    ] as ShopeeOrderRawRow[];
+    const money = computeOrderMoney(rows);
+    expect(money.total).toBe(145881);
+    expect(money.sellerRevenue).toBe(104217);
+  });
+
+  it('nets Shopee-subsidized shipping to zero seller impact instead of charging the seller the full carrier cost', () => {
+    const rows = [
+      baseRow({
+        [SHOPEE_ORDER_COLUMNS.offerPrice]: '69000.00',
+        [SHOPEE_ORDER_COLUMNS.quantity]: '1',
+        // Buyer only paid 6000 of the 35700 carrier cost; Shopee subsidized the
+        // other 29700 — the seller should only be charged the unsubsidized 6000,
+        // which exactly offsets what the buyer paid (net shipping impact = 0).
+        [SHOPEE_ORDER_COLUMNS.shippingFeePaidByBuyer]: '6000.00',
+        [SHOPEE_ORDER_COLUMNS.shippingFeeEstimated]: '35700.00',
+        [SHOPEE_ORDER_COLUMNS.shippingFeeShopeeSubsidized]: '29700.00',
+        [SHOPEE_ORDER_COLUMNS.fixedFee]: '8970.00',
+        [SHOPEE_ORDER_COLUMNS.serviceFee]: '3000.00',
+        [SHOPEE_ORDER_COLUMNS.transactionFee]: '4500.00',
+      }),
+    ] as ShopeeOrderRawRow[];
+    const money = computeOrderMoney(rows);
+    // 69000 - 8970 - 3000 - 4500 - 690 (VAT 1%) - 345 (PIT 0.5%) - 745 (display 1.08%)
+    expect(money.sellerRevenue).toBe(50750);
   });
 });
 

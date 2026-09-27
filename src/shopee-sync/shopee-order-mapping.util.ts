@@ -42,6 +42,18 @@ export const SHOPEE_ORDER_COLUMNS = {
   shippingFeePaidByBuyer: 'Phí vận chuyển mà người mua trả',
   /** Whole-ORDER grand total paid (lowercase "người") — repeated on every row of the order. */
   orderTotalPaid: 'Tổng số tiền người mua thanh toán',
+  /** Total carrier cost of the order — NOT what the seller is actually charged for
+   * shipping when Shopee co-funds it (see shippingFeeShopeeSubsidized below). */
+  shippingFeeEstimated: 'Phí vận chuyển (dự kiến)',
+  /** Portion of shippingFeeEstimated that Shopee itself covers (Freeship
+   * Xtra/marketing programs) — never deducted from the seller. What the seller is
+   * actually charged for shipping = shippingFeeEstimated - shippingFeeShopeeSubsidized. */
+  shippingFeeShopeeSubsidized: 'Phí vận chuyển tài trợ bởi Shopee (dự kiến)',
+  /** Order-level marketplace fees Shopee deducts before payout — repeated on every
+   * row of the order, same as orderTotalPaid. */
+  fixedFee: 'Phí cố định',
+  serviceFee: 'Phí Dịch Vụ',
+  transactionFee: 'Phí xử lý giao dịch',
   buyerUsername: 'Người Mua',
   recipientName: 'Tên Người nhận',
   phone: 'Số điện thoại',
@@ -234,15 +246,50 @@ export interface ShopeeOrderMoney {
   shippingFee: number;
   discountAmount: number;
   total: number;
+  /** What Shopee actually disburses to the seller for this order — NOT the same as
+   * `total` (what the buyer paid). Shopee's own shipping subsidy never reaches the
+   * seller, and Shopee deducts marketplace fees + statutory withholding tax before
+   * payout. See computeOrderMoney() for the itemized breakdown; verified against
+   * Shopee's own "Thông tin thanh toán" panel for a real order (145.000đ giá bán →
+   * 104.217đ doanh thu thực nhận). */
+  sellerRevenue: number;
 }
 
+/** Vietnam's e-commerce-platform withholding tax on the seller's product revenue
+ * (áp dụng từ 2025 theo Nghị định 91/2022 sửa đổi bởi Nghị định 117/2025): sàn khấu
+ * trừ tại nguồn 1% GTGT + 0.5% TNCN trên giá trị hàng bán trước khi thanh toán cho
+ * người bán cá nhân/hộ kinh doanh — khớp đúng với ví dụ thật (145.000đ → 1.450đ
+ * GTGT + 725đ TNCN). Not present as columns in the Order List export (only shown on
+ * Shopee's per-order "Thông tin thanh toán" panel), so computed from the statutory
+ * rate rather than read from the file. */
+const SHOPEE_VAT_WITHHOLDING_RATE = 0.01;
+const SHOPEE_PIT_WITHHOLDING_RATE = 0.005;
+
+/** "Phí dịch vụ hiển thị NTTD (từ doanh thu đơn hàng)" — like the tax above, this has
+ * no column in the Order List export (only visible on the per-order "Thông tin
+ * thanh toán" panel). Reverse-engineered as a fixed % of giá bán from one real order
+ * (145.000đ → 1.566đ = 1.08%) and confirmed with the business owner as the intended
+ * formula — if Shopee changes this fee, there is no way to detect it from the file
+ * and this constant needs to be re-verified against a fresh real order. */
+const SHOPEE_DISPLAY_SERVICE_FEE_RATE = 0.0108;
+
 /**
- * Reconciles Shopee's many money columns into the 4 fields Order needs, guaranteeing
+ * Reconciles Shopee's many money columns into the fields Order needs, guaranteeing
  * the schema invariant `total = subtotal - discountAmount + shippingFee`:
  * - subtotal = sum of each line's (Giá ưu đãi × Số lượng)
  * - shippingFee = what the buyer paid for shipping (order-level, same on every row)
  * - total = the order's actual grand total paid (ground truth, order-level)
  * - discountAmount = backed out so the invariant holds exactly
+ *
+ * `sellerRevenue` is separate from that invariant — it's what actually lands in the
+ * seller's Shopee balance, `total` minus every deduction Shopee takes before payout:
+ * - shipping nets to `shippingFee - (shippingFeeEstimated - shippingFeeShopeeSubsidized)`
+ *   — i.e. only the portion of the carrier cost NOT covered by Shopee's own subsidy
+ *   is charged back to the seller (in every real order sampled this nets to 0, but
+ *   it's computed generically rather than assumed)
+ * - fixedFee / serviceFee / transactionFee — Shopee's marketplace fees, read directly
+ * - VAT + PIT withholding tax and the display-service fee — not exported as columns,
+ *   computed from fixed % rates (see constants above)
  */
 export function computeOrderMoney(rows: ShopeeOrderRawRow[]): ShopeeOrderMoney {
   const subtotal = rows.reduce((sum, row) => {
@@ -253,7 +300,23 @@ export function computeOrderMoney(rows: ShopeeOrderRawRow[]): ShopeeOrderMoney {
   const shippingFee = parseVndAmount(rows[0][SHOPEE_ORDER_COLUMNS.shippingFeePaidByBuyer]);
   const total = parseVndAmount(rows[0][SHOPEE_ORDER_COLUMNS.orderTotalPaid]) || subtotal + shippingFee;
   const discountAmount = Math.max(0, subtotal + shippingFee - total);
-  return { subtotal, shippingFee, discountAmount, total };
+
+  const shippingFeeActual =
+    parseVndAmount(rows[0][SHOPEE_ORDER_COLUMNS.shippingFeeEstimated]) -
+    parseVndAmount(rows[0][SHOPEE_ORDER_COLUMNS.shippingFeeShopeeSubsidized]);
+  const netShippingImpact = shippingFee - shippingFeeActual;
+
+  const fixedFee = parseVndAmount(rows[0][SHOPEE_ORDER_COLUMNS.fixedFee]);
+  const serviceFee = parseVndAmount(rows[0][SHOPEE_ORDER_COLUMNS.serviceFee]);
+  const transactionFee = parseVndAmount(rows[0][SHOPEE_ORDER_COLUMNS.transactionFee]);
+  const vatWithheld = Math.round(subtotal * SHOPEE_VAT_WITHHOLDING_RATE);
+  const pitWithheld = Math.round(subtotal * SHOPEE_PIT_WITHHOLDING_RATE);
+  const displayServiceFee = Math.round(subtotal * SHOPEE_DISPLAY_SERVICE_FEE_RATE);
+
+  const sellerRevenue =
+    subtotal + netShippingImpact - fixedFee - serviceFee - transactionFee - vatWithheld - pitWithheld - displayServiceFee;
+
+  return { subtotal, shippingFee, discountAmount, total, sellerRevenue };
 }
 
 // ─── Product name matching (no SKU available in this export type) ────────────────

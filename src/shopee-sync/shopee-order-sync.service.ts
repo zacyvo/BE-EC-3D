@@ -324,8 +324,10 @@ export class ShopeeOrderSyncService {
       total: money.total,
       status,
       // A DELIVERED order (Shopee's "Hoàn thành"/"đã nhận được hàng") means Shopee's
-      // escrow has released the money to the seller — reflect it as collected.
-      ...(status === OrderStatus.DELIVERED ? { paidAmount: money.total } : {}),
+      // escrow has released money to the seller — but NOT the full `money.total` the
+      // buyer paid: Shopee deducts marketplace fees + withholding tax first, so the
+      // amount actually collected is `money.sellerRevenue` (see computeOrderMoney()).
+      ...(status === OrderStatus.DELIVERED ? { paidAmount: money.sellerRevenue } : {}),
       ...(carrierName || trackingCode || estimatedDeliveryDate ? { delivery: { carrierName, trackingCode, estimatedDeliveryDate } } : {}),
       ...(orderDate ? { orderDate } : {}),
       buyer: { externalBuyerId: buyerUsername, ...(hasValidPhone ? { phone: normalizeVnPhone(shippingInfo.phone) } : {}) },
