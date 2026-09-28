@@ -18,6 +18,32 @@ const CACHE_TTL = 300; // 5 minutes
 // Fields hidden from user API (pricing security)
 const USER_EXCLUDED_FIELDS = '-costPrice -profit -profitPercent';
 
+/** Stock ≤ this (and > 0) counts as "low stock" — matches the admin UI's orange highlight. */
+export const LOW_STOCK_THRESHOLD = 5;
+
+export const ProductStockStatus = { OUT: 'out', LOW: 'low', IN: 'in' } as const;
+export type ProductStockStatus = (typeof ProductStockStatus)[keyof typeof ProductStockStatus];
+
+export const ProductActiveStatus = { ACTIVE: 'active', INACTIVE: 'inactive' } as const;
+export type ProductActiveStatus = (typeof ProductActiveStatus)[keyof typeof ProductActiveStatus];
+
+export const SortOrder = { ASC: 'asc', DESC: 'desc' } as const;
+export type SortOrder = (typeof SortOrder)[keyof typeof SortOrder];
+
+// Sortable fields per audience. The public list must never sort by cost/profit
+// (ordering alone would leak the hidden pricing), so it gets a narrower whitelist.
+const PUBLIC_SORT_FIELDS = ['createdAt', 'finalPrice'] as const;
+const ADMIN_SORT_FIELDS = [
+  'createdAt',
+  'updatedAt',
+  'name',
+  'finalPrice',
+  'costPrice',
+  'profitPercent',
+  'stock',
+  'viewCount',
+] as const;
+
 @Injectable()
 export class ProductsService {
   constructor(
@@ -174,13 +200,24 @@ export class ProductsService {
     minPrice?: number;
     maxPrice?: number;
     sortBy?: string;
-    sortOrder?: 'asc' | 'desc';
+    sortOrder?: SortOrder;
+    /** Admin only — filter by isActive. */
+    status?: ProductActiveStatus;
+    /** Admin only — filter by stock level. */
+    stockStatus?: ProductStockStatus;
   }) {
-    const { page, limit, category, search, forAdmin, minPrice, maxPrice, sortBy, sortOrder } = query;
+    const {
+      page, limit, category, search, forAdmin, minPrice, maxPrice, sortBy, sortOrder, status, stockStatus,
+    } = query;
+
+    const allowedSortFields: readonly string[] = forAdmin ? ADMIN_SORT_FIELDS : PUBLIC_SORT_FIELDS;
+    const sortField = sortBy && allowedSortFields.includes(sortBy) ? sortBy : 'createdAt';
+    const sortDir: 1 | -1 = sortOrder === SortOrder.ASC ? 1 : -1;
 
     // Try cache for user queries
-    if (!forAdmin && !search && !minPrice && !maxPrice) {
-      const cacheKey = `${CACHE_KEY_LIST}:${page}:${limit}:${category || 'all'}`;
+    const cacheable = !forAdmin && !search && !minPrice && !maxPrice;
+    const cacheKey = `${CACHE_KEY_LIST}:${page}:${limit}:${category || 'all'}:${sortField}:${sortDir}`;
+    if (cacheable) {
       const cached = await this.cacheManager.get<{ data: Array<{ colors?: unknown; sizes?: unknown }> }>(cacheKey);
       if (cached) {
         cached.data.forEach((p) => this.withVariantDefaults(p));
@@ -188,8 +225,20 @@ export class ProductsService {
       }
     }
 
-    const filter: Record<string, unknown> = {};
+    // isDeleted is set explicitly (not left to the pre-find hook) because
+    // countDocuments doesn't run /^find/ middleware — otherwise `total` counts deleted products.
+    const filter: Record<string, unknown> = { isDeleted: false };
     if (!forAdmin) filter.isActive = true;
+    else if (status) filter.isActive = status === ProductActiveStatus.ACTIVE;
+
+    if (forAdmin && stockStatus) {
+      filter.stock =
+        stockStatus === ProductStockStatus.OUT
+          ? { $lte: 0 }
+          : stockStatus === ProductStockStatus.LOW
+            ? { $gt: 0, $lte: LOW_STOCK_THRESHOLD }
+            : { $gt: 0 };
+    }
     if (category) {
       const categoryId = await this.resolveCategoryId(category);
       if (categoryId) filter.category = categoryId;
@@ -224,21 +273,21 @@ export class ProductsService {
 
     const selectFields = forAdmin ? '' : USER_EXCLUDED_FIELDS;
 
-    const sortQuery: Record<string, 1 | -1> =
-      sortBy === 'finalPrice'
-        ? { finalPrice: sortOrder === 'asc' ? 1 : -1 }
-        : { createdAt: -1 };
+    // _id tie-breaker keeps pagination stable when many rows share the sort value (e.g. stock = 0)
+    const sortQuery: Record<string, 1 | -1> = { [sortField]: sortDir, _id: sortDir };
+
+    const listQuery = this.productModel
+      .find(filter)
+      .select(selectFields)
+      .populate('category', 'name')
+      .sort(sortQuery)
+      .skip((page - 1) * limit)
+      .limit(limit);
+    // Vietnamese collation so "Đ", "Ư"... sort alphabetically instead of after "Z"
+    if (sortField === 'name') listQuery.collation({ locale: 'vi' });
 
     const [data, total] = await Promise.all([
-      this.productModel
-        .find(filter)
-        .select(selectFields)
-        .populate('category', 'name')
-        .sort(sortQuery)
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .lean()
-        .exec(),
+      listQuery.lean().exec(),
       this.productModel.countDocuments(filter).exec(),
     ]);
 
@@ -252,8 +301,7 @@ export class ProductsService {
 
     const result = { data, total, page, limit, totalPages: Math.ceil(total / limit) };
 
-    if (!forAdmin && !search && !minPrice && !maxPrice) {
-      const cacheKey = `${CACHE_KEY_LIST}:${page}:${limit}:${category || 'all'}`;
+    if (cacheable) {
       await this.cacheManager.set(cacheKey, result, CACHE_TTL);
     }
 

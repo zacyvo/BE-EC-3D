@@ -9,9 +9,10 @@ import {
   Query,
   UseGuards,
   ParseIntPipe,
+  ParseEnumPipe,
   DefaultValuePipe,
 } from '@nestjs/common';
-import { ProductsService } from './products.service';
+import { ProductsService, ProductActiveStatus, ProductStockStatus, SortOrder } from './products.service';
 import { CreateProductDto, UpdateProductDto } from './dto/product.dto';
 import { JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -68,8 +69,27 @@ export class AdminProductsController {
     @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
     @Query('category') category?: string,
     @Query('search') search?: string,
+    @Query('status', new ParseEnumPipe(ProductActiveStatus, { optional: true })) status?: ProductActiveStatus,
+    @Query('stockStatus', new ParseEnumPipe(ProductStockStatus, { optional: true })) stockStatus?: ProductStockStatus,
+    @Query('minPrice', new ParseIntPipe({ optional: true })) minPrice?: number,
+    @Query('maxPrice', new ParseIntPipe({ optional: true })) maxPrice?: number,
+    // Unknown sortBy values fall back to createdAt inside the service (whitelisted there)
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder', new ParseEnumPipe(SortOrder, { optional: true })) sortOrder?: SortOrder,
   ) {
-    return this.productsService.findAll({ page, limit, category, search, forAdmin: true });
+    return this.productsService.findAll({
+      page,
+      limit,
+      category,
+      search,
+      forAdmin: true,
+      status,
+      stockStatus,
+      minPrice,
+      maxPrice,
+      sortBy,
+      sortOrder,
+    });
   }
 
   @Get(':id')
