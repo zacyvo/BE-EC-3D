@@ -71,8 +71,9 @@ export class AdminProductsController {
     @Query('search') search?: string,
     @Query('status', new ParseEnumPipe(ProductActiveStatus, { optional: true })) status?: ProductActiveStatus,
     @Query('stockStatus', new ParseEnumPipe(ProductStockStatus, { optional: true })) stockStatus?: ProductStockStatus,
-    @Query('minPrice', new ParseIntPipe({ optional: true })) minPrice?: number,
-    @Query('maxPrice', new ParseIntPipe({ optional: true })) maxPrice?: number,
+    // Global ValidationPipe coerces a missing number query to NaN; DefaultValuePipe maps NaN back to undefined
+    @Query('minPrice', new DefaultValuePipe(undefined), new ParseIntPipe({ optional: true })) minPrice?: number,
+    @Query('maxPrice', new DefaultValuePipe(undefined), new ParseIntPipe({ optional: true })) maxPrice?: number,
     // Unknown sortBy values fall back to createdAt inside the service (whitelisted there)
     @Query('sortBy') sortBy?: string,
     @Query('sortOrder', new ParseEnumPipe(SortOrder, { optional: true })) sortOrder?: SortOrder,
