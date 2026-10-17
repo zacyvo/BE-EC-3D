@@ -1,7 +1,12 @@
 import { ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ZaloBotConfigService } from './zalo-bot.config';
-import { ZaloBotWebhookController, parseTextReceivedEvent, secretMatches } from './zalo-bot-webhook.controller';
+import {
+  ZaloBotWebhookController,
+  describePayloadShape,
+  parseTextReceivedEvent,
+  secretMatches,
+} from './zalo-bot-webhook.controller';
 import { ZaloOwnerRecipientService } from './zalo-owner-recipient.service';
 
 const SECRET = 'webhook-secret-for-tests-123';
@@ -79,6 +84,28 @@ describe('ZaloBotWebhookController', () => {
     const botEvent = textEvent('abc');
     (botEvent.result.message.from as { is_bot: boolean }).is_bot = true;
     expect(parseTextReceivedEvent(botEvent).chat).toBeNull();
+  });
+
+  it('also accepts the event at the top level (no {ok, result} envelope)', async () => {
+    const { controller, recipients } = makeController();
+    const res = await controller.receive(SECRET, textEvent('top-level-chat').result);
+    expect(res).toEqual({ received: true, handled: true });
+    expect(recipients.recordInboundChat).toHaveBeenCalledWith(expect.objectContaining({ chatId: 'top-level-chat' }));
+  });
+
+  it('logs only the payload shape (field names, never values) for ignored events', async () => {
+    const logged: string[] = [];
+    jest.spyOn(Logger.prototype, 'log').mockImplementation((m: unknown) => {
+      logged.push(String(m));
+    });
+    const { controller } = makeController();
+    await controller.receive(SECRET, { foo: { chat: { id: 'secret-chat-id' } }, text: 'private message text' });
+    expect(logged.join('\n')).toContain('keys=[foo,text]');
+    expect(logged.join('\n')).not.toContain('secret-chat-id');
+    expect(logged.join('\n')).not.toContain('private message text');
+    expect(describePayloadShape(textEvent())).toBe(
+      'keys=[ok,result] result=[event_name,message] message=[from,chat,text,message_id,date] chat=[id,chat_type]',
+    );
   });
 
   it('secretMatches is exact', () => {

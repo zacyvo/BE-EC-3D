@@ -23,6 +23,37 @@ export function secretMatches(received: string | undefined, expected: string): b
   return timingSafeEqual(a, b);
 }
 
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+}
+
+/** The documented envelope is `{ ok, result: { event_name, message } }`; also accept the event
+ * at the top level (`{ event_name, message }`) in case real deliveries differ from the docs. */
+function eventObject(body: unknown): Record<string, unknown> | undefined {
+  const root = asRecord(body);
+  const wrapped = asRecord(root?.result);
+  if (wrapped && ('event_name' in wrapped || 'message' in wrapped)) return wrapped;
+  if (root && ('event_name' in root || 'message' in root)) return root;
+  return wrapped;
+}
+
+/** Field names only (never values) — lets ops see an unexpected payload shape in the logs
+ * without logging message content or ids. */
+export function describePayloadShape(body: unknown): string {
+  const root = asRecord(body);
+  if (!root) return `type=${Array.isArray(body) ? 'array' : typeof body}`;
+  const evt = eventObject(body);
+  const message = asRecord(evt?.message);
+  return [
+    `keys=[${Object.keys(root).join(',')}]`,
+    evt && evt !== root ? `result=[${Object.keys(evt).join(',')}]` : '',
+    message ? `message=[${Object.keys(message).join(',')}]` : '',
+    message?.chat ? `chat=[${Object.keys(asRecord(message.chat) ?? {}).join(',')}]` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
 /**
  * Extracts the chat from a `message.text.received` event
  * (docs.zaloplatforms.com/docs/BOT/webhook):
@@ -30,7 +61,7 @@ export function secretMatches(received: string | undefined, expected: string): b
  * Returns null for anything else — other event types and malformed bodies are ignored.
  */
 export function parseTextReceivedEvent(body: unknown): { eventName: string | null; chat: InboundChat | null } {
-  const result = (body as { result?: unknown })?.result as Record<string, unknown> | undefined;
+  const result = eventObject(body);
   const eventName = typeof result?.event_name === 'string' ? result.event_name : null;
   if (eventName !== 'message.text.received') return { eventName, chat: null };
 
@@ -93,6 +124,7 @@ export class ZaloBotWebhookController {
     if (!chat) {
       // testWebhook probes, other event types (image/sticker/voice/unsupported), malformed
       // bodies: acknowledge so Zalo marks the endpoint healthy, but do nothing.
+      this.logger.log(`Webhook Zalo Bot: bỏ qua sự kiện ${eventName ?? '(không có event_name)'} — ${describePayloadShape(body)}`);
       return { received: true, handled: false, event: eventName };
     }
 
