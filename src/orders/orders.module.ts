@@ -10,6 +10,7 @@ import { AuditModule } from '../audit/audit.module';
 import { PromotionsModule } from '../promotions/promotions.module';
 import { UsersModule } from '../users/users.module';
 import { LocationsModule } from '../locations/locations.module';
+import { ZaloBotModule } from '../zalo-bot/zalo-bot.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { LocationsModule } from '../locations/locations.module';
     PromotionsModule,
     UsersModule,
     LocationsModule,
+    ZaloBotModule,
   ],
   controllers: [OrdersController, AdminOrdersController],
   providers: [OrdersService],

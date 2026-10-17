@@ -16,6 +16,7 @@ import { StaffRole } from '../auth/decorators/roles.decorator';
 import { PromotionsService } from '../promotions/promotions.service';
 import { UsersService } from '../users/users.service';
 import { AddressConversionService } from '../locations/address-conversion.service';
+import { OrderNotificationService } from '../zalo-bot/order-notification.service';
 
 /** One imported line item — already resolved to a catalog product by the caller
  * (e.g. ShopeeOrderSyncService); OrdersService just persists it as-is. */
@@ -83,6 +84,7 @@ export class OrdersService {
     private readonly promotionsService: PromotionsService,
     private readonly usersService: UsersService,
     private readonly addressConversionService: AddressConversionService,
+    private readonly orderNotifications: OrderNotificationService,
   ) {}
 
   /** Validates the selected color/size against the product's configured options
@@ -183,6 +185,8 @@ export class OrdersService {
       status: OrderStatus.PENDING,
       currentVersion: 1,
       ...(dto.customerNote ? { customerNote: dto.customerNote } : {}),
+      // ORDER_CREATED owner notification intent, persisted atomically with the order.
+      ...this.orderNotifications.orderCreatedOutboxFields(),
     });
 
     // Mark coupons as used
@@ -206,6 +210,9 @@ export class OrdersService {
       module: 'orders',
       targetId: order._id.toString(),
     });
+
+    // Non-blocking: the worker sends asynchronously; a Zalo failure can't affect checkout.
+    this.orderNotifications.kick();
 
     return order;
   }

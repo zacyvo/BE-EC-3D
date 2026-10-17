@@ -164,6 +164,12 @@ export class Order {
 
   @Prop({ default: 1 }) currentVersion: number;
 
+  /** Transactional outbox for owner notifications (see zalo-bot/order-notification.service.ts):
+   * written in the SAME insert as the order, so the intent exists iff the order does; the
+   * Zalo Bot worker pulls each event once its notification jobs exist. Absent on most
+   * orders; hidden from API responses by the toJSON transform below. */
+  @Prop({ type: [String], default: undefined }) pendingNotificationEvents?: string[];
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -175,6 +181,15 @@ OrderSchema.index({ isDeleted: 1 });
 // Sparse: only orders imported from a marketplace carry externalRef, so this never
 // collides with plain orders (which omit the field entirely).
 OrderSchema.index({ 'externalRef.channel': 1, 'externalRef.code': 1 }, { unique: true, sparse: true });
+// Sparse: only orders with a not-yet-dispatched notification carry the field.
+OrderSchema.index({ pendingNotificationEvents: 1 }, { sparse: true });
+// Internal worker state — keep it out of checkout/admin API responses.
+OrderSchema.set('toJSON', {
+  transform: (_doc, ret) => {
+    delete ret.pendingNotificationEvents;
+    return ret;
+  },
+});
 OrderSchema.pre(/^find/, function (this: any, next: () => void) {
   if (this.getFilter().isDeleted === undefined) this.where({ isDeleted: false });
   next();
