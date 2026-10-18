@@ -154,6 +154,18 @@ export class PromotionsService {
     return promo.save();
   }
 
+  /** Atomically grant one user access to a program's coupons (same `assignedUsers`
+   * mechanism as assign(), but with $addToSet so concurrent callers can't lose an update
+   * and repeating it is a no-op). Returns false if the program does not exist. */
+  async assignUserToProgram(programId: string, userId: string): Promise<boolean> {
+    if (!Types.ObjectId.isValid(programId) || !Types.ObjectId.isValid(userId)) return false;
+    const res = await this.promotionModel.updateOne(
+      { _id: new Types.ObjectId(programId) },
+      { $addToSet: { assignedUsers: new Types.ObjectId(userId) } },
+    );
+    return res.matchedCount === 1;
+  }
+
   // ─── Admin: Coupon CRUD (within a program) ────────────────────────────────
 
   async addCoupon(programId: string, dto: CreateCouponItemDto): Promise<PromotionDocument> {

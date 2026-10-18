@@ -4,10 +4,12 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { json, urlencoded } from 'express';
+import { IncomingMessage } from 'http';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/http-exception.filter';
 import { ResponseInterceptor } from './common/response.interceptor';
+import { ZALO_OA_WEBHOOK_PATH } from './zalo-oa-reward/zalo-oa-reward.constants';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -17,7 +19,14 @@ async function bootstrap() {
 
   // Body-parser mặc định giới hạn 100kb — không đủ cho ảnh chữ ký (canvas PNG base64)
   // ở endpoint document/party-a-simple-signature.
-  app.use(json({ limit: '5mb' }));
+  app.use(json({
+    limit: '5mb',
+    // Zalo OA webhook signature is computed over the exact body bytes — keep them for that
+    // one route only (see zalo-oa-reward/zalo-oa-webhook.service.ts).
+    verify: (req: IncomingMessage & { rawBody?: Buffer; originalUrl?: string }, _res, buf) => {
+      if ((req.originalUrl ?? req.url ?? '').split('?')[0] === ZALO_OA_WEBHOOK_PATH) req.rawBody = buf;
+    },
+  }));
   app.use(urlencoded({ extended: true, limit: '5mb' }));
 
   const configService = app.get(ConfigService);

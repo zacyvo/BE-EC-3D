@@ -27,6 +27,7 @@ import { PrintPlansModule } from './print-plans/print-plans.module';
 import { ShopeeSyncModule } from './shopee-sync/shopee-sync.module';
 import { SettingsModule } from './settings/settings.module';
 import { NfcModule } from './nfc/nfc.module';
+import { ZaloOaRewardModule } from './zalo-oa-reward/zalo-oa-reward.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -91,6 +92,7 @@ import { HealthController } from './health.controller';
     ShopeeSyncModule,
     SettingsModule,
     NfcModule,
+    ZaloOaRewardModule,
   ],
   controllers: [HealthController],
 })
