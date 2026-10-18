@@ -19,7 +19,8 @@ import {
 } from 'class-validator';
 import { ContractStatus, PaymentInfoType } from '../schemas/contract.schema';
 
-const PHONE_REGEX = /^(0|\+84)\d{9}$/;
+/** Di động 10 số (0xxxxxxxxx) hoặc máy bàn 11 số có mã vùng (02xxxxxxxxx) */
+const PHONE_REGEX = /^(0|\+84)\d{9,10}$/;
 
 // ── Shared ────────────────────────────────────────────────────────────────────
 
