@@ -31,7 +31,9 @@ export const MarketplaceDimensionSchema = SchemaFactory.createForClass(Marketpla
  * (see `ShopeeCatalogPublishService`); Shopee caps this at 2 dimensions in practice. */
 @Schema({ _id: false })
 export class MarketplaceTierVariation {
-  @Prop({ required: true, trim: true }) name: string;
+  // Not required: Shopee can send a blank tier name, and Mongoose `required` rejects ''
+  // — must stay in sync with TierVariationUploadDto (only `options` is ever read).
+  @Prop({ type: String, trim: true, default: '' }) name: string;
   @Prop({ type: [String], default: [] }) options: string[];
 }
 export const MarketplaceTierVariationSchema = SchemaFactory.createForClass(MarketplaceTierVariation);
