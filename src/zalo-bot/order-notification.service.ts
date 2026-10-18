@@ -5,6 +5,7 @@ import {
   NotFoundException,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -23,6 +24,7 @@ import { ZaloBotCallResult, ZaloBotClient, ZaloSendMessageResult } from './zalo-
 import { ZaloOwnerRecipientService, maskChatId } from './zalo-owner-recipient.service';
 import { formatOrderCreatedMessage, orderDisplayCode, OrderMessageInput } from './order-message.formatter';
 import { AuditService } from '../audit/audit.service';
+import { ZbsOrderConfirmationService } from '../zalo-zbs/zbs-order-confirmation.service';
 
 /** Name of the outbox field on Order (see order.schema.ts `pendingNotificationEvents`). */
 export const ORDER_OUTBOX_FIELD = 'pendingNotificationEvents';
@@ -61,6 +63,10 @@ export interface RunOnceResult {
  *     outcome is persisted. TRANSIENT failures back off exponentially; UNKNOWN outcomes are
  *     parked for a human — never blindly resent.
  *
+ * This service is also the single ORDER_CREATED entry point for checkout: it adds the
+ * customer ZBS channel's own outbox marker and forwards `kick()` to its (separate) worker —
+ * see src/zalo-zbs. Each channel only claims its own jobs (`channel` filter).
+ *
  * Nothing here runs inside the checkout request: OrdersService only gets a non-blocking
  * `kick()`. Render runs this backend as a long-lived process, so a setInterval worker is
  * appropriate (no serverless constraints); the lease makes multiple instances safe.
@@ -79,6 +85,8 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
     private readonly client: ZaloBotClient,
     private readonly recipients: ZaloOwnerRecipientService,
     private readonly auditService: AuditService,
+    /** Customer ZBS confirmation (optional so the Bot works — and is tested — on its own). */
+    @Optional() private readonly zbs?: ZbsOrderConfirmationService,
   ) {}
 
   // ─── Lifecycle ───────────────────────────────────────────────────────────
@@ -108,21 +116,25 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
   // ─── Producer side (called from OrdersService) ──────────────────────────
 
   /** Extra fields to merge into a new customer order so the intent is persisted atomically
-   * with it. Empty when the feature is off — checkout behaves exactly as before. */
+   * with it: 'ORDER_CREATED' for the owner Bot, plus the ZBS marker for the customer
+   * confirmation — each only while its own channel is enabled. Empty when both are off —
+   * checkout behaves exactly as before. */
   orderCreatedOutboxFields(): { pendingNotificationEvents?: string[] } {
+    const events: string[] = [];
     try {
-      return this.configService.get().enabled
-        ? { [ORDER_OUTBOX_FIELD]: [NotificationEventType.ORDER_CREATED] }
-        : {};
+      if (this.configService.get().enabled) events.push(NotificationEventType.ORDER_CREATED);
     } catch (err) {
       this.logger.error(`Không xác định được cấu hình Zalo Bot: ${(err as Error).message}`);
-      return {};
     }
+    const zbsMarker = this.zbs?.outboxMarker();
+    if (zbsMarker) events.push(zbsMarker);
+    return events.length ? { [ORDER_OUTBOX_FIELD]: events } : {};
   }
 
   /** Fire-and-forget nudge so the owner is notified within seconds instead of at the next
    * poll. Never throws, never awaits Zalo. */
   kick(): void {
+    this.zbs?.kick();
     try {
       if (!this.configService.get().enabled) return;
     } catch {
@@ -253,7 +265,7 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
     const now = new Date();
     const res = await this.jobModel
       .updateMany(
-        { status: NotificationStatus.PROCESSING, lockedUntil: { $lt: now } },
+        { channel: ZALO_BOT_CHANNEL, status: NotificationStatus.PROCESSING, lockedUntil: { $lt: now } },
         {
           $set: {
             status: NotificationStatus.UNKNOWN,
@@ -275,6 +287,7 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
     return this.jobModel
       .findOneAndUpdate(
         {
+          channel: ZALO_BOT_CHANNEL,
           status: { $in: [NotificationStatus.PENDING, NotificationStatus.RETRY_PENDING] },
           nextAttemptAt: { $lte: now },
         },
@@ -511,7 +524,8 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
   async retryJob(id: string, staffId: string, confirmUnknownOutcome = false) {
     if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Mã thông báo không hợp lệ');
     const job = await this.jobModel.findById(id).exec();
-    if (!job) throw new NotFoundException('Không tìm thấy thông báo');
+    // ZBS rows share the collection; they are retried via /admin/zalo-zbs only.
+    if (!job || job.channel !== ZALO_BOT_CHANNEL) throw new NotFoundException('Không tìm thấy thông báo');
     if (!this.isRetryable(job.status)) {
       throw new BadRequestException(`Không thể gửi lại thông báo ở trạng thái ${job.status}`);
     }

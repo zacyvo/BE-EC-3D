@@ -19,7 +19,9 @@
     "seed": "ts-node src/seed/seed.ts",
     "migrate:shopee-sync": "ts-node src/shopee-sync/migrations/ensure-indexes.ts",
     "migrate:zalo-bot": "ts-node src/zalo-bot/migrations/ensure-indexes.ts",
-    "zalo-bot": "ts-node src/zalo-bot/scripts/zalo-bot-cli.ts"
+    "zalo-bot": "ts-node src/zalo-bot/scripts/zalo-bot-cli.ts",
+    "migrate:zalo-zbs": "ts-node src/zalo-zbs/migrations/ensure-indexes.ts",
+    "zalo-zbs": "ts-node src/zalo-zbs/scripts/zalo-zbs-cli.ts"
   },
   "dependencies": {
     "@nestjs/cache-manager": "^2.2.2",

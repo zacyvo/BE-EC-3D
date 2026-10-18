@@ -164,9 +164,10 @@ export class Order {
 
   @Prop({ default: 1 }) currentVersion: number;
 
-  /** Transactional outbox for owner notifications (see zalo-bot/order-notification.service.ts):
+  /** Transactional outbox for notifications (see zalo-bot/order-notification.service.ts):
    * written in the SAME insert as the order, so the intent exists iff the order does; the
-   * Zalo Bot worker pulls each event once its notification jobs exist. Absent on most
+   * worker of each channel pulls its own marker once the notification jobs exist —
+   * 'ORDER_CREATED' (owner Zalo Bot), 'ORDER_CREATED:ZALO_ZBS' (customer ZBS). Absent on most
    * orders; hidden from API responses by the toJSON transform below. */
   @Prop({ type: [String], default: undefined }) pendingNotificationEvents?: string[];
 

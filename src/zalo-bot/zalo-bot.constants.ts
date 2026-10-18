@@ -22,6 +22,14 @@ export enum NotificationStatus {
   FAILED = 'FAILED',
   UNKNOWN = 'UNKNOWN',
   SKIPPED_NOT_CONFIGURED = 'SKIPPED_NOT_CONFIGURED',
+  // ── Used by the customer-facing ZBS channel only (src/zalo-zbs) ──
+  /** Provider delivery evidence (ZBS message-status API says the phone received it). */
+  DELIVERED = 'DELIVERED',
+  /** Order phone missing / malformed, or Zalo answered "phone number invalid". */
+  SKIPPED_INVALID_RECIPIENT = 'SKIPPED_INVALID_RECIPIENT',
+  /** Zalo refused this recipient (no Zalo account, opted out, delivery policy) or the order
+   * is no longer eligible (cancelled before sending). */
+  SKIPPED_INELIGIBLE = 'SKIPPED_INELIGIBLE',
 }
 
 /** recipientId used for the single placeholder job recorded when an order event could
