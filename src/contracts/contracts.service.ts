@@ -246,6 +246,7 @@ export class ContractsService {
       bankName: contract.bankName,
       bankAccountHolder: contract.bankAccountHolder,
       deliveryDate: contract.deliveryDate,
+      deliveryAddress: contract.deliveryAddress,
     };
     const buffer = await this.pdfGenerationService.generateContractPdf(input);
     const stored = await this.documentStorageService.uploadPdf(

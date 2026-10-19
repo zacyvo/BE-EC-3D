@@ -41,6 +41,7 @@ export interface ContractPdfInput {
   bankName: string;
   bankAccountHolder: string;
   deliveryDate?: Date;
+  deliveryAddress: string;
 }
 
 // ── Đọc số tiền thành chữ (port từ frontend ContractDocument.tsx) ────────────
@@ -245,7 +246,7 @@ export function buildContractDocDefinition(data: ContractPdfInput): TDocumentDef
 
     articleTitle('Điều 4. Thời gian thực hiện và giao nhận'),
     p(`4.1. Thời gian giao hàng: ${vnDate(data.deliveryDate ?? null)}.`),
-    p('4.2. Địa điểm giao hàng theo thoả thuận giữa hai bên. Chi phí vận chuyển do Bên B chịu (đã bao gồm trong giá trị hợp đồng).'),
+    p(`4.2. Địa điểm giao hàng: ${dots(data.deliveryAddress)}. Chi phí vận chuyển do hai bên thỏa thuận (chưa bao gồm trong giá trị hợp đồng).`),
     p('4.3. Bên A kiểm tra và nghiệm thu số lượng, ngoại quan sản phẩm khi Bên B bàn giao; khiếu nại (nếu có) gửi cho Bên B trong vòng 05 ngày làm việc kể từ ngày nghiệm thu.'),
 
     articleTitle('Điều 5. Tiêu chuẩn chất lượng và sai số'),
