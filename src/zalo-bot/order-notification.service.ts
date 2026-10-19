@@ -18,11 +18,17 @@ import {
   NotificationEventType,
   NotificationStatus,
   ZALO_BOT_CHANNEL,
+  ZALO_BOT_OUTBOX_EVENTS,
 } from './zalo-bot.constants';
 import { ZaloBotConfigService } from './zalo-bot.config';
 import { ZaloBotCallResult, ZaloBotClient, ZaloSendMessageResult } from './zalo-bot.client';
 import { ZaloOwnerRecipientService, maskChatId } from './zalo-owner-recipient.service';
-import { formatOrderCreatedMessage, orderDisplayCode, OrderMessageInput } from './order-message.formatter';
+import {
+  formatOrderCancelRequestedMessage,
+  formatOrderCreatedMessage,
+  orderDisplayCode,
+  OrderMessageInput,
+} from './order-message.formatter';
 import { AuditService } from '../audit/audit.service';
 import { ZbsOrderConfirmationService } from '../zalo-zbs/zbs-order-confirmation.service';
 
@@ -50,7 +56,8 @@ export interface RunOnceResult {
 }
 
 /**
- * ORDER_CREATED → Zalo Bot pipeline (transactional outbox without Mongo transactions):
+ * ORDER_CREATED / ORDER_CANCEL_REQUESTED → Zalo Bot pipeline (transactional outbox without
+ * Mongo transactions):
  *
  *  1. OrdersService.create() writes `pendingNotificationEvents: ['ORDER_CREATED']` INSIDE the
  *     new order document. A single-document insert is atomic, so the intent exists iff the
@@ -131,6 +138,17 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
     return events.length ? { [ORDER_OUTBOX_FIELD]: events } : {};
   }
 
+  /** Outbox events to `$addToSet` together with the customer's cancel request (same atomic
+   * update), so the owner is told iff the request was recorded. Empty while the Bot is off. */
+  cancelRequestedOutboxEvents(): string[] {
+    try {
+      return this.configService.get().enabled ? [NotificationEventType.ORDER_CANCEL_REQUESTED] : [];
+    } catch (err) {
+      this.logger.error(`Không xác định được cấu hình Zalo Bot: ${(err as Error).message}`);
+      return [];
+    }
+  }
+
   /** Fire-and-forget nudge so the owner is notified within seconds instead of at the next
    * poll. Never throws, never awaits Zalo. */
   kick(): void {
@@ -172,24 +190,27 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
   }
 
   async fanOutPendingOrders(limit = FAN_OUT_BATCH): Promise<number> {
-    const event = NotificationEventType.ORDER_CREATED;
-    // Soft-deleted orders are hidden by the Order find() hook — just drop their flag.
-    await this.orderModel
-      .updateMany({ [ORDER_OUTBOX_FIELD]: event, isDeleted: true }, { $pull: { [ORDER_OUTBOX_FIELD]: event } })
-      .exec();
+    let fannedOut = 0;
+    for (const event of ZALO_BOT_OUTBOX_EVENTS) {
+      // Soft-deleted orders are hidden by the Order find() hook — just drop their flag.
+      await this.orderModel
+        .updateMany({ [ORDER_OUTBOX_FIELD]: event, isDeleted: true }, { $pull: { [ORDER_OUTBOX_FIELD]: event } })
+        .exec();
 
-    const orders = await this.orderModel
-      .find({ [ORDER_OUTBOX_FIELD]: event })
-      .sort({ createdAt: 1 })
-      .limit(limit)
-      .lean()
-      .exec();
+      const orders = await this.orderModel
+        .find({ [ORDER_OUTBOX_FIELD]: event })
+        .sort({ createdAt: 1 })
+        .limit(limit)
+        .lean()
+        .exec();
 
-    for (const order of orders) {
-      await this.fanOutOrder(order._id.toString(), event);
-      await this.orderModel.updateOne({ _id: order._id }, { $pull: { [ORDER_OUTBOX_FIELD]: event } }).exec();
+      for (const order of orders) {
+        await this.fanOutOrder(order._id.toString(), event);
+        await this.orderModel.updateOne({ _id: order._id }, { $pull: { [ORDER_OUTBOX_FIELD]: event } }).exec();
+      }
+      fannedOut += orders.length;
     }
-    return orders.length;
+    return fannedOut;
   }
 
   /** Creates one job per approved recipient (idempotent). With no valid config/recipient it
@@ -324,7 +345,11 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
         });
       }
 
-      const text = formatOrderCreatedMessage(order as unknown as OrderMessageInput, { adminUrl: cfg.adminUrl });
+      const format =
+        job.eventType === NotificationEventType.ORDER_CANCEL_REQUESTED
+          ? formatOrderCancelRequestedMessage
+          : formatOrderCreatedMessage;
+      const text = format(order as unknown as OrderMessageInput, { adminUrl: cfg.adminUrl });
       sendStarted = true;
       const res = await this.client.sendMessage(job.recipientId, text);
       return this.applySendResult(job, res, cfg.retryBaseDelayMs);

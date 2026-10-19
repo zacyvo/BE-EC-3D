@@ -1,9 +1,11 @@
 import {
   Controller, Get, Post, Patch, Delete, Body, Param,
-  Query, UseGuards, ParseIntPipe, DefaultValuePipe,
+  Query, UseGuards, ParseIntPipe, DefaultValuePipe, ParseEnumPipe,
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
-import { CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto } from './dto/order.dto';
+import {
+  CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto, UserCancelOrderDto,
+} from './dto/order.dto';
 import { OrderStatus } from './schemas/order.schema';
 import { JwtAuthGuard, JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -25,13 +27,26 @@ export class OrdersController {
     @CurrentUser() user: { sub: string },
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
+    @Query('status', new ParseEnumPipe(OrderStatus, { optional: true })) status?: OrderStatus,
   ) {
-    return this.ordersService.findByUser(user.sub, { page, limit });
+    return this.ordersService.findByUser(user.sub, { page, limit, status });
   }
 
   @Get(':id')
   findOne(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
     return this.ordersService.findByIdForUser(id, user.sub);
+  }
+
+  /** Customer cancels an order that is still awaiting confirmation (PENDING). */
+  @Post(':id/cancel')
+  cancel(@Param('id') id: string, @CurrentUser() user: { sub: string }, @Body() dto: UserCancelOrderDto) {
+    return this.ordersService.cancelByUser(id, user.sub, dto.reason);
+  }
+
+  /** Customer asks the shop to cancel a CONFIRMED/PROCESSING order — notifies the owner. */
+  @Post(':id/cancel-request')
+  requestCancel(@Param('id') id: string, @CurrentUser() user: { sub: string }, @Body() dto: UserCancelOrderDto) {
+    return this.ordersService.requestCancelByUser(id, user.sub, dto.reason);
   }
 }
 

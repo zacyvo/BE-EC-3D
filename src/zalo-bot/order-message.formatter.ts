@@ -23,6 +23,7 @@ export interface OrderMessageInput {
    * frontend-user/src/app/checkout/page.tsx). Read if a future payment flow adds it. */
   paymentMethod?: string;
   customerNote?: string;
+  cancelRequest?: { requestedAt?: Date | string; reason?: string; requestedByName?: string };
 }
 
 export interface OrderMessageOptions {
@@ -171,5 +172,30 @@ export function formatOrderCreatedMessage(order: OrderMessageInput, options: Ord
 
   const message = [...header, ...itemLines, ...footer].join('\n');
   // Last-resort guard (e.g. an absurd maxLength): never hand Zalo an oversized text.
+  return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;
+}
+
+/**
+ * Plain-text ORDER_CANCEL_REQUESTED message: "<khách> yêu cầu hủy đơn hàng <mã>" + the admin
+ * link, so the owner can act on it. Short by construction (all free text is truncated).
+ */
+export function formatOrderCancelRequestedMessage(order: OrderMessageInput, options: OrderMessageOptions = {}): string {
+  const maxLength = options.maxLength ?? ZALO_MESSAGE_MAX_LENGTH;
+  const orderId = order._id ? order._id.toString() : '';
+  const code = orderId ? orderDisplayCode(orderId) : MISSING;
+  const request = order.cancelRequest ?? {};
+  const name = request.requestedByName?.trim() || order.shippingInfo?.recipientName?.trim() || 'Khách hàng';
+  const adminLink = buildAdminOrderUrl(options.adminUrl, orderId);
+
+  const lines: string[] = ['⚠️ LUXE GLOW — YÊU CẦU HỦY ĐƠN', ''];
+  lines.push(`${truncate(name, 80)} yêu cầu hủy đơn hàng ${code}`);
+  const requestedAt = formatDateTime(request.requestedAt);
+  if (requestedAt) lines.push(`Thời gian yêu cầu: ${requestedAt}`);
+  lines.push(`Trạng thái đơn: ${order.status ? ORDER_STATUS_LABELS[order.status] ?? order.status : MISSING}`);
+  lines.push(`Tổng tiền: ${formatVnd(order.total)}`);
+  if (request.reason?.trim()) lines.push(`Lý do: ${truncate(request.reason, MAX_NOTE_LENGTH)}`);
+  if (adminLink) lines.push('', 'Xem đơn hàng:', adminLink);
+
+  const message = lines.join('\n');
   return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;
 }

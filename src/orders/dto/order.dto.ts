@@ -13,6 +13,7 @@ import {
   IsDateString,
   Matches,
   ArrayUnique,
+  MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { OrderStatus } from '../schemas/order.schema';
@@ -81,6 +82,11 @@ export class UpdateOrderStatusDto {
   @IsOptional() @IsString() cancelReason?: string;
   @IsOptional() @ValidateNested() @Type(() => DeliveryDto) delivery?: DeliveryDto;
   @IsOptional() @IsNumber() @Min(0) paidAmount?: number;
+}
+
+/** Customer cancel / cancel request — the reason is optional free text. */
+export class UserCancelOrderDto {
+  @IsOptional() @IsString() @MaxLength(500) reason?: string;
 }
 
 export class GuestInfoDto {

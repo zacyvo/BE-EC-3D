@@ -4,7 +4,16 @@ export const ZALO_BOT_CHANNEL = 'ZALO_BOT';
 
 export enum NotificationEventType {
   ORDER_CREATED = 'ORDER_CREATED',
+  /** Customer asked to cancel an order that is already CONFIRMED/PROCESSING (they can no
+   * longer cancel it themselves) — the owner must handle it in the admin dashboard. */
+  ORDER_CANCEL_REQUESTED = 'ORDER_CANCEL_REQUESTED',
 }
+
+/** Owner Bot events that travel through the Order outbox (`pendingNotificationEvents`). */
+export const ZALO_BOT_OUTBOX_EVENTS: NotificationEventType[] = [
+  NotificationEventType.ORDER_CREATED,
+  NotificationEventType.ORDER_CANCEL_REQUESTED,
+];
 
 /**
  * Lifecycle of one notification job (= one event × one channel × one recipient).

@@ -6,7 +6,13 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types, PipelineStage } from 'mongoose';
-import { Order, OrderDocument, OrderStatus } from './schemas/order.schema';
+import {
+  Order,
+  OrderDocument,
+  OrderStatus,
+  USER_CANCELLABLE_STATUSES,
+  USER_CANCEL_REQUESTABLE_STATUSES,
+} from './schemas/order.schema';
 import { OrderVersion, OrderVersionDocument } from './schemas/order-version.schema';
 import { CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto } from './dto/order.dto';
 import { ProductsService } from '../products/products.service';
@@ -462,17 +468,20 @@ export class OrdersService {
 
   async findByUser(
     userId: string,
-    query: { page: number; limit: number },
+    query: { page: number; limit: number; status?: OrderStatus },
   ) {
-    const { page, limit } = query;
+    const page = Math.max(1, query.page);
+    const limit = Math.min(50, Math.max(1, query.limit));
+    const filter: Record<string, unknown> = { userId: new Types.ObjectId(userId) };
+    if (query.status) filter.status = query.status;
     const [data, total] = await Promise.all([
       this.orderModel
-        .find({ userId: new Types.ObjectId(userId) })
-        .sort({ createdAt: -1 })
+        .find(filter)
+        .sort({ createdAt: -1, _id: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .exec(),
-      this.orderModel.countDocuments({ userId: new Types.ObjectId(userId) }).exec(),
+      this.orderModel.countDocuments(filter).exec(),
     ]);
     return { data, total, page, limit };
   }
@@ -482,6 +491,95 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.userId.toString() !== userId) throw new ForbiddenException('Access denied');
     return order;
+  }
+
+  /** Throws the right error for a user action on an order that the guarded update didn't match. */
+  private async explainUserOrderMiss(orderId: string, userId: string): Promise<never> {
+    const order = await this.findByIdForUser(orderId, userId);
+    if (order.status === OrderStatus.CANCELLED) throw new BadRequestException('Đơn hàng đã được hủy');
+    if (USER_CANCEL_REQUESTABLE_STATUSES.includes(order.status)) {
+      if (order.cancelRequest) throw new BadRequestException('Bạn đã gửi yêu cầu hủy cho đơn hàng này');
+      throw new BadRequestException('Đơn hàng đã được xác nhận — vui lòng gửi yêu cầu hủy');
+    }
+    throw new BadRequestException('Đơn hàng không thể hủy ở trạng thái hiện tại');
+  }
+
+  /** Customer cancels their own order — only while it still awaits confirmation. The status
+   * guard is part of the update, so a concurrent admin confirmation can't be overwritten. */
+  async cancelByUser(orderId: string, userId: string, reason?: string): Promise<OrderDocument> {
+    if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
+    const before = await this.findByIdForUser(orderId, userId);
+
+    const updated = await this.orderModel
+      .findOneAndUpdate(
+        { _id: before._id, userId: before.userId, status: { $in: USER_CANCELLABLE_STATUSES } },
+        {
+          $set: { status: OrderStatus.CANCELLED, cancelReason: reason?.trim() || 'Khách hàng tự hủy đơn' },
+          $inc: { currentVersion: 1 },
+        },
+        { new: true },
+      )
+      .exec();
+    if (!updated) return this.explainUserOrderMiss(orderId, userId);
+
+    await this.saveVersion(updated, userId, 'user', 'Khách hàng hủy đơn');
+    await this.auditService.log({
+      actorId: userId,
+      actorType: 'user',
+      action: 'USER_CANCEL_ORDER',
+      module: 'orders',
+      targetId: orderId,
+      beforeData: { status: before.status },
+      afterData: { status: updated.status, cancelReason: updated.cancelReason },
+    });
+    return updated;
+  }
+
+  /** Customer asks the shop to cancel a CONFIRMED/PROCESSING order (one request per order).
+   * The owner's Zalo Bot notification is queued in the same atomic update. */
+  async requestCancelByUser(orderId: string, userId: string, reason?: string): Promise<OrderDocument> {
+    if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
+    const before = await this.findByIdForUser(orderId, userId);
+    const user = await this.usersService.findById(userId);
+
+    const outboxEvents = this.orderNotifications.cancelRequestedOutboxEvents();
+    const updated = await this.orderModel
+      .findOneAndUpdate(
+        {
+          _id: before._id,
+          userId: before.userId,
+          status: { $in: USER_CANCEL_REQUESTABLE_STATUSES },
+          cancelRequest: { $exists: false },
+        },
+        {
+          $set: {
+            cancelRequest: {
+              requestedAt: new Date(),
+              ...(reason?.trim() ? { reason: reason.trim() } : {}),
+              requestedByName: user?.name || before.shippingInfo?.recipientName,
+            },
+          },
+          $inc: { currentVersion: 1 },
+          ...(outboxEvents.length ? { $addToSet: { pendingNotificationEvents: { $each: outboxEvents } } } : {}),
+        },
+        { new: true },
+      )
+      .exec();
+    if (!updated) return this.explainUserOrderMiss(orderId, userId);
+
+    await this.saveVersion(updated, userId, 'user', 'Khách hàng yêu cầu hủy đơn');
+    await this.auditService.log({
+      actorId: userId,
+      actorType: 'user',
+      action: 'USER_REQUEST_CANCEL_ORDER',
+      module: 'orders',
+      targetId: orderId,
+      afterData: { status: updated.status, reason: updated.cancelRequest?.reason },
+    });
+
+    // Non-blocking, same as checkout: a Zalo failure can't affect the request.
+    this.orderNotifications.kick();
+    return updated;
   }
 
   async getUserStats(userId: string): Promise<{ totalOrders: number; deliveredOrders: number; totalSpent: number }> {
