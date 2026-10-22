@@ -18,6 +18,12 @@ export enum ContractSource {
   IMPORTED = 'IMPORTED', // Admin import file PDF soạn ngoài hệ thống
 }
 
+/** Mẫu văn bản dùng để dựng hợp đồng source = TEMPLATE */
+export enum ContractTemplate {
+  DEFAULT         = 'DEFAULT',         // HĐ thiết kế & sản xuất in 3D — 15 Điều, thanh toán 3 đợt
+  JOYLOVE_ADVANCE = 'JOYLOVE_ADVANCE', // HĐ dự án JOYLOVE — 15 Điều + Phụ lục 01/02, thanh toán 2 đợt
+}
+
 /** Điều 3.3 — bộ thông tin thanh toán admin chọn khi tạo/sửa hợp đồng */
 export enum PaymentInfoType {
   COMPANY    = 'COMPANY',    // Công ty — HO KINH DOANH LUXE GLOW
@@ -174,6 +180,15 @@ export const DEFAULT_PAYMENT_SCHEDULE: { percent: number; timing: string }[] = [
   { percent: 10, timing: 'sau 05 ngày kể từ ngày nghiệm thu' },
 ];
 
+/** Lịch thanh toán mặc định theo template — số phần tử cũng là số đợt bắt buộc của template đó */
+export const TEMPLATE_PAYMENT_SCHEDULES: Record<ContractTemplate, { percent: number; timing: string }[]> = {
+  [ContractTemplate.DEFAULT]: DEFAULT_PAYMENT_SCHEDULE,
+  [ContractTemplate.JOYLOVE_ADVANCE]: [
+    { percent: 60, timing: 'chậm nhất trong 07 ngày làm việc kể từ ngày ký Hợp đồng' },
+    { percent: 40, timing: 'chậm nhất trong 07 ngày làm việc kể từ ngày nghiệm thu theo Điều 4.3' },
+  ],
+};
+
 @Schema({ timestamps: true })
 export class Contract {
   _id: Types.ObjectId;
@@ -188,6 +203,10 @@ export class Contract {
   /** TEMPLATE: văn bản dựng từ template + dữ liệu; IMPORTED: văn bản là file PDF admin tải lên */
   @Prop({ default: ContractSource.TEMPLATE, enum: Object.values(ContractSource) })
   source: ContractSource;
+
+  /** Mẫu văn bản (chỉ có ý nghĩa với source = TEMPLATE) — hợp đồng cũ không có field này coi như DEFAULT */
+  @Prop({ default: ContractTemplate.DEFAULT, enum: Object.values(ContractTemplate) })
+  template: ContractTemplate;
 
   /** Tên / tiêu đề hợp đồng — dùng cho hợp đồng import (template mặc định là HĐ thiết kế & sản xuất in 3D) */
   @Prop({ trim: true, default: '' })
@@ -228,7 +247,10 @@ export class Contract {
   /** Điều 1.2 — yêu cầu kỹ thuật khác */
   @Prop({ trim: true, default: '' }) technicalRequirements: string;
 
-  /** Điều 3.2 — lịch thanh toán chia đợt, mặc định 3 đợt (50/40/10) — admin có thể chỉnh % và mốc thời gian */
+  /**
+   * Điều 3.2 — lịch thanh toán chia đợt, số đợt cố định theo template (DEFAULT 3 đợt 50/40/10,
+   * JOYLOVE_ADVANCE 2 đợt 60/40) — admin có thể chỉnh % và mốc thời gian
+   */
   @Prop({ type: [PaymentInstallmentSchema], default: () => DEFAULT_PAYMENT_SCHEDULE })
   paymentSchedule: PaymentInstallment[];
 

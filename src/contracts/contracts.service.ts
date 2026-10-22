@@ -16,11 +16,12 @@ import {
   ContractDocument,
   ContractSource,
   ContractStatus,
-  DEFAULT_PAYMENT_SCHEDULE,
+  ContractTemplate,
   PartySignatureStatus,
   PaymentInfoType,
   PaymentInstallment,
   SignatureMode,
+  TEMPLATE_PAYMENT_SCHEDULES,
 } from './schemas/contract.schema';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
 import {
@@ -85,6 +86,10 @@ const BANK_INFO_PRESETS: Record<
     bankAccountHolder: 'QUACH PHUONG THANH TRUC',
   },
 };
+
+/** Địa điểm giao hàng mặc định của dự án JOYLOVE (Điều 4.2) — prefill khi tạo, khách vẫn sửa được */
+const JOYLOVE_DELIVERY_ADDRESS =
+  'Kho Flash, Công ty BW Industrial, Đường D2, KCN Tân Phú Trung, Củ Chi, Thành phố Hồ Chí Minh. Số điện thoại nhận hàng: 0987928827';
 
 /** Không dùng ký tự dễ nhầm lẫn (0/O, 1/I) */
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -261,8 +266,12 @@ export class ContractsService {
     };
   }
 
-  /** Điều 3.2 — tổng % các đợt thanh toán phải đúng 100 */
-  private validatePaymentSchedule(schedule: PaymentInstallmentDto[]): void {
+  /** Điều 3.2 — số đợt phải khớp template, tổng % các đợt thanh toán phải đúng 100 */
+  private validatePaymentSchedule(schedule: PaymentInstallmentDto[], template: ContractTemplate): void {
+    const expected = TEMPLATE_PAYMENT_SCHEDULES[template].length;
+    if (schedule.length !== expected) {
+      throw new BadRequestException(`Lịch thanh toán của mẫu hợp đồng này phải có đúng ${expected} đợt`);
+    }
     const sum = schedule.reduce((s, i) => s + i.percent, 0);
     if (Math.round(sum * 100) / 100 !== 100) {
       throw new BadRequestException('Tổng % các đợt thanh toán phải bằng 100%');
@@ -298,7 +307,9 @@ export class ContractsService {
    */
   private async generateAndStoreUnsignedPdf(contract: ContractDocument): Promise<void> {
     const input: ContractPdfInput = {
+      template: contract.template ?? ContractTemplate.DEFAULT,
       contractNo: contract.contractNo,
+      createdAt: contract.createdAt,
       items: contract.items.map((i) => ({
         productCode: i.productCode,
         productName: i.productName,
@@ -336,6 +347,7 @@ export class ContractsService {
       contractNo: c.contractNo,
       status: c.status,
       source: c.source ?? ContractSource.TEMPLATE,
+      template: c.template ?? ContractTemplate.DEFAULT,
       title: c.title,
       offlineSigned: c.offlineSigned,
       items: c.items.map(({ costPrice: _cost, ...rest }: any) => rest),
@@ -400,7 +412,8 @@ export class ContractsService {
 
     const { items, totalAmount } = await this.buildItems(dto.items);
 
-    if (dto.paymentSchedule) this.validatePaymentSchedule(dto.paymentSchedule);
+    const template = dto.template ?? ContractTemplate.DEFAULT;
+    if (dto.paymentSchedule) this.validatePaymentSchedule(dto.paymentSchedule, template);
 
     const paymentInfoType = dto.paymentInfoType ?? PaymentInfoType.COMPANY;
 
@@ -422,6 +435,7 @@ export class ContractsService {
         const contract = await this.contractModel.create({
           contractNo: this.genContractNo(),
           status: ContractStatus.NEW,
+          template,
           userId: user._id,
           userPhone: phone,
           accessToken: crypto.randomBytes(24).toString('hex'),
@@ -433,7 +447,8 @@ export class ContractsService {
           signPlace: dto.signPlace ?? 'TP. Hồ Chí Minh',
           technicalRequirements: dto.technicalRequirements ?? '',
           deliveryDate: dto.deliveryDate ? new Date(dto.deliveryDate) : undefined,
-          paymentSchedule: dto.paymentSchedule ?? DEFAULT_PAYMENT_SCHEDULE,
+          paymentSchedule: dto.paymentSchedule ?? TEMPLATE_PAYMENT_SCHEDULES[template],
+          deliveryAddress: template === ContractTemplate.JOYLOVE_ADVANCE ? JOYLOVE_DELIVERY_ADDRESS : '',
           paymentInfoType,
           ...BANK_INFO_PRESETS[paymentInfoType],
           adminNote: dto.adminNote ?? '',
@@ -446,7 +461,7 @@ export class ContractsService {
           action: 'CONTRACT_CREATE',
           module: 'contracts',
           targetId: contract._id.toString(),
-          afterData: { contractNo: contract.contractNo, userPhone: phone, totalAmount },
+          afterData: { contractNo: contract.contractNo, userPhone: phone, totalAmount, template },
         });
 
         return { ...this.toAdminResponse(contract), userCreated: created };
@@ -759,8 +774,13 @@ export class ContractsService {
     if (dto.deliveryDate !== undefined) contract.deliveryDate = new Date(dto.deliveryDate);
     if (dto.deliveryAddress !== undefined) contract.deliveryAddress = dto.deliveryAddress;
     if (dto.adminNote !== undefined) contract.adminNote = dto.adminNote;
+    if (dto.template && dto.template !== (contract.template ?? ContractTemplate.DEFAULT)) {
+      contract.template = dto.template;
+      // Số đợt thanh toán khác nhau giữa các template — không kèm lịch mới thì dùng lịch mặc định
+      if (!dto.paymentSchedule) contract.paymentSchedule = TEMPLATE_PAYMENT_SCHEDULES[dto.template] as any;
+    }
     if (dto.paymentSchedule) {
-      this.validatePaymentSchedule(dto.paymentSchedule);
+      this.validatePaymentSchedule(dto.paymentSchedule, contract.template ?? ContractTemplate.DEFAULT);
       contract.paymentSchedule = dto.paymentSchedule as any;
     }
     if (dto.paymentInfoType) {
@@ -777,7 +797,7 @@ export class ContractsService {
       module: 'contracts',
       targetId: id,
       beforeData: before,
-      afterData: { totalAmount: contract.totalAmount },
+      afterData: { totalAmount: contract.totalAmount, template: contract.template },
     });
 
     return this.toAdminResponse(contract);

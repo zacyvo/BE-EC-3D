@@ -18,7 +18,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { ContractStatus, PaymentInfoType } from '../schemas/contract.schema';
+import { ContractStatus, ContractTemplate, PaymentInfoType } from '../schemas/contract.schema';
 
 /** Di động 10 số (0xxxxxxxxx) hoặc máy bàn 11 số có mã vùng (02xxxxxxxxx) */
 const PHONE_REGEX = /^(0|\+84)\d{9,10}$/;
@@ -86,11 +86,19 @@ export class CreateContractDto {
   @IsOptional() @IsDateString() deliveryDate?: string;
   @IsOptional() @IsString() @MaxLength(2000) adminNote?: string;
 
-  /** Điều 3.2 — lịch thanh toán 3 đợt (mặc định 50/40/10 nếu không truyền) */
+  /** Mẫu văn bản hợp đồng — mặc định DEFAULT */
+  @IsOptional()
+  @IsEnum(ContractTemplate)
+  template?: ContractTemplate;
+
+  /**
+   * Điều 3.2 — lịch thanh toán; số đợt phải khớp template (kiểm tra ở service). Không truyền thì
+   * lấy lịch mặc định của template.
+   */
   @IsOptional()
   @IsArray()
-  @ArrayMinSize(3, { message: 'Lịch thanh toán phải có đúng 3 đợt' })
-  @ArrayMaxSize(3, { message: 'Lịch thanh toán phải có đúng 3 đợt' })
+  @ArrayMinSize(1, { message: 'Lịch thanh toán phải có ít nhất 1 đợt' })
+  @ArrayMaxSize(5, { message: 'Lịch thanh toán tối đa 5 đợt' })
   @ValidateNested({ each: true })
   @Type(() => PaymentInstallmentDto)
   paymentSchedule?: PaymentInstallmentDto[];
@@ -131,11 +139,16 @@ export class UpdateContractDto {
   @IsOptional() @IsString() @MaxLength(300) deliveryAddress?: string;
   @IsOptional() @IsString() @MaxLength(2000) adminNote?: string;
 
-  /** Điều 3.2 — lịch thanh toán 3 đợt */
+  /** Đổi mẫu văn bản — không kèm paymentSchedule thì lịch thanh toán reset về mặc định của template mới */
+  @IsOptional()
+  @IsEnum(ContractTemplate)
+  template?: ContractTemplate;
+
+  /** Điều 3.2 — lịch thanh toán; số đợt phải khớp template (kiểm tra ở service) */
   @IsOptional()
   @IsArray()
-  @ArrayMinSize(3, { message: 'Lịch thanh toán phải có đúng 3 đợt' })
-  @ArrayMaxSize(3, { message: 'Lịch thanh toán phải có đúng 3 đợt' })
+  @ArrayMinSize(1, { message: 'Lịch thanh toán phải có ít nhất 1 đợt' })
+  @ArrayMaxSize(5, { message: 'Lịch thanh toán tối đa 5 đợt' })
   @ValidateNested({ each: true })
   @Type(() => PaymentInstallmentDto)
   paymentSchedule?: PaymentInstallmentDto[];

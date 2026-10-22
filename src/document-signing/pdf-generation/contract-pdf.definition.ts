@@ -28,7 +28,11 @@ export interface ContractPdfPaymentInstallment {
 }
 
 export interface ContractPdfInput {
+  /** Mã mẫu văn bản (ContractTemplate) — giữ kiểu string để module này không phụ thuộc schema Contract */
+  template?: string;
   contractNo: string;
+  /** Ngày lập văn bản — template JOYLOVE_ADVANCE in ở phần căn cứ */
+  createdAt?: Date;
   items: ContractPdfItem[];
   totalAmount: number;
   partyA: ContractPdfParty;
@@ -71,7 +75,7 @@ function readTriple(n: number, showZeroHundred: boolean): string {
   return parts.join(' ');
 }
 
-function numberToVietnameseWords(amount: number): string {
+export function numberToVietnameseWords(amount: number): string {
   if (!Number.isFinite(amount)) return '';
   let n = Math.floor(Math.abs(amount));
   if (n === 0) return 'Không đồng';
@@ -94,13 +98,13 @@ function formatCurrency(amount: number): string {
   return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
 }
 
-function formatNumber(amount: number): string {
+export function formatNumber(amount: number): string {
   return amount.toLocaleString('vi-VN');
 }
 
 const DOTS = '………………………………';
 
-function dots(value?: string | number | null, fallback = DOTS): string {
+export function dots(value?: string | number | null, fallback = DOTS): string {
   if (value === null || value === undefined) return fallback;
   const s = String(value).trim();
   return s || fallback;

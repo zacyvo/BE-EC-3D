@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as path from 'path';
 import * as pdfMake from 'pdfmake';
 import { buildContractDocDefinition, ContractPdfInput } from './contract-pdf.definition';
+import { buildJoyloveAdvanceDocDefinition } from './joylove-advance-pdf.definition';
 
 const FONTS_DIR = path.join(__dirname, 'fonts');
 
@@ -30,7 +31,10 @@ pdfMake.setLocalAccessPolicy((filePath: string) => filePath.startsWith(FONTS_DIR
 export class PdfGenerationService {
   /** Sinh PDF hợp đồng chưa ký (bản chính tắc — chỉ gọi 1 lần tại thời điểm chuyển FINAL). */
   async generateContractPdf(input: ContractPdfInput): Promise<Buffer> {
-    const docDefinition = buildContractDocDefinition(input);
+    const docDefinition =
+      input.template === 'JOYLOVE_ADVANCE'
+        ? buildJoyloveAdvanceDocDefinition(input)
+        : buildContractDocDefinition(input);
     const pdfDoc = pdfMake.createPdf(docDefinition);
     return pdfDoc.getBuffer();
   }
