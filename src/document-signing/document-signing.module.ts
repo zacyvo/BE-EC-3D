@@ -3,13 +3,26 @@ import { PdfGenerationService } from './pdf-generation/pdf-generation.service';
 import { PadesVerifyService } from './pades/pades-verify.service';
 import { TamperCheckService } from './pades/tamper-check.service';
 import { DocumentStorageService } from './storage/document-storage.service';
+import { PdfInspectService } from './pdfjs/pdf-inspect.service';
 
 /**
  * Module ký số (PAdES) — độc lập với ContractsModule để có thể tái dùng cho EInvoice (hoá đơn
  * bán hàng nội bộ) sau này mà không cần viết lại logic PDF/crypto.
  */
 @Module({
-  providers: [PdfGenerationService, PadesVerifyService, TamperCheckService, DocumentStorageService],
-  exports: [PdfGenerationService, PadesVerifyService, TamperCheckService, DocumentStorageService],
+  providers: [
+    PdfGenerationService,
+    PadesVerifyService,
+    TamperCheckService,
+    DocumentStorageService,
+    PdfInspectService,
+  ],
+  exports: [
+    PdfGenerationService,
+    PadesVerifyService,
+    TamperCheckService,
+    DocumentStorageService,
+    PdfInspectService,
+  ],
 })
 export class DocumentSigningModule {}

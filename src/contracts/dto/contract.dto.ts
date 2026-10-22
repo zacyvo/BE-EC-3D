@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -143,6 +144,67 @@ export class UpdateContractDto {
   @IsOptional()
   @IsEnum(PaymentInfoType)
   paymentInfoType?: PaymentInfoType;
+}
+
+// ── Admin — hợp đồng import từ file PDF ──────────────────────────────────────
+
+/**
+ * Metadata đi kèm file PDF khi import. Gửi dạng multipart: field `file` (PDF) + field `data`
+ * (chuỗi JSON của DTO này) — controller tự parse và validate (xem AdminContractsController.import).
+ */
+export class ImportContractDto {
+  @Matches(PHONE_REGEX, { message: 'Số điện thoại không hợp lệ' })
+  userPhone: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'Vui lòng nhập tên khách hàng / Bên A' })
+  @MaxLength(200)
+  customerName: string;
+
+  /** Số hợp đồng in trên file PDF — để trống hệ thống tự sinh */
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  contractNo?: string;
+
+  @IsOptional() @IsString() @MaxLength(200) title?: string;
+
+  @IsNumber({}, { message: 'Giá trị hợp đồng không hợp lệ' })
+  @Min(0)
+  totalAmount: number;
+
+  /** Giá vốn — dùng khi ghi nhận tài chính lúc Hoàn tất */
+  @IsOptional() @IsNumber() @Min(0) costAmount?: number;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContractPartyDto)
+  partyA?: ContractPartyDto;
+
+  @IsOptional() @IsDateString() signDate?: string;
+  @IsOptional() @IsDateString() deliveryDate?: string;
+  @IsOptional() @IsString() @MaxLength(2000) adminNote?: string;
+
+  /** File đã được hai bên ký ngoài hệ thống (ký tay / bản scan) */
+  @IsOptional() @IsBoolean() offlineSigned?: boolean;
+}
+
+/** Sửa metadata hợp đồng import — nội dung văn bản nằm trong file PDF, thay bằng endpoint thay file */
+export class UpdateImportedContractDto {
+  @IsOptional() @IsString() @MaxLength(50) contractNo?: string;
+  @IsOptional() @IsString() @MaxLength(200) title?: string;
+  @IsOptional() @IsNumber() @Min(0) totalAmount?: number;
+  @IsOptional() @IsNumber() @Min(0) costAmount?: number;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContractPartyDto)
+  partyA?: ContractPartyDto;
+
+  @IsOptional() @IsDateString() signDate?: string;
+  @IsOptional() @IsDateString() deliveryDate?: string;
+  @IsOptional() @IsString() @MaxLength(2000) adminNote?: string;
+  @IsOptional() @IsBoolean() offlineSigned?: boolean;
 }
 
 export class UpdateContractStatusDto {

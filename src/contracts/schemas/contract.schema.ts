@@ -12,6 +12,12 @@ export enum ContractStatus {
   CLOSED  = 'CLOSED',   // Đã hủy hợp đồng
 }
 
+/** Nguồn nội dung hợp đồng */
+export enum ContractSource {
+  TEMPLATE = 'TEMPLATE', // Sinh từ template hợp đồng có sẵn của hệ thống
+  IMPORTED = 'IMPORTED', // Admin import file PDF soạn ngoài hệ thống
+}
+
 /** Điều 3.3 — bộ thông tin thanh toán admin chọn khi tạo/sửa hợp đồng */
 export enum PaymentInfoType {
   COMPANY    = 'COMPANY',    // Công ty — HO KINH DOANH LUXE GLOW
@@ -145,6 +151,22 @@ export class PartyASignature {
 
 export const PartyASignatureSchema = SchemaFactory.createForClass(PartyASignature);
 
+/** Thông tin file PDF hợp đồng do admin import — file lưu tại Contract.unsignedPdfUrl */
+@Schema({ _id: false })
+export class ImportedDocument {
+  @Prop({ required: true, trim: true }) originalFileName: string;
+  @Prop({ required: true, min: 0 }) fileSize: number;
+  @Prop({ required: true, min: 1 }) pageCount: number;
+  /** false với bản scan — khi đó tamper-check không fallback so khớp văn bản được (xem TamperCheckService) */
+  @Prop({ default: true }) hasTextLayer: boolean;
+  /** sha256 của file gốc — đối chiếu toàn vẹn khi cần */
+  @Prop({ required: true }) sha256: string;
+  @Prop({ required: true }) uploadedAt: Date;
+  @Prop({ trim: true, default: '' }) uploadedBy: string;
+}
+
+export const ImportedDocumentSchema = SchemaFactory.createForClass(ImportedDocument);
+
 /** Lịch thanh toán mặc định (Điều 3.2) — Đợt 1: 50% ký HĐ, Đợt 2: 40% nghiệm thu, Đợt 3: 10% sau 5 ngày */
 export const DEFAULT_PAYMENT_SCHEDULE: { percent: number; timing: string }[] = [
   { percent: 50, timing: 'ngay khi ký hợp đồng' },
@@ -162,6 +184,14 @@ export class Contract {
 
   @Prop({ default: ContractStatus.NEW, enum: Object.values(ContractStatus) })
   status: ContractStatus;
+
+  /** TEMPLATE: văn bản dựng từ template + dữ liệu; IMPORTED: văn bản là file PDF admin tải lên */
+  @Prop({ default: ContractSource.TEMPLATE, enum: Object.values(ContractSource) })
+  source: ContractSource;
+
+  /** Tên / tiêu đề hợp đồng — dùng cho hợp đồng import (template mặc định là HĐ thiết kế & sản xuất in 3D) */
+  @Prop({ trim: true, default: '' })
+  title: string;
 
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
@@ -249,6 +279,21 @@ export class Contract {
   @Prop() unsignedPdfPublicId?: string;
   @Prop() unsignedPdfGeneratedAt?: Date;
 
+  // ── Hợp đồng import (source = IMPORTED) ────────────────────────────────────
+  @Prop({ type: ImportedDocumentSchema })
+  importedDocument?: ImportedDocument;
+
+  /** Giá vốn nhập tay — HĐ import không có danh sách sản phẩm để tính giá vốn khi ghi nhận tài chính */
+  @Prop({ min: 0, default: 0 })
+  importedCostAmount: number;
+
+  /**
+   * Hai bên đã ký ngoài hệ thống (ký tay / bản scan đã ký) — cho phép chuyển SUCCESS mà không cần
+   * chữ ký số Bên B trên hệ thống. Chỉ áp dụng cho hợp đồng import.
+   */
+  @Prop({ default: false })
+  offlineSigned: boolean;
+
   @Prop({ type: PartyBSignatureSchema, default: () => ({}) })
   partyBSignature: PartyBSignature;
 
@@ -268,6 +313,7 @@ export const ContractSchema = SchemaFactory.createForClass(Contract);
 ContractSchema.index({ status: 1, createdAt: -1 });
 ContractSchema.index({ userPhone: 1 });
 ContractSchema.index({ isDeleted: 1 });
+ContractSchema.index({ source: 1, createdAt: -1 });
 
 ContractSchema.pre(/^find/, function (this: any, next: () => void) {
   if (this.getFilter().isDeleted === undefined) {

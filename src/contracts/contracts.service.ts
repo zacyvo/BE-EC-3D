@@ -14,6 +14,7 @@ import * as crypto from 'crypto';
 import {
   Contract,
   ContractDocument,
+  ContractSource,
   ContractStatus,
   DEFAULT_PAYMENT_SCHEDULE,
   PartySignatureStatus,
@@ -35,9 +36,11 @@ import { ContractPdfInput } from '../document-signing/pdf-generation/contract-pd
 import { DocumentStorageService } from '../document-signing/storage/document-storage.service';
 import { PadesVerifyService } from '../document-signing/pades/pades-verify.service';
 import { TamperCheckService } from '../document-signing/pades/tamper-check.service';
+import { PdfInspectService } from '../document-signing/pdfjs/pdf-inspect.service';
 import {
   ContractItemDto,
   CreateContractDto,
+  ImportContractDto,
   PaymentInstallmentDto,
   PublicUpdateDto,
   PublicVerifyDto,
@@ -45,7 +48,15 @@ import {
   SubmitSimpleSignatureDto,
   UpdateContractDto,
   UpdateContractStatusDto,
+  UpdateImportedContractDto,
 } from './dto/contract.dto';
+
+/** File PDF admin tải lên khi import hợp đồng */
+export interface ImportedPdfFile {
+  buffer: Buffer;
+  originalname: string;
+  size: number;
+}
 
 /** Bên B mặc định — thông tin cửa hàng */
 const DEFAULT_PARTY_B = {
@@ -107,6 +118,22 @@ const STATUS_TRANSITIONS: Record<ContractStatus, ContractStatus[]> = {
   [ContractStatus.CLOSED]: [],
 };
 
+/**
+ * Hợp đồng import: nội dung đã cố định trong file PDF nên không có bước khách điền Bên A
+ * (NEW/REVIEW). Tạo ra ở DRAFT (admin còn sửa metadata / thay file), FINAL khoá file để ký số.
+ */
+const IMPORTED_STATUS_TRANSITIONS: Record<ContractStatus, ContractStatus[]> = {
+  [ContractStatus.NEW]: [],
+  [ContractStatus.REVIEW]: [],
+  [ContractStatus.DRAFT]: [ContractStatus.FINAL, ContractStatus.CLOSED],
+  [ContractStatus.FINAL]: [ContractStatus.SUCCESS, ContractStatus.CLOSED],
+  [ContractStatus.SUCCESS]: [],
+  [ContractStatus.CLOSED]: [],
+};
+
+/** Hợp đồng import được xoá khi chưa chốt (DRAFT) hoặc đã hủy */
+const IMPORTED_DELETABLE_STATUSES = [ContractStatus.DRAFT, ContractStatus.CLOSED];
+
 @Injectable()
 export class ContractsService {
   private readonly logger = new Logger(ContractsService.name);
@@ -127,6 +154,7 @@ export class ContractsService {
     private readonly documentStorageService: DocumentStorageService,
     private readonly padesVerifyService: PadesVerifyService,
     private readonly tamperCheckService: TamperCheckService,
+    private readonly pdfInspectService: PdfInspectService,
   ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -188,6 +216,49 @@ export class ContractsService {
 
     const totalAmount = items.reduce((sum, i) => sum + i.subtotal, 0);
     return { items, totalAmount };
+  }
+
+  private isImported(contract: { source?: ContractSource }): boolean {
+    return contract.source === ContractSource.IMPORTED;
+  }
+
+  /**
+   * Số HĐ do admin nhập tay (HĐ import) — kiểm tra trùng cả với hợp đồng đã xoá mềm vì unique
+   * index trên contractNo không phân biệt isDeleted.
+   */
+  private async assertContractNoAvailable(contractNo: string, excludeId?: Types.ObjectId): Promise<void> {
+    const filter: Record<string, unknown> = { contractNo, isDeleted: { $in: [true, false] } };
+    if (excludeId) filter._id = { $ne: excludeId };
+    const exists = await this.contractModel.exists(filter);
+    if (exists) throw new BadRequestException(`Số hợp đồng "${contractNo}" đã tồn tại`);
+  }
+
+  /** Multer giải mã tên file multipart theo latin1 — đổi lại UTF-8 để giữ đúng tên tiếng Việt */
+  private decodeFileName(name: string): string {
+    const decoded = Buffer.from(name, 'latin1').toString('utf8');
+    const safe = decoded.includes('\uFFFD') ? name : decoded;
+    return safe.replace(/[\\/\r\n]/g, '_').slice(0, 255) || 'hop-dong.pdf';
+  }
+
+  /** Kiểm tra + lưu file PDF import làm "PDF chính tắc" (unsignedPdfUrl) của hợp đồng */
+  private async storeImportedPdf(contractId: Types.ObjectId, file: ImportedPdfFile, staffId: string) {
+    const inspection = await this.pdfInspectService.inspect(file.buffer);
+    const stored = await this.documentStorageService.uploadPdf(
+      file.buffer,
+      `${contractId.toString()}/unsigned`,
+    );
+    return {
+      stored,
+      importedDocument: {
+        originalFileName: this.decodeFileName(file.originalname),
+        fileSize: file.size,
+        pageCount: inspection.pageCount,
+        hasTextLayer: inspection.hasTextLayer,
+        sha256: inspection.sha256,
+        uploadedAt: new Date(),
+        uploadedBy: staffId,
+      },
+    };
   }
 
   /** Điều 3.2 — tổng % các đợt thanh toán phải đúng 100 */
@@ -264,6 +335,9 @@ export class ContractsService {
     return {
       contractNo: c.contractNo,
       status: c.status,
+      source: c.source ?? ContractSource.TEMPLATE,
+      title: c.title,
+      offlineSigned: c.offlineSigned,
       items: c.items.map(({ costPrice: _cost, ...rest }: any) => rest),
       totalAmount: c.totalAmount,
       partyA: c.partyA,
@@ -383,20 +457,223 @@ export class ContractsService {
     throw new BadRequestException('Không thể tạo hợp đồng, vui lòng thử lại');
   }
 
+  /**
+   * Import hợp đồng soạn ngoài hệ thống từ file PDF. File được lưu làm PDF chính tắc
+   * (unsignedPdfUrl) nên luồng ký số Bên B / Bên A và tamper-check dùng lại nguyên vẹn.
+   * Hợp đồng tạo ra ở trạng thái DRAFT — admin kiểm tra rồi chốt FINAL.
+   */
+  async importContract(dto: ImportContractDto, file: ImportedPdfFile, staffId: string) {
+    const phone = this.normalizePhone(dto.userPhone);
+    const customContractNo = dto.contractNo?.trim();
+    if (customContractNo) await this.assertContractNoAvailable(customContractNo);
+
+    const { user, created } = await this.usersService.findOrCreateByPhone(phone, dto.customerName.trim());
+
+    const contractId = new Types.ObjectId();
+    const { stored, importedDocument } = await this.storeImportedPdf(contractId, file, staffId);
+
+    const isGuestEmail = user.email?.endsWith('@guest.luxe-glow.vn');
+    const partyA = {
+      address: '',
+      representative: '',
+      position: '',
+      taxCode: '',
+      ...(dto.partyA ?? {}),
+      name: dto.partyA?.name?.trim() || dto.customerName.trim(),
+      phone: dto.partyA?.phone?.trim() || phone,
+      email: dto.partyA?.email?.trim() || (isGuestEmail ? '' : user.email ?? ''),
+    };
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const contract = await this.contractModel.create({
+          _id: contractId,
+          contractNo: customContractNo || this.genContractNo(),
+          status: ContractStatus.DRAFT,
+          source: ContractSource.IMPORTED,
+          title: dto.title?.trim() ?? '',
+          userId: user._id,
+          userPhone: phone,
+          accessToken: crypto.randomBytes(24).toString('hex'),
+          securityCode: this.genSecurityCode(),
+          items: [],
+          totalAmount: dto.totalAmount,
+          importedCostAmount: dto.costAmount ?? 0,
+          partyA,
+          partyB: { ...DEFAULT_PARTY_B },
+          signDate: dto.signDate ? new Date(dto.signDate) : undefined,
+          deliveryDate: dto.deliveryDate ? new Date(dto.deliveryDate) : undefined,
+          adminNote: dto.adminNote ?? '',
+          offlineSigned: dto.offlineSigned ?? false,
+          unsignedPdfUrl: stored.url,
+          unsignedPdfPublicId: stored.publicId,
+          unsignedPdfGeneratedAt: importedDocument.uploadedAt,
+          importedDocument,
+          createdBy: new Types.ObjectId(staffId),
+        });
+
+        await this.auditService.log({
+          actorId: staffId,
+          actorType: 'staff',
+          action: 'CONTRACT_IMPORT',
+          module: 'contracts',
+          targetId: contract._id.toString(),
+          afterData: {
+            contractNo: contract.contractNo,
+            userPhone: phone,
+            totalAmount: dto.totalAmount,
+            fileName: importedDocument.originalFileName,
+            sha256: importedDocument.sha256,
+          },
+        });
+
+        return { ...this.toAdminResponse(contract), userCreated: created };
+      } catch (err: any) {
+        // Trùng số HĐ do admin nhập (race) thì không thử lại — chỉ sinh lại khi số HĐ tự sinh / token trùng
+        const retryable = err?.code === 11000 && !(customContractNo && err?.keyPattern?.contractNo);
+        if (!retryable || attempt === 2) {
+          await this.documentStorageService.deleteRaw(stored.publicId);
+          if (err?.code === 11000 && err?.keyPattern?.contractNo) {
+            throw new BadRequestException(`Số hợp đồng "${customContractNo}" đã tồn tại`);
+          }
+          throw err;
+        }
+      }
+    }
+    throw new BadRequestException('Không thể import hợp đồng, vui lòng thử lại');
+  }
+
+  /**
+   * Sửa metadata hợp đồng import. DRAFT: sửa được mọi trường. FINAL: chỉ còn ghi chú nội bộ và
+   * cờ "đã ký ngoài hệ thống" (VD: chốt bản PDF, gửi khách ký tay, sau đó admin xác nhận).
+   */
+  async updateImported(id: string, dto: UpdateImportedContractDto, staffId: string) {
+    const contract = await this.contractModel.findById(id).exec();
+    if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    if (!this.isImported(contract)) {
+      throw new BadRequestException('Chỉ áp dụng cho hợp đồng import từ file PDF');
+    }
+
+    const isDraft = contract.status === ContractStatus.DRAFT;
+    if (!isDraft && contract.status !== ContractStatus.FINAL) {
+      throw new BadRequestException('Hợp đồng đã hoàn tất hoặc đã hủy, không thể chỉnh sửa');
+    }
+    const finalOnlyFields: (keyof UpdateImportedContractDto)[] = ['adminNote', 'offlineSigned'];
+    if (!isDraft) {
+      const locked = (Object.keys(dto) as (keyof UpdateImportedContractDto)[]).filter(
+        (k) => dto[k] !== undefined && !finalOnlyFields.includes(k),
+      );
+      if (locked.length > 0) {
+        throw new BadRequestException(
+          'Hợp đồng đã chốt bản chính thức — chỉ còn sửa được ghi chú nội bộ và xác nhận đã ký ngoài hệ thống',
+        );
+      }
+    }
+
+    const before = {
+      contractNo: contract.contractNo,
+      totalAmount: contract.totalAmount,
+      offlineSigned: contract.offlineSigned,
+    };
+
+    if (dto.contractNo !== undefined) {
+      const no = dto.contractNo.trim();
+      if (!no) throw new BadRequestException('Số hợp đồng không được để trống');
+      if (no !== contract.contractNo) {
+        await this.assertContractNoAvailable(no, contract._id);
+        contract.contractNo = no;
+      }
+    }
+    if (dto.title !== undefined) contract.title = dto.title.trim();
+    if (dto.totalAmount !== undefined) contract.totalAmount = dto.totalAmount;
+    if (dto.costAmount !== undefined) contract.importedCostAmount = dto.costAmount;
+    if (dto.partyA) {
+      // partyA là subdocument — spread trực tiếp không lấy được field, phải toObject() trước
+      const merged = { ...(contract.toObject().partyA ?? {}), ...dto.partyA };
+      if (!merged.name?.trim()) throw new BadRequestException('Tên Bên A không được để trống');
+      contract.partyA = merged;
+    }
+    if (dto.signDate !== undefined) contract.signDate = new Date(dto.signDate);
+    if (dto.deliveryDate !== undefined) contract.deliveryDate = new Date(dto.deliveryDate);
+    if (dto.adminNote !== undefined) contract.adminNote = dto.adminNote;
+    if (dto.offlineSigned !== undefined) contract.offlineSigned = dto.offlineSigned;
+
+    await contract.save();
+
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'CONTRACT_IMPORT_UPDATE',
+      module: 'contracts',
+      targetId: id,
+      beforeData: before,
+      afterData: {
+        contractNo: contract.contractNo,
+        totalAmount: contract.totalAmount,
+        offlineSigned: contract.offlineSigned,
+      },
+    });
+
+    return this.toAdminResponse(contract);
+  }
+
+  /** Thay file PDF của hợp đồng import — chỉ khi còn DRAFT (chưa ai ký trên file cũ) */
+  async replaceImportedFile(id: string, file: ImportedPdfFile, staffId: string) {
+    const contract = await this.contractModel.findById(id).exec();
+    if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    if (!this.isImported(contract)) {
+      throw new BadRequestException('Chỉ áp dụng cho hợp đồng import từ file PDF');
+    }
+    if (contract.status !== ContractStatus.DRAFT) {
+      throw new BadRequestException('Chỉ thay được file khi hợp đồng còn ở trạng thái Bản nháp');
+    }
+    const signed = [contract.partyBSignature?.status, contract.partyASignature?.status].some(
+      (st) => st && st !== PartySignatureStatus.PENDING,
+    );
+    if (signed) {
+      throw new BadRequestException('Hợp đồng đã phát sinh chữ ký trên file hiện tại, không thể thay file');
+    }
+
+    const previous = contract.importedDocument;
+    const { stored, importedDocument } = await this.storeImportedPdf(contract._id, file, staffId);
+    contract.unsignedPdfUrl = stored.url;
+    contract.unsignedPdfPublicId = stored.publicId;
+    contract.unsignedPdfGeneratedAt = importedDocument.uploadedAt;
+    contract.importedDocument = importedDocument as any;
+    await contract.save();
+
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'CONTRACT_IMPORT_REPLACE_FILE',
+      module: 'contracts',
+      targetId: id,
+      beforeData: previous ? { fileName: previous.originalFileName, sha256: previous.sha256 } : undefined,
+      afterData: { fileName: importedDocument.originalFileName, sha256: importedDocument.sha256 },
+    });
+
+    return this.toAdminResponse(contract);
+  }
+
   async findAll(params: {
     page: number;
     limit: number;
     status?: string;
     search?: string;
+    source?: string;
   }) {
-    const { page, limit, status, search } = params;
+    const { page, limit, status, search, source } = params;
     const filter: Record<string, unknown> = {};
     if (status) filter.status = status;
+    if (source === ContractSource.IMPORTED) filter.source = ContractSource.IMPORTED;
+    // HĐ cũ (trước khi có field source) chưa có giá trị — coi như TEMPLATE
+    if (source === ContractSource.TEMPLATE) filter.source = { $ne: ContractSource.IMPORTED };
     if (search) {
       filter.$or = [
         { contractNo: { $regex: search, $options: 'i' } },
         { userPhone: { $regex: search, $options: 'i' } },
         { 'partyA.name': { $regex: search, $options: 'i' } },
+        { title: { $regex: search, $options: 'i' } },
       ];
     }
 
@@ -456,6 +733,11 @@ export class ContractsService {
   async update(id: string, dto: UpdateContractDto, staffId: string) {
     const contract = await this.contractModel.findById(id).exec();
     if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    if (this.isImported(contract)) {
+      throw new BadRequestException(
+        'Hợp đồng import từ file PDF không dùng template — sửa thông tin hoặc thay file PDF thay vì chỉnh nội dung',
+      );
+    }
     if (!EDITABLE_STATUSES.includes(contract.status)) {
       throw new BadRequestException(
         'Hợp đồng đã chốt bản chính thức, không thể chỉnh sửa nội dung',
@@ -508,15 +790,28 @@ export class ContractsService {
     const from = contract.status;
     const to = dto.status;
     if (from === to) throw new BadRequestException('Hợp đồng đã ở trạng thái này');
-    if (!STATUS_TRANSITIONS[from].includes(to)) {
+    const imported = this.isImported(contract);
+    const transitions = imported ? IMPORTED_STATUS_TRANSITIONS : STATUS_TRANSITIONS;
+    if (!transitions[from].includes(to)) {
       throw new BadRequestException(`Không thể chuyển trạng thái từ ${from} sang ${to}`);
     }
-    if (to === ContractStatus.REVIEW || to === ContractStatus.FINAL) {
+    // HĐ import: tên ký đã in sẵn trong file PDF, không phụ thuộc dữ liệu Bên A trên hệ thống
+    if (!imported && (to === ContractStatus.REVIEW || to === ContractStatus.FINAL)) {
       this.assertPartyAFullName(contract.partyA);
     }
-    if (to === ContractStatus.SUCCESS && contract.partyBSignature?.status !== PartySignatureStatus.VERIFIED) {
+    if (imported && to === ContractStatus.FINAL && !contract.unsignedPdfUrl) {
+      throw new BadRequestException('Hợp đồng import chưa có file PDF');
+    }
+    const signedOffline = imported && contract.offlineSigned;
+    if (
+      to === ContractStatus.SUCCESS &&
+      !signedOffline &&
+      contract.partyBSignature?.status !== PartySignatureStatus.VERIFIED
+    ) {
       throw new BadRequestException(
-        'Hợp đồng cần được Bên B ký số (đã xác thực) trước khi chuyển sang Hoàn tất',
+        imported
+          ? 'Hợp đồng cần được Bên B ký số (đã xác thực), hoặc xác nhận "Đã ký ngoài hệ thống", trước khi chuyển sang Hoàn tất'
+          : 'Hợp đồng cần được Bên B ký số (đã xác thực) trước khi chuyển sang Hoàn tất',
       );
     }
 
@@ -545,10 +840,9 @@ export class ContractsService {
         contract.successAt = now;
         // Tự động ghi nhận tài chính (doanh thu ngoài — nguồn CONTRACT)
         if (!contract.revenueEntryId) {
-          const cost = contract.items.reduce(
-            (sum, i) => sum + (i.costPrice ?? 0) * i.quantity,
-            0,
-          );
+          const cost =
+            contract.items.reduce((sum, i) => sum + (i.costPrice ?? 0) * i.quantity, 0) +
+            (contract.importedCostAmount ?? 0);
           const entry = await this.externalRevenueModel.create({
             source: ExternalSource.CONTRACT,
             note: `Hợp đồng ${contract.contractNo}`,
@@ -596,7 +890,11 @@ export class ContractsService {
   async remove(id: string, staffId: string): Promise<void> {
     const contract = await this.contractModel.findById(id).exec();
     if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
-    if (![ContractStatus.NEW, ContractStatus.CLOSED].includes(contract.status)) {
+    if (this.isImported(contract)) {
+      if (!IMPORTED_DELETABLE_STATUSES.includes(contract.status)) {
+        throw new BadRequestException('Chỉ xóa được hợp đồng import ở trạng thái Bản nháp hoặc Đã hủy');
+      }
+    } else if (![ContractStatus.NEW, ContractStatus.CLOSED].includes(contract.status)) {
       throw new BadRequestException('Chỉ xóa được hợp đồng ở trạng thái Mới tạo hoặc Đã hủy');
     }
 
@@ -638,6 +936,9 @@ export class ContractsService {
   async generateDocument(id: string, staffId: string) {
     const contract = await this.contractModel.findById(id).exec();
     if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    if (this.isImported(contract)) {
+      throw new BadRequestException('Hợp đồng import đã có sẵn file PDF, không tạo từ template');
+    }
     if (EDITABLE_STATUSES.includes(contract.status)) {
       throw new BadRequestException('Hợp đồng chưa chốt bản chính thức, chưa thể tạo PDF');
     }
@@ -662,10 +963,14 @@ export class ContractsService {
   }
 
   async getUnsignedPdfBuffer(id: string): Promise<{ buffer: Buffer; filename: string }> {
-    const contract = await this.contractModel.findById(id).select('unsignedPdfUrl contractNo').exec();
+    const contract = await this.contractModel
+      .findById(id)
+      .select('unsignedPdfUrl contractNo source')
+      .exec();
     if (!contract?.unsignedPdfUrl) throw new NotFoundException('Chưa có file PDF chưa ký cho hợp đồng này');
     const buffer = await this.documentStorageService.downloadPdf(contract.unsignedPdfUrl);
-    return { buffer, filename: `hop-dong-${contract.contractNo.replace(/\//g, '-')}-chua-ky.pdf` };
+    const suffix = this.isImported(contract) ? 'ban-import' : 'chua-ky';
+    return { buffer, filename: `hop-dong-${contract.contractNo.replace(/\//g, '-')}-${suffix}.pdf` };
   }
 
   async getPartyBSignedPdfBuffer(id: string): Promise<{ buffer: Buffer; filename: string }> {
@@ -686,6 +991,10 @@ export class ContractsService {
   async uploadPartyBSigned(id: string, fileBuffer: Buffer, staffId: string) {
     const contract = await this.contractModel.findById(id).exec();
     if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    // HĐ import đã có PDF ngay từ DRAFT — chỉ cho ký khi file đã khoá (FINAL), tránh ký rồi thay file
+    if (EDITABLE_STATUSES.includes(contract.status)) {
+      throw new BadRequestException('Hợp đồng chưa chốt bản chính thức, chưa thể ký');
+    }
     if (!contract.unsignedPdfUrl) {
       throw new BadRequestException('Chưa có PDF chưa ký để đối chiếu — vui lòng tạo PDF trước');
     }
@@ -934,6 +1243,23 @@ export class ContractsService {
       partyBSignature: sanitized.partyBSignature,
       partyASignature: sanitized.partyASignature,
     };
+  }
+
+  /**
+   * PDF để khách xem văn bản hợp đồng (HĐ import không dựng được HTML từ template) — trả bản
+   * mới nhất: đã ký Bên A (PKI) > đã ký Bên B > bản gốc.
+   */
+  async getPublicDocumentView(token: string, jwt?: string): Promise<{ buffer: Buffer; filename: string }> {
+    const contract = await this.resolveAuthorized(token, jwt);
+    const a = contract.partyASignature;
+    const b = contract.partyBSignature;
+    const url =
+      (a?.status === PartySignatureStatus.VERIFIED && a.mode === SignatureMode.PKI && a.signedPdfUrl) ||
+      (b?.status === PartySignatureStatus.VERIFIED && b.signedPdfUrl) ||
+      contract.unsignedPdfUrl;
+    if (!url) throw new NotFoundException('Hợp đồng chưa có file PDF');
+    const buffer = await this.documentStorageService.downloadPdf(url);
+    return { buffer, filename: `hop-dong-${contract.contractNo.replace(/\//g, '-')}.pdf` };
   }
 
   /** PDF khách cần tải về để ký chồng lên (luôn là bản đã có chữ ký Bên B) */

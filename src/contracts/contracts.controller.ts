@@ -16,7 +16,9 @@ import {
   UploadedFile,
   UseGuards,
   UseInterceptors,
+  ValidationPipe,
 } from '@nestjs/common';
+import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import type { Request, Response } from 'express';
@@ -24,6 +26,7 @@ import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { ContractsService } from './contracts.service';
 import {
   CreateContractDto,
+  ImportContractDto,
   PublicUpdateDto,
   PublicVerifyDto,
   RejectSignatureDto,
@@ -31,11 +34,32 @@ import {
   SubmitSimpleSignatureDto,
   UpdateContractDto,
   UpdateContractStatusDto,
+  UpdateImportedContractDto,
 } from './dto/contract.dto';
 import { JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+
+/** Upload PDF (file ký số / file hợp đồng import) — nội dung còn được kiểm tra lại ở service */
+const PDF_UPLOAD_OPTIONS: MulterOptions = {
+  storage: memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
+  fileFilter: (_req, file, cb) => {
+    if (!['application/pdf', 'application/x-pdf'].includes(file.mimetype)) {
+      return cb(new BadRequestException('Chỉ chấp nhận file PDF'), false);
+    }
+    cb(null, true);
+  },
+};
+
+/** Cùng cấu hình với ValidationPipe toàn cục (main.ts) — dùng cho field JSON trong multipart */
+const multipartValidation = new ValidationPipe({
+  whitelist: true,
+  forbidNonWhitelisted: true,
+  transform: true,
+  transformOptions: { enableImplicitConversion: true },
+});
 
 // ─── Admin ─────────────────────────────────────────────────────────────────────
 
@@ -50,6 +74,32 @@ export class AdminContractsController {
     return this.service.create(dto, staff.sub);
   }
 
+  /**
+   * Import hợp đồng soạn ngoài hệ thống từ file PDF. Multipart: `file` (PDF ≤ 20MB) +
+   * `data` (chuỗi JSON theo ImportContractDto).
+   */
+  @Post('import')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  @UseInterceptors(FileInterceptor('file', PDF_UPLOAD_OPTIONS))
+  async importContract(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('data') data: string | undefined,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    if (!file) throw new BadRequestException('Vui lòng chọn file PDF hợp đồng');
+    let plain: unknown;
+    try {
+      plain = JSON.parse(data ?? '');
+    } catch {
+      throw new BadRequestException('Dữ liệu hợp đồng không hợp lệ');
+    }
+    const dto: ImportContractDto = await multipartValidation.transform(plain, {
+      type: 'body',
+      metatype: ImportContractDto,
+    });
+    return this.service.importContract(dto, file, staff.sub);
+  }
+
   @Get()
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
   findAll(
@@ -57,8 +107,9 @@ export class AdminContractsController {
     @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
     @Query('status') status?: string,
     @Query('search') search?: string,
+    @Query('source') source?: string,
   ) {
-    return this.service.findAll({ page, limit, status, search });
+    return this.service.findAll({ page, limit, status, search, source });
   }
 
   @Get(':id')
@@ -86,6 +137,30 @@ export class AdminContractsController {
     @CurrentUser() staff: { sub: string },
   ) {
     return this.service.update(id, dto, staff.sub);
+  }
+
+  /** Sửa thông tin hợp đồng import (DRAFT: mọi trường; FINAL: ghi chú + xác nhận đã ký ngoài hệ thống) */
+  @Patch(':id/import')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  updateImported(
+    @Param('id') id: string,
+    @Body() dto: UpdateImportedContractDto,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    return this.service.updateImported(id, dto, staff.sub);
+  }
+
+  /** Thay file PDF hợp đồng import — chỉ khi còn DRAFT */
+  @Post(':id/import/file')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  @UseInterceptors(FileInterceptor('file', PDF_UPLOAD_OPTIONS))
+  replaceImportedFile(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    if (!file) throw new BadRequestException('Vui lòng chọn file PDF hợp đồng');
+    return this.service.replaceImportedFile(id, file, staff.sub);
   }
 
   @Patch(':id/status')
@@ -146,16 +221,7 @@ export class AdminContractsController {
   @Post(':id/document/party-b-signed')
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
   @UseInterceptors(
-    FileInterceptor('file', {
-      storage: memoryStorage(),
-      limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
-      fileFilter: (_req, file, cb) => {
-        if (file.mimetype !== 'application/pdf') {
-          return cb(new BadRequestException('Chỉ chấp nhận file PDF'), false);
-        }
-        cb(null, true);
-      },
-    }),
+    FileInterceptor('file', PDF_UPLOAD_OPTIONS),
   )
   uploadPartyBSigned(
     @Param('id') id: string,
@@ -234,6 +300,22 @@ export class PublicContractsController {
     return this.service.getPublicDocumentStatus(token, accessJwt);
   }
 
+  /** PDF văn bản hợp đồng để xem (dùng cho hợp đồng import) — bản mới nhất đã ký */
+  @Get(':token/document/view')
+  async viewDocument(
+    @Param('token') token: string,
+    @Headers('x-contract-access') accessJwt: string | undefined,
+    @Res() res: Response,
+  ) {
+    const { buffer, filename } = await this.service.getPublicDocumentView(token, accessJwt);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="${encodeURIComponent(filename)}"`,
+      'Content-Length': String(buffer.length),
+    });
+    res.send(buffer);
+  }
+
   /** PDF khách cần tải về để ký chồng lên (đã có sẵn chữ ký Bên B) */
   @Get(':token/document/to-sign')
   async downloadToSign(
@@ -252,16 +334,7 @@ export class PublicContractsController {
 
   @Post(':token/document/party-a-signed')
   @UseInterceptors(
-    FileInterceptor('file', {
-      storage: memoryStorage(),
-      limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
-      fileFilter: (_req, file, cb) => {
-        if (file.mimetype !== 'application/pdf') {
-          return cb(new BadRequestException('Chỉ chấp nhận file PDF'), false);
-        }
-        cb(null, true);
-      },
-    }),
+    FileInterceptor('file', PDF_UPLOAD_OPTIONS),
   )
   uploadPartyASigned(
     @Param('token') token: string,
