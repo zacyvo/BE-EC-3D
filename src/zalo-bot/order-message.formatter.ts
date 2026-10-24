@@ -24,6 +24,8 @@ export interface OrderMessageInput {
   paymentMethod?: string;
   customerNote?: string;
   cancelRequest?: { requestedAt?: Date | string; reason?: string; requestedByName?: string };
+  cancelReason?: string;
+  customerCancel?: { cancelledAt?: Date | string; cancelledByName?: string };
 }
 
 export interface OrderMessageOptions {
@@ -194,6 +196,31 @@ export function formatOrderCancelRequestedMessage(order: OrderMessageInput, opti
   lines.push(`Trạng thái đơn: ${order.status ? ORDER_STATUS_LABELS[order.status] ?? order.status : MISSING}`);
   lines.push(`Tổng tiền: ${formatVnd(order.total)}`);
   if (request.reason?.trim()) lines.push(`Lý do: ${truncate(request.reason, MAX_NOTE_LENGTH)}`);
+  if (adminLink) lines.push('', 'Xem đơn hàng:', adminLink);
+
+  const message = lines.join('\n');
+  return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;
+}
+
+/**
+ * Plain-text ORDER_CANCELLED_BY_CUSTOMER message: "<khách> đã hủy đơn hàng <mã>" + the admin
+ * link. Informational — the order was still awaiting confirmation, so nothing is left to do.
+ */
+export function formatOrderCancelledByCustomerMessage(order: OrderMessageInput, options: OrderMessageOptions = {}): string {
+  const maxLength = options.maxLength ?? ZALO_MESSAGE_MAX_LENGTH;
+  const orderId = order._id ? order._id.toString() : '';
+  const code = orderId ? orderDisplayCode(orderId) : MISSING;
+  const cancel = order.customerCancel ?? {};
+  const name = cancel.cancelledByName?.trim() || order.shippingInfo?.recipientName?.trim() || 'Khách hàng';
+  const adminLink = buildAdminOrderUrl(options.adminUrl, orderId);
+
+  const lines: string[] = ['❌ LUXE GLOW — KHÁCH ĐÃ HỦY ĐƠN', ''];
+  lines.push(`${truncate(name, 80)} đã hủy đơn hàng ${code}`);
+  const cancelledAt = formatDateTime(cancel.cancelledAt);
+  if (cancelledAt) lines.push(`Thời gian hủy: ${cancelledAt}`);
+  lines.push('Đơn đang chờ xác nhận nên đã được hủy ngay — shop không cần xử lý thêm.');
+  lines.push(`Tổng tiền: ${formatVnd(order.total)}`);
+  if (order.cancelReason?.trim()) lines.push(`Lý do: ${truncate(order.cancelReason, MAX_NOTE_LENGTH)}`);
   if (adminLink) lines.push('', 'Xem đơn hàng:', adminLink);
 
   const message = lines.join('\n');

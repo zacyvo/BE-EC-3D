@@ -112,10 +112,11 @@ export class OrderExternalRef {
 
 const OrderExternalRefSchema = SchemaFactory.createForClass(OrderExternalRef);
 
-/** Statuses in which the customer may cancel the order themselves. */
+/** Statuses in which the customer may cancel the order themselves (owner is notified). */
 export const USER_CANCELLABLE_STATUSES = [OrderStatus.PENDING];
-/** Statuses in which the customer can only ASK the shop to cancel (owner is notified). */
-export const USER_CANCEL_REQUESTABLE_STATUSES = [OrderStatus.CONFIRMED, OrderStatus.PROCESSING];
+/** Statuses in which the customer can only ASK the shop to cancel (owner is notified).
+ * Every other status (CONFIRMED, SHIPPED, ...) can't be cancelled by the customer at all. */
+export const USER_CANCEL_REQUESTABLE_STATUSES = [OrderStatus.PROCESSING];
 
 /** A customer's request to cancel an order they can no longer cancel themselves. One per
  * order — the shop resolves it by cancelling (or not) through the normal status update. */
@@ -128,6 +129,16 @@ export class OrderCancelRequest {
 }
 
 const OrderCancelRequestSchema = SchemaFactory.createForClass(OrderCancelRequest);
+
+/** Set when the customer cancelled the order themselves (the reason is in `cancelReason`). */
+@Schema({ _id: false })
+export class OrderCustomerCancel {
+  @Prop({ required: true }) cancelledAt: Date;
+  /** Account name at cancel time — what the owner's Zalo notification shows. */
+  @Prop() cancelledByName?: string;
+}
+
+const OrderCustomerCancelSchema = SchemaFactory.createForClass(OrderCustomerCancel);
 
 @Schema({ timestamps: true })
 export class Order {
@@ -160,6 +171,7 @@ export class Order {
   @Prop() csNote?: string;
   @Prop() cancelReason?: string;
   @Prop({ type: OrderCancelRequestSchema }) cancelRequest?: OrderCancelRequest;
+  @Prop({ type: OrderCustomerCancelSchema }) customerCancel?: OrderCustomerCancel;
   @Prop() adminNote?: string;
   @Prop({ default: false }) createdByAdmin: boolean;
   @Prop() createdByStaffId?: string;
@@ -185,7 +197,8 @@ export class Order {
   /** Transactional outbox for notifications (see zalo-bot/order-notification.service.ts):
    * written in the SAME insert as the order, so the intent exists iff the order does; the
    * worker of each channel pulls its own marker once the notification jobs exist —
-   * 'ORDER_CREATED' / 'ORDER_CANCEL_REQUESTED' (owner Zalo Bot), 'ORDER_CREATED:ZALO_ZBS'
+   * 'ORDER_CREATED' / 'ORDER_CANCEL_REQUESTED' / 'ORDER_CANCELLED_BY_CUSTOMER' (owner Zalo Bot,
+   * the cancel events are added by the same update that records them), 'ORDER_CREATED:ZALO_ZBS'
    * (customer ZBS). Absent on most
    * orders; hidden from API responses by the toJSON transform below. */
   @Prop({ type: [String], default: undefined }) pendingNotificationEvents?: string[];

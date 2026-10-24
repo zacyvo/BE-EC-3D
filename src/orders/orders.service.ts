@@ -497,25 +497,39 @@ export class OrdersService {
   private async explainUserOrderMiss(orderId: string, userId: string): Promise<never> {
     const order = await this.findByIdForUser(orderId, userId);
     if (order.status === OrderStatus.CANCELLED) throw new BadRequestException('Đơn hàng đã được hủy');
+    if (USER_CANCELLABLE_STATUSES.includes(order.status)) {
+      throw new BadRequestException('Đơn hàng đang chờ xác nhận — bạn có thể hủy trực tiếp');
+    }
     if (USER_CANCEL_REQUESTABLE_STATUSES.includes(order.status)) {
       if (order.cancelRequest) throw new BadRequestException('Bạn đã gửi yêu cầu hủy cho đơn hàng này');
-      throw new BadRequestException('Đơn hàng đã được xác nhận — vui lòng gửi yêu cầu hủy');
+      throw new BadRequestException('Đơn hàng đang được xử lý — vui lòng gửi yêu cầu hủy');
     }
     throw new BadRequestException('Đơn hàng không thể hủy ở trạng thái hiện tại');
   }
 
   /** Customer cancels their own order — only while it still awaits confirmation. The status
-   * guard is part of the update, so a concurrent admin confirmation can't be overwritten. */
+   * guard is part of the update, so a concurrent admin confirmation can't be overwritten.
+   * The owner's Zalo Bot notification is queued in the same atomic update. */
   async cancelByUser(orderId: string, userId: string, reason?: string): Promise<OrderDocument> {
     if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
     const before = await this.findByIdForUser(orderId, userId);
+    const user = await this.usersService.findById(userId);
 
+    const outboxEvents = this.orderNotifications.customerCancelledOutboxEvents();
     const updated = await this.orderModel
       .findOneAndUpdate(
         { _id: before._id, userId: before.userId, status: { $in: USER_CANCELLABLE_STATUSES } },
         {
-          $set: { status: OrderStatus.CANCELLED, cancelReason: reason?.trim() || 'Khách hàng tự hủy đơn' },
+          $set: {
+            status: OrderStatus.CANCELLED,
+            cancelReason: reason?.trim() || 'Khách hàng tự hủy đơn',
+            customerCancel: {
+              cancelledAt: new Date(),
+              cancelledByName: user?.name || before.shippingInfo?.recipientName,
+            },
+          },
           $inc: { currentVersion: 1 },
+          ...(outboxEvents.length ? { $addToSet: { pendingNotificationEvents: { $each: outboxEvents } } } : {}),
         },
         { new: true },
       )
@@ -532,10 +546,13 @@ export class OrdersService {
       beforeData: { status: before.status },
       afterData: { status: updated.status, cancelReason: updated.cancelReason },
     });
+
+    // Non-blocking, same as checkout: a Zalo failure can't affect the cancellation.
+    this.orderNotifications.kick();
     return updated;
   }
 
-  /** Customer asks the shop to cancel a CONFIRMED/PROCESSING order (one request per order).
+  /** Customer asks the shop to cancel a PROCESSING order (one request per order).
    * The owner's Zalo Bot notification is queued in the same atomic update. */
   async requestCancelByUser(orderId: string, userId: string, reason?: string): Promise<OrderDocument> {
     if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');

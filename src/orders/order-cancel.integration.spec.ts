@@ -20,7 +20,8 @@ import { NotificationEventType, NotificationStatus } from '../zalo-bot/zalo-bot.
 
 /**
  * Customer cancel / cancel-request over a real (in-memory) MongoDB, including the owner's
- * ORDER_CANCEL_REQUESTED Zalo Bot notification (Zalo HTTP mocked).
+ * ORDER_CANCELLED_BY_CUSTOMER / ORDER_CANCEL_REQUESTED Zalo Bot notifications (Zalo HTTP mocked).
+ * Rules: PENDING → cancel immediately, PROCESSING → request, every other status → refused.
  */
 jest.setTimeout(60_000);
 
@@ -108,15 +109,50 @@ beforeEach(async () => {
 afterEach(() => jest.restoreAllMocks());
 
 describe('Customer cancels a PENDING order', () => {
-  it('cancels it, records the reason and a version, sends no owner notification', async () => {
+  it('cancels it, records reason + version, owner gets exactly one Zalo message with name, code and admin link', async () => {
     const svc = build();
     const order = await seedOrder(OrderStatus.PENDING);
-    const res = await svc.orders.cancelByUser(order._id.toString(), userId, '  Đặt nhầm  ');
+    const id = order._id.toString();
+    const res = await svc.orders.cancelByUser(id, userId, '  Đặt nhầm  ');
     expect(res.status).toBe(OrderStatus.CANCELLED);
     expect(res.cancelReason).toBe('Đặt nhầm');
+    expect(res.customerCancel).toMatchObject({ cancelledByName: 'Trần Thị B' });
+    expect(res.customerCancel?.cancelledAt).toBeInstanceOf(Date);
+    expect(JSON.parse(JSON.stringify(res))).not.toHaveProperty('pendingNotificationEvents');
     expect(await VersionModel.countDocuments({ orderId: order._id })).toBe(1);
+
     await svc.notifications.runOnce();
-    expect(fetchMock).not.toHaveBeenCalled();
+    await svc.notifications.runOnce();
+    const jobs = await JobModel.find().lean();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      eventType: NotificationEventType.ORDER_CANCELLED_BY_CUSTOMER,
+      recipientId: OWNER,
+      status: NotificationStatus.ACCEPTED,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const text = sentTexts()[0];
+    expect(text).toContain(`Trần Thị B đã hủy đơn hàng #${id.slice(-8).toUpperCase()}`);
+    expect(text).toContain(`https://admin.luxe-glow.vn/orders?search=${id}`);
+    expect(text).toContain('Lý do: Đặt nhầm');
+    expect((await OrderModel.findById(order._id).lean())?.pendingNotificationEvents).toEqual([]);
+  });
+
+  it('a second cancel is refused and does not notify again', async () => {
+    const svc = build();
+    const order = await seedOrder(OrderStatus.PENDING);
+    await svc.orders.cancelByUser(order._id.toString(), userId);
+    await expect(svc.orders.cancelByUser(order._id.toString(), userId)).rejects.toThrow('đã được hủy');
+    await svc.notifications.runOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('bot disabled → still cancelled, nothing queued', async () => {
+    env.ZALO_BOT_ENABLED = 'false';
+    const order = await seedOrder(OrderStatus.PENDING);
+    const res = await build().orders.cancelByUser(order._id.toString(), userId);
+    expect(res.status).toBe(OrderStatus.CANCELLED);
+    expect((await OrderModel.findById(order._id).lean())?.pendingNotificationEvents).toBeUndefined();
   });
 
   it('uses a default reason when none is given', async () => {
@@ -140,8 +176,8 @@ describe('Customer cancels a PENDING order', () => {
   });
 });
 
-describe('Customer requests cancellation of a CONFIRMED/PROCESSING order', () => {
-  it.each([OrderStatus.CONFIRMED, OrderStatus.PROCESSING])(
+describe('Customer requests cancellation of a PROCESSING order', () => {
+  it.each([OrderStatus.PROCESSING])(
     '%s → request saved, status unchanged, owner gets exactly one Zalo message with name, code and admin link',
     async (status) => {
       const svc = build();
@@ -172,14 +208,14 @@ describe('Customer requests cancellation of a CONFIRMED/PROCESSING order', () =>
 
   it('a second request is refused and does not notify again', async () => {
     const svc = build();
-    const order = await seedOrder(OrderStatus.CONFIRMED);
+    const order = await seedOrder(OrderStatus.PROCESSING);
     await svc.orders.requestCancelByUser(order._id.toString(), userId);
     await expect(svc.orders.requestCancelByUser(order._id.toString(), userId)).rejects.toThrow('đã gửi yêu cầu hủy');
     await svc.notifications.runOnce();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it.each([OrderStatus.PENDING, OrderStatus.SHIPPED, OrderStatus.DELIVERED, OrderStatus.CANCELLED])(
+  it.each([OrderStatus.PENDING, OrderStatus.CONFIRMED, OrderStatus.SHIPPED, OrderStatus.DELIVERED, OrderStatus.CANCELLED])(
     'refuses a request for a %s order',
     async (status) => {
       const order = await seedOrder(status);
@@ -193,10 +229,31 @@ describe('Customer requests cancellation of a CONFIRMED/PROCESSING order', () =>
   it('bot disabled → request still saved, nothing queued', async () => {
     env.ZALO_BOT_ENABLED = 'false';
     const svc = build();
-    const order = await seedOrder(OrderStatus.CONFIRMED);
+    const order = await seedOrder(OrderStatus.PROCESSING);
     const res = await svc.orders.requestCancelByUser(order._id.toString(), userId);
     expect(res.cancelRequest).toBeDefined();
     expect((await OrderModel.findById(order._id).lean())?.pendingNotificationEvents).toBeUndefined();
+  });
+});
+
+describe('Error messages tell the customer what to do instead', () => {
+  it('cancel on a PROCESSING order → asks for a cancel request', async () => {
+    const order = await seedOrder(OrderStatus.PROCESSING);
+    await expect(build().orders.cancelByUser(order._id.toString(), userId)).rejects.toThrow('vui lòng gửi yêu cầu hủy');
+  });
+
+  it('cancel request on a PENDING order → says it can be cancelled directly', async () => {
+    const order = await seedOrder(OrderStatus.PENDING);
+    await expect(build().orders.requestCancelByUser(order._id.toString(), userId)).rejects.toThrow('hủy trực tiếp');
+  });
+
+  it('a CONFIRMED order can be neither cancelled nor requested', async () => {
+    const svc = build();
+    const order = await seedOrder(OrderStatus.CONFIRMED);
+    await expect(svc.orders.cancelByUser(order._id.toString(), userId)).rejects.toThrow('không thể hủy');
+    await expect(svc.orders.requestCancelByUser(order._id.toString(), userId)).rejects.toThrow('không thể hủy');
+    await svc.notifications.runOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

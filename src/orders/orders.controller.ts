@@ -37,13 +37,13 @@ export class OrdersController {
     return this.ordersService.findByIdForUser(id, user.sub);
   }
 
-  /** Customer cancels an order that is still awaiting confirmation (PENDING). */
+  /** Customer cancels an order that is still awaiting confirmation (PENDING) — notifies the owner. */
   @Post(':id/cancel')
   cancel(@Param('id') id: string, @CurrentUser() user: { sub: string }, @Body() dto: UserCancelOrderDto) {
     return this.ordersService.cancelByUser(id, user.sub, dto.reason);
   }
 
-  /** Customer asks the shop to cancel a CONFIRMED/PROCESSING order — notifies the owner. */
+  /** Customer asks the shop to cancel a PROCESSING order — notifies the owner. */
   @Post(':id/cancel-request')
   requestCancel(@Param('id') id: string, @CurrentUser() user: { sub: string }, @Body() dto: UserCancelOrderDto) {
     return this.ordersService.requestCancelByUser(id, user.sub, dto.reason);

@@ -24,10 +24,12 @@ import { ZaloBotConfigService } from './zalo-bot.config';
 import { ZaloBotCallResult, ZaloBotClient, ZaloSendMessageResult } from './zalo-bot.client';
 import { ZaloOwnerRecipientService, maskChatId } from './zalo-owner-recipient.service';
 import {
+  formatOrderCancelledByCustomerMessage,
   formatOrderCancelRequestedMessage,
   formatOrderCreatedMessage,
   orderDisplayCode,
   OrderMessageInput,
+  OrderMessageOptions,
 } from './order-message.formatter';
 import { AuditService } from '../audit/audit.service';
 import { ZbsOrderConfirmationService } from '../zalo-zbs/zbs-order-confirmation.service';
@@ -39,6 +41,13 @@ const FAN_OUT_BATCH = 20;
 const SEND_BATCH = 10;
 const MAX_RETRY_DELAY_MS = 30 * 60 * 1000;
 const MAX_ERROR_MESSAGE_LENGTH = 500;
+
+/** Message text per Bot event, built from the order at send time. */
+const MESSAGE_FORMATTERS: Record<NotificationEventType, (o: OrderMessageInput, opt: OrderMessageOptions) => string> = {
+  [NotificationEventType.ORDER_CREATED]: formatOrderCreatedMessage,
+  [NotificationEventType.ORDER_CANCEL_REQUESTED]: formatOrderCancelRequestedMessage,
+  [NotificationEventType.ORDER_CANCELLED_BY_CUSTOMER]: formatOrderCancelledByCustomerMessage,
+};
 
 export function notificationDedupKey(eventType: NotificationEventType, orderId: string, recipientId: string): string {
   return `${eventType}:${ZALO_BOT_CHANNEL}:${orderId}:${recipientId}`;
@@ -56,8 +65,8 @@ export interface RunOnceResult {
 }
 
 /**
- * ORDER_CREATED / ORDER_CANCEL_REQUESTED → Zalo Bot pipeline (transactional outbox without
- * Mongo transactions):
+ * ORDER_CREATED / ORDER_CANCEL_REQUESTED / ORDER_CANCELLED_BY_CUSTOMER → Zalo Bot pipeline
+ * (transactional outbox without Mongo transactions):
  *
  *  1. OrdersService.create() writes `pendingNotificationEvents: ['ORDER_CREATED']` INSIDE the
  *     new order document. A single-document insert is atomic, so the intent exists iff the
@@ -141,8 +150,17 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
   /** Outbox events to `$addToSet` together with the customer's cancel request (same atomic
    * update), so the owner is told iff the request was recorded. Empty while the Bot is off. */
   cancelRequestedOutboxEvents(): string[] {
+    return this.botOutboxEvents(NotificationEventType.ORDER_CANCEL_REQUESTED);
+  }
+
+  /** Same as above for a customer's own cancellation of a PENDING order. */
+  customerCancelledOutboxEvents(): string[] {
+    return this.botOutboxEvents(NotificationEventType.ORDER_CANCELLED_BY_CUSTOMER);
+  }
+
+  private botOutboxEvents(event: NotificationEventType): string[] {
     try {
-      return this.configService.get().enabled ? [NotificationEventType.ORDER_CANCEL_REQUESTED] : [];
+      return this.configService.get().enabled ? [event] : [];
     } catch (err) {
       this.logger.error(`Không xác định được cấu hình Zalo Bot: ${(err as Error).message}`);
       return [];
@@ -345,10 +363,7 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
         });
       }
 
-      const format =
-        job.eventType === NotificationEventType.ORDER_CANCEL_REQUESTED
-          ? formatOrderCancelRequestedMessage
-          : formatOrderCreatedMessage;
+      const format = MESSAGE_FORMATTERS[job.eventType] ?? formatOrderCreatedMessage;
       const text = format(order as unknown as OrderMessageInput, { adminUrl: cfg.adminUrl });
       sendStarted = true;
       const res = await this.client.sendMessage(job.recipientId, text);

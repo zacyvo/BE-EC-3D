@@ -1,6 +1,7 @@
 import {
   buildAdminOrderUrl,
   describePaymentStatus,
+  formatOrderCancelledByCustomerMessage,
   formatOrderCreatedMessage,
   formatVnd,
   maskPhone,
@@ -102,5 +103,31 @@ describe('order message formatter', () => {
   it('builds the admin link from the real orders route (no tokens in URL)', () => {
     expect(buildAdminOrderUrl('https://admin.luxe-glow.vn/', 'abc')).toBe('https://admin.luxe-glow.vn/orders?search=abc');
     expect(buildAdminOrderUrl('', 'abc')).toBeNull();
+  });
+});
+
+describe('formatOrderCancelledByCustomerMessage', () => {
+  const cancelled = {
+    ...baseOrder,
+    status: 'CANCELLED',
+    cancelReason: 'Đặt nhầm mẫu',
+    customerCancel: { cancelledAt: new Date('2026-10-24T02:30:00Z'), cancelledByName: 'Trần Thị B' },
+  };
+
+  it('names the customer, the order code, the time (VN timezone), reason and admin link', () => {
+    const text = formatOrderCancelledByCustomerMessage(cancelled, { adminUrl: 'https://admin.luxe-glow.vn' });
+    expect(text).toContain('Trần Thị B đã hủy đơn hàng #A8B9C0D1');
+    expect(text).toContain('09:30');
+    expect(text).toContain('Lý do: Đặt nhầm mẫu');
+    expect(text).toContain('https://admin.luxe-glow.vn/orders?search=66f1a2b3c4d5e6f7a8b9c0d1');
+  });
+
+  it('falls back to the recipient name and never exceeds maxLength', () => {
+    const text = formatOrderCancelledByCustomerMessage(
+      { ...cancelled, customerCancel: { cancelledAt: cancelled.customerCancel.cancelledAt }, cancelReason: 'x'.repeat(5000) },
+      { maxLength: 300 },
+    );
+    expect(text).toContain(`${baseOrder.shippingInfo.recipientName} đã hủy đơn hàng`);
+    expect(text.length).toBeLessThanOrEqual(300);
   });
 });
