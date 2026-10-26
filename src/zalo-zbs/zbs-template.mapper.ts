@@ -54,18 +54,27 @@ const MAX_CONST_LENGTH = 200;
  *    "order_status":"orderStatus","shop":"const:Luxe Glow"}
  */
 export function parseParamMapping(raw: string): { mapping: ZbsParamMapping[]; errors: string[] } {
+  return parseMappingJson<ZbsOrderSource>(raw, ZBS_ORDER_SOURCES, 'ZALO_ZBS_ORDER_CONFIRMATION_PARAMS');
+}
+
+/** `{"<param>":"<source>"|"const:<text>"}` parser shared by every template mapping. */
+export function parseMappingJson<S extends string>(
+  raw: string,
+  sources: readonly S[],
+  envName: string,
+): { mapping: Array<{ param: string; source?: S; constValue?: string }>; errors: string[] } {
   const errors: string[] = [];
-  if (!raw.trim()) return { mapping: [], errors: ['ZALO_ZBS_ORDER_CONFIRMATION_PARAMS chưa được cấu hình'] };
+  if (!raw.trim()) return { mapping: [], errors: [`${envName} chưa được cấu hình`] };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { mapping: [], errors: ['ZALO_ZBS_ORDER_CONFIRMATION_PARAMS không phải JSON hợp lệ'] };
+    return { mapping: [], errors: [`${envName} không phải JSON hợp lệ`] };
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { mapping: [], errors: ['ZALO_ZBS_ORDER_CONFIRMATION_PARAMS phải là JSON object {"tham_so":"nguồn"}'] };
+    return { mapping: [], errors: [`${envName} phải là JSON object {"tham_so":"nguồn"}`] };
   }
-  const mapping: ZbsParamMapping[] = [];
+  const mapping: Array<{ param: string; source?: S; constValue?: string }> = [];
   for (const [param, value] of Object.entries(parsed as Record<string, unknown>)) {
     if (!PARAM_NAME.test(param)) {
       errors.push(`Tên tham số "${param}" không hợp lệ (chỉ chữ, số, gạch dưới; tối đa 64 ký tự)`);
@@ -82,20 +91,20 @@ export function parseParamMapping(raw: string): { mapping: ZbsParamMapping[]; er
         continue;
       }
       mapping.push({ param, constValue: text });
-    } else if ((ZBS_ORDER_SOURCES as readonly string[]).includes(value)) {
-      mapping.push({ param, source: value as ZbsOrderSource });
+    } else if ((sources as readonly string[]).includes(value)) {
+      mapping.push({ param, source: value as S });
     } else {
-      errors.push(`Tham số "${param}": nguồn "${value}" không được hỗ trợ (hợp lệ: ${ZBS_ORDER_SOURCES.join(', ')}, const:<text>)`);
+      errors.push(`Tham số "${param}": nguồn "${value}" không được hỗ trợ (hợp lệ: ${sources.join(', ')}, const:<text>)`);
     }
   }
-  if (!mapping.length && !errors.length) errors.push('ZALO_ZBS_ORDER_CONFIRMATION_PARAMS không có tham số nào');
+  if (!mapping.length && !errors.length) errors.push(`${envName} không có tham số nào`);
   return { mapping, errors };
 }
 
 /** Mapping ↔ approved template params: every required param must be mapped, and nothing
  * outside the approved list may be sent. */
 export function compareMappingWithTemplate(
-  mapping: ZbsParamMapping[],
+  mapping: Array<{ param: string }>,
   specs: ZbsTemplateParamSpec[],
 ): { compatible: boolean; missingRequired: string[]; unknownParams: string[] } {
   const mapped = new Set(mapping.map((m) => m.param));
@@ -162,31 +171,43 @@ export function mapOrderToTemplateData(
       value = resolved.value;
     }
 
-    const spec = specByName.get(m.param);
-    if (spec?.maxLength && spec.maxLength > 0 && value.length > spec.maxLength) {
-      if (m.source && TRUNCATABLE.has(m.source) && spec.maxLength >= 2) {
-        value = `${value.slice(0, spec.maxLength - 1).trimEnd()}…`;
-      } else {
-        return {
-          ok: false,
-          errorCode: 'TEMPLATE_PARAM_TOO_LONG',
-          errorMessage: `Tham số "${m.param}" dài ${value.length} ký tự, template chỉ cho phép ${spec.maxLength}`,
-        };
-      }
-    }
-    if (!value && spec?.acceptNull === false) {
-      return { ok: false, errorCode: 'TEMPLATE_PARAM_EMPTY', errorMessage: `Tham số "${m.param}" không được để trống` };
-    }
-    if (spec?.minLength && value.length < spec.minLength) {
-      return {
-        ok: false,
-        errorCode: 'TEMPLATE_PARAM_TOO_SHORT',
-        errorMessage: `Tham số "${m.param}" cần tối thiểu ${spec.minLength} ký tự`,
-      };
-    }
-    templateData[m.param] = value;
+    const fitted = fitParamToSpec(m.param, value, !!m.source && TRUNCATABLE.has(m.source), specByName.get(m.param));
+    if (!fitted.ok) return fitted;
+    templateData[m.param] = fitted.value;
   }
   return { ok: true, templateData };
+}
+
+/** Enforces one approved param's maxLength/minLength/acceptNull. Only free text
+ * (`truncatable`) may be shortened with "…" — codes, amounts and dates fail instead. */
+export function fitParamToSpec(
+  param: string,
+  value: string,
+  truncatable: boolean,
+  spec: ZbsTemplateParamSpec | undefined,
+): { ok: true; value: string } | { ok: false; errorCode: string; errorMessage: string } {
+  if (spec?.maxLength && spec.maxLength > 0 && value.length > spec.maxLength) {
+    if (truncatable && spec.maxLength >= 2) {
+      value = `${value.slice(0, spec.maxLength - 1).trimEnd()}…`;
+    } else {
+      return {
+        ok: false,
+        errorCode: 'TEMPLATE_PARAM_TOO_LONG',
+        errorMessage: `Tham số "${param}" dài ${value.length} ký tự, template chỉ cho phép ${spec.maxLength}`,
+      };
+    }
+  }
+  if (!value && spec?.acceptNull === false) {
+    return { ok: false, errorCode: 'TEMPLATE_PARAM_EMPTY', errorMessage: `Tham số "${param}" không được để trống` };
+  }
+  if (spec?.minLength && value.length < spec.minLength) {
+    return {
+      ok: false,
+      errorCode: 'TEMPLATE_PARAM_TOO_SHORT',
+      errorMessage: `Tham số "${param}" cần tối thiểu ${spec.minLength} ký tự`,
+    };
+  }
+  return { ok: true, value };
 }
 
 type Resolved = { ok: true; value: string } | { ok: false; errorCode: string; message: string };

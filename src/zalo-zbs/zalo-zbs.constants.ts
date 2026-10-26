@@ -6,8 +6,11 @@ export const ZALO_ZBS_CHANNEL = 'ZALO_ZBS';
  * intent at checkout time — an order placed while ZBS was disabled never gets one. */
 export const ZBS_ORDER_OUTBOX_MARKER = 'ORDER_CREATED:ZALO_ZBS';
 
-/** The ONLY customer template this integration sends (ORDER_CREATED → ORDER_CONFIRMATION). */
+/** Customer template sent automatically on ORDER_CREATED. */
 export const ZBS_TEMPLATE_ORDER_CONFIRMATION = 'ORDER_CONFIRMATION';
+
+/** Promotion template, sent ONLY by admin-confirmed campaigns (zbs-promotion-campaign.service). */
+export const ZBS_TEMPLATE_PROMOTION = 'PROMOTION';
 
 /** recipientId used when the order has no usable phone number. */
 export const ZBS_NO_RECIPIENT = '__invalid_phone__';

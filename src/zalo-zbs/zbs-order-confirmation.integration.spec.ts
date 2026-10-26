@@ -25,6 +25,7 @@ import { ZaloZbsConfigService } from './zalo-zbs.config';
 import { ZbsApiClient } from './zbs-api.client';
 import { ZbsAuthService } from './zbs-auth.service';
 import { ZbsOrderConfirmationService } from './zbs-order-confirmation.service';
+import { ZbsTemplateService } from './zbs-template.service';
 import { ZALO_ZBS_CHANNEL, ZBS_ORDER_OUTBOX_MARKER } from './zalo-zbs.constants';
 
 /**
@@ -94,7 +95,8 @@ function build() {
   const zbsCfg = new ZaloZbsConfigService(configService);
   const zbsClient = new ZbsApiClient(zbsCfg);
   const auth = new ZbsAuthService(CredModel, zbsCfg, zbsClient);
-  const zbs = new ZbsOrderConfirmationService(OrderModel, JobModel, TplModel, zbsCfg, zbsClient, auth, audit);
+  const templates = new ZbsTemplateService(TplModel, zbsClient, auth);
+  const zbs = new ZbsOrderConfirmationService(OrderModel, JobModel, zbsCfg, zbsClient, auth, audit, templates);
   const recipients = new ZaloOwnerRecipientService(RecipientModel, botCfg, audit);
   const notifications = new OrderNotificationService(OrderModel, JobModel, botCfg, new ZaloBotClient(botCfg), recipients, audit, zbs);
   const products = {

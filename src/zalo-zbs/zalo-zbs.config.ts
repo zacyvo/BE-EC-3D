@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { parseEncryptionKey } from './zbs-token-crypto';
 import { parseParamMapping, ZbsParamMapping } from './zbs-template.mapper';
+import { parsePromotionParamMapping, ZbsPromotionParamMapping } from './zbs-promotion.mapper';
 
 export interface ZaloZbsConfigSnapshot {
   /** Master switch for ORDER_CREATED → customer ZBS confirmation. Off by default. */
@@ -37,6 +38,23 @@ export interface ZaloZbsConfigSnapshot {
   dailySendLimit: number;
   /** Optional unit price (VND) for the admin cost ESTIMATE. 0 = use template-info price. */
   unitPriceVnd: number;
+
+  // ── Promotion campaigns (admin-triggered, Tag PROMOTION template) ──
+  /** Master switch for admin promotion campaigns. Independent of `enabled` (order confirmation),
+   * but shares the app/OA credentials and tokens. Off by default. */
+  promotionEnabled: boolean;
+  templateIdPromotion: string;
+  /** Raw JSON mapping { "<approved param>": "<campaign source>" | "const:<text>" }. */
+  promotionParamMappingRaw: string;
+  /** Operator attestation for the promotion template (same meaning as templateManuallyVerified). */
+  promotionTemplateManuallyVerified: string;
+  /** Hard cap on recipients of one campaign. */
+  promotionMaxRecipients: number;
+  /** Local cap on promotion messages accepted per Vietnam day; the rest wait for the next day. 0 = no cap. */
+  promotionDailySendLimit: number;
+  /** Promotion messages are only sent between these Vietnam hours: [start, end). */
+  promotionSendStartHour: number;
+  promotionSendEndHour: number;
 }
 
 export interface ZaloZbsConfigValidation {
@@ -66,6 +84,20 @@ export interface ZaloZbsReadiness {
   maxRetries: number;
   workerIntervalMs: number;
   dailySendLimit: number;
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+export interface ZaloZbsPromotionReadiness {
+  enabled: boolean;
+  templateIdConfigured: boolean;
+  templateId: string;
+  mappedParams: string[];
+  manuallyVerified: boolean;
+  maxRecipients: number;
+  dailySendLimit: number;
+  sendWindow: string;
   valid: boolean;
   errors: string[];
   warnings: string[];
@@ -104,6 +136,71 @@ export class ZaloZbsConfigService {
       workerIntervalMs: this.num('ZALO_ZBS_WORKER_INTERVAL_MS', 15000),
       dailySendLimit: this.num('ZALO_ZBS_DAILY_SEND_LIMIT', 0),
       unitPriceVnd: this.num('ZALO_ZBS_UNIT_PRICE_VND', 0),
+      promotionEnabled: this.str('ZALO_ZBS_PROMOTION_ENABLED', 'false').toLowerCase() === 'true',
+      templateIdPromotion: this.str('ZALO_ZBS_TEMPLATE_PROMOTION', ''),
+      promotionParamMappingRaw: this.str('ZALO_ZBS_PROMOTION_PARAMS', ''),
+      promotionTemplateManuallyVerified: this.str('ZALO_ZBS_PROMOTION_TEMPLATE_MANUALLY_VERIFIED', ''),
+      promotionMaxRecipients: this.num('ZALO_ZBS_PROMOTION_MAX_RECIPIENTS', 500),
+      promotionDailySendLimit: this.num('ZALO_ZBS_PROMOTION_DAILY_SEND_LIMIT', 200),
+      promotionSendStartHour: this.num('ZALO_ZBS_PROMOTION_SEND_START_HOUR', 8),
+      promotionSendEndHour: this.num('ZALO_ZBS_PROMOTION_SEND_END_HOUR', 21),
+    };
+  }
+
+  promotionParamMapping(cfg: ZaloZbsConfigSnapshot = this.get()): { mapping: ZbsPromotionParamMapping[]; errors: string[] } {
+    return parsePromotionParamMapping(cfg.promotionParamMappingRaw);
+  }
+
+  /**
+   * Promotion campaigns can be created and sent when this is valid. Needs the shared OAuth
+   * config (not ZALO_ZBS_ENABLED, which only governs order confirmations) plus the promotion
+   * template, its mapping and sane campaign limits.
+   */
+  validatePromotion(cfg: ZaloZbsConfigSnapshot = this.get()): ZaloZbsConfigValidation {
+    const errors = this.authConfigErrors(cfg);
+    const warnings: string[] = [];
+    if (!cfg.templateIdPromotion) {
+      errors.push('ZALO_ZBS_TEMPLATE_PROMOTION (Template ID khuyến mãi) chưa được cấu hình');
+    } else if (!/^[A-Za-z0-9_-]{1,64}$/.test(cfg.templateIdPromotion)) {
+      errors.push('ZALO_ZBS_TEMPLATE_PROMOTION có ký tự không hợp lệ');
+    }
+    errors.push(...parsePromotionParamMapping(cfg.promotionParamMappingRaw).errors);
+    if (cfg.promotionTemplateManuallyVerified && cfg.promotionTemplateManuallyVerified !== cfg.templateIdPromotion) {
+      warnings.push('ZALO_ZBS_PROMOTION_TEMPLATE_MANUALLY_VERIFIED khác Template ID khuyến mãi — bị bỏ qua');
+    }
+    if (!Number.isInteger(cfg.promotionMaxRecipients) || cfg.promotionMaxRecipients < 1 || cfg.promotionMaxRecipients > 10000) {
+      errors.push('ZALO_ZBS_PROMOTION_MAX_RECIPIENTS phải là số nguyên 1–10000');
+    }
+    if (!Number.isInteger(cfg.promotionDailySendLimit) || cfg.promotionDailySendLimit < 0) {
+      errors.push('ZALO_ZBS_PROMOTION_DAILY_SEND_LIMIT phải là số nguyên >= 0');
+    }
+    const { promotionSendStartHour: start, promotionSendEndHour: end } = cfg;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 7 || end > 22 || start >= end) {
+      // Zalo rejects sends between 22h and 7h (-133), so the window must stay inside 7–22.
+      errors.push('ZALO_ZBS_PROMOTION_SEND_START_HOUR/END_HOUR phải là giờ nguyên, 7 <= bắt đầu < kết thúc <= 22');
+    }
+    if (!Number.isFinite(cfg.requestTimeoutMs) || cfg.requestTimeoutMs < 1000 || cfg.requestTimeoutMs > 60000) {
+      errors.push('ZALO_ZBS_REQUEST_TIMEOUT_MS phải trong khoảng 1000–60000');
+    }
+    if (!Number.isFinite(cfg.workerIntervalMs) || cfg.workerIntervalMs < 0) {
+      errors.push('ZALO_ZBS_WORKER_INTERVAL_MS phải >= 0');
+    }
+    if (!cfg.promotionEnabled) warnings.push('ZALO_ZBS_PROMOTION_ENABLED=false — chiến dịch khuyến mãi ZBS đang tắt');
+    return { valid: cfg.promotionEnabled && errors.length === 0, errors, warnings };
+  }
+
+  promotionReadiness(): ZaloZbsPromotionReadiness {
+    const cfg = this.get();
+    return {
+      enabled: cfg.promotionEnabled,
+      templateIdConfigured: !!cfg.templateIdPromotion,
+      templateId: cfg.templateIdPromotion,
+      mappedParams: parsePromotionParamMapping(cfg.promotionParamMappingRaw).mapping.map((m) => m.param),
+      manuallyVerified: !!cfg.promotionTemplateManuallyVerified && cfg.promotionTemplateManuallyVerified === cfg.templateIdPromotion,
+      maxRecipients: cfg.promotionMaxRecipients,
+      dailySendLimit: cfg.promotionDailySendLimit,
+      sendWindow: `${cfg.promotionSendStartHour}h–${cfg.promotionSendEndHour}h`,
+      ...this.validatePromotion(cfg),
     };
   }
 

@@ -14,8 +14,12 @@ import { ZaloZbsConfigService } from '../zalo-zbs.config';
 import { ZbsApiClient } from '../zbs-api.client';
 import { ZbsAuthService } from '../zbs-auth.service';
 import { ZbsOrderConfirmationService } from '../zbs-order-confirmation.service';
+import { ZbsTemplateService } from '../zbs-template.service';
 import { maskZbsPhone, normalizeVnPhone } from '../zbs-phone';
 import { buildTrackingId, mapOrderToTemplateData, ZbsOrderInput } from '../zbs-template.mapper';
+import { mapPromotionToTemplateData } from '../zbs-promotion.mapper';
+import { Promotion, PromotionSchema } from '../../promotions/schemas/promotion.schema';
+import { ZBS_TEMPLATE_PROMOTION } from '../zalo-zbs.constants';
 
 dotenv.config();
 
@@ -28,7 +32,10 @@ const USAGE = `Usage: npm run zalo-zbs -- <command>
   verify-template                           GET /template/info/v2 for the configured template
   check-delivery --job <notificationJobId>  GET /message/status for an ACCEPTED job
   send-test --phone <0xxxxxxxxx> [--order <orderId>] [--dev] --confirm
-                                            ONE real (paid) template send to an AUTHORIZED test phone`;
+                                            ONE real (paid) template send to an AUTHORIZED test phone
+  verify-promotion-template                 GET /template/info/v2 for ZALO_ZBS_TEMPLATE_PROMOTION
+  send-test-promotion --phone <0xxxxxxxxx> --promotion <id> --coupon <couponId> [--dev] --confirm
+                                            ONE real (paid) promotion send to an AUTHORIZED test phone`;
 
 /**
  * Operator CLI for ZBS activation (docs/ZALO_ZBS_INTEGRATION.md §16). Reads ZALO_ZBS_* and
@@ -49,7 +56,7 @@ async function main() {
     print('readiness', configService.readiness());
     return;
   }
-  if (!command || !['status', 'exchange-code', 'refresh', 'verify-template', 'check-delivery', 'send-test'].includes(command)) {
+  if (!command || !['status', 'exchange-code', 'refresh', 'verify-template', 'check-delivery', 'send-test', 'verify-promotion-template', 'send-test-promotion'].includes(command)) {
     console.log(USAGE);
     process.exitCode = command ? 1 : 0;
     return;
@@ -67,9 +74,84 @@ async function main() {
     const client = new ZbsApiClient(configService);
     const auth = new ZbsAuthService(CredModel, configService, client);
     const audit = { log: async () => undefined } as unknown as AuditService;
-    const service = new ZbsOrderConfirmationService(OrderModel, JobModel, TplModel, configService, client, auth, audit);
+    const templates = new ZbsTemplateService(TplModel, client, auth);
+    const service = new ZbsOrderConfirmationService(OrderModel, JobModel, configService, client, auth, audit, templates);
+
+    const promotionTarget = () => {
+      const cfg = configService.get();
+      return {
+        templateKey: ZBS_TEMPLATE_PROMOTION,
+        templateId: cfg.templateIdPromotion,
+        mapping: configService.promotionParamMapping(cfg).mapping,
+        manuallyVerified: !!cfg.promotionTemplateManuallyVerified && cfg.promotionTemplateManuallyVerified === cfg.templateIdPromotion,
+        templateIdEnv: 'ZALO_ZBS_TEMPLATE_PROMOTION',
+        manualEnv: 'ZALO_ZBS_PROMOTION_TEMPLATE_MANUALLY_VERIFIED',
+      };
+    };
 
     switch (command) {
+      case 'verify-promotion-template':
+        print('promotion-readiness', configService.promotionReadiness());
+        print('verify-promotion-template', await templates.verify(promotionTarget()));
+        return;
+
+      case 'send-test-promotion': {
+        const phone = normalizeVnPhone(arg('--phone'));
+        const promotionId = arg('--promotion');
+        const couponId = arg('--coupon');
+        if (!phone.ok || !promotionId || !couponId || !flag('--confirm')) {
+          console.error(
+            'Cần --phone <SĐT test ĐÃ ĐỒNG Ý nhận tin> --promotion <id> --coupon <couponId> và --confirm. Đây là 1 tin ZBS thật (có tính phí).',
+          );
+          process.exitCode = 1;
+          return;
+        }
+        const cfg = configService.get();
+        const gate = await templates.gate(promotionTarget());
+        if (!gate.ready) {
+          console.error(`Template khuyến mãi chưa sẵn sàng: ${gate.errorCode} — ${gate.message}`);
+          process.exitCode = 1;
+          return;
+        }
+        const PromotionModel = mongoose.model(Promotion.name, PromotionSchema);
+        const promo = await PromotionModel.findById(promotionId).lean().exec();
+        const coupon = promo?.coupons.find((c) => c._id.toString() === couponId);
+        if (!promo || !coupon) {
+          console.error('Không tìm thấy chương trình/coupon');
+          process.exitCode = 1;
+          return;
+        }
+        const mapped = mapPromotionToTemplateData(
+          { customerName: 'Khách thử nghiệm', promotion: promo, coupon },
+          configService.promotionParamMapping(cfg).mapping,
+          gate.specs,
+        );
+        if (!mapped.ok) {
+          console.error(`Map dữ liệu thất bại: ${mapped.errorCode} — ${mapped.errorMessage}`);
+          process.exitCode = 1;
+          return;
+        }
+        const token = await auth.getAccessToken();
+        if (!token.ok) {
+          print('auth', token);
+          process.exitCode = 1;
+          return;
+        }
+        const trackingId = `TESTPR${new Types.ObjectId().toString()}`;
+        console.log(`Gửi template ${cfg.templateIdPromotion} tới ${maskZbsPhone(phone.phone)} (tracking ${trackingId})`);
+        print('template_data', mapped.templateData);
+        const res = await client.sendTemplate(token.accessToken, {
+          phone: phone.phone,
+          templateId: cfg.templateIdPromotion,
+          templateData: mapped.templateData,
+          trackingId,
+          developmentMode: flag('--dev'),
+        });
+        print('send-test-promotion', res);
+        if (res.ok) console.log('✅ Zalo đã NHẬN yêu cầu (error=0). Hãy xác nhận trên điện thoại test rằng tin đã tới.');
+        return;
+      }
+
       case 'status':
         print('credentials', await auth.statusView());
         print('template', await service.templateView());

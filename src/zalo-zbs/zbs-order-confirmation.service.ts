@@ -15,21 +15,12 @@ import { NotificationJob, NotificationJobDocument } from '../zalo-bot/schemas/no
 import { NotificationEventType, NotificationStatus } from '../zalo-bot/zalo-bot.constants';
 import { orderDisplayCode } from '../zalo-bot/order-message.formatter';
 import { AuditService } from '../audit/audit.service';
-import {
-  ZbsTemplateVerification,
-  ZbsTemplateVerificationDocument,
-} from './schemas/zbs-template-verification.schema';
 import { ZaloZbsConfigService, ZaloZbsConfigSnapshot } from './zalo-zbs.config';
 import { ZbsApiClient, ZbsCallResult, ZbsSendData } from './zbs-api.client';
 import { ZbsAuthService } from './zbs-auth.service';
 import { maskZbsPhone, normalizeVnPhone } from './zbs-phone';
-import {
-  buildTrackingId,
-  compareMappingWithTemplate,
-  mapOrderToTemplateData,
-  ZbsOrderInput,
-  ZbsTemplateParamSpec,
-} from './zbs-template.mapper';
+import { buildTrackingId, mapOrderToTemplateData, ZbsOrderInput } from './zbs-template.mapper';
+import { toInt, ZbsTemplateGate, ZbsTemplateService, ZbsTemplateTarget, ZbsTemplateVerifyResult } from './zbs-template.service';
 import {
   ZALO_ZBS_CHANNEL,
   ZBS_NO_RECIPIENT,
@@ -42,8 +33,6 @@ import {
 const FAN_OUT_BATCH = 20;
 const SEND_BATCH = 10;
 const MAX_ERROR_MESSAGE_LENGTH = 500;
-/** Template status is re-read from Zalo at most this often while jobs are being sent. */
-const TEMPLATE_RECHECK_MS = 6 * 3600 * 1000;
 const VN_OFFSET_MS = 7 * 3600 * 1000;
 const MAX_RETRY_DELAY_MS = 30 * 60 * 1000;
 /** Same field as the Bot outbox (order.schema.ts). Not imported from order-notification.service
@@ -73,15 +62,6 @@ export function nextVnMorning(now: Date): Date {
   if (vn.getUTCHours() < 7) return new Date(today0705);
   if (vn.getUTCHours() >= 22) return new Date(today0705 + 24 * 3600 * 1000);
   return new Date(now.getTime() + 30 * 60 * 1000);
-}
-
-interface TemplateGate {
-  ready: boolean;
-  /** Not ready only because Zalo couldn't be reached — nothing was sent, safe to retry. */
-  retryable?: boolean;
-  specs: ZbsTemplateParamSpec[];
-  errorCode?: string;
-  message?: string;
 }
 
 export interface ZbsRunOnceResult {
@@ -115,12 +95,11 @@ export class ZbsOrderConfirmationService implements OnModuleInit, OnModuleDestro
   constructor(
     @InjectModel(Order.name) private readonly orderModel: Model<OrderDocument>,
     @InjectModel(NotificationJob.name) private readonly jobModel: Model<NotificationJobDocument>,
-    @InjectModel(ZbsTemplateVerification.name)
-    private readonly templateModel: Model<ZbsTemplateVerificationDocument>,
     private readonly configService: ZaloZbsConfigService,
     private readonly client: ZbsApiClient,
     private readonly auth: ZbsAuthService,
     private readonly auditService: AuditService,
+    private readonly templates: ZbsTemplateService,
   ) {}
 
   // ─── Lifecycle ───────────────────────────────────────────────────────────
@@ -585,204 +564,45 @@ export class ZbsOrderConfirmationService implements OnModuleInit, OnModuleDestro
 
   // ─── Template verification ───────────────────────────────────────────────
 
+  private templateTarget(cfg: ZaloZbsConfigSnapshot = this.configService.get()): ZbsTemplateTarget {
+    return {
+      templateKey: ZBS_TEMPLATE_ORDER_CONFIRMATION,
+      templateId: cfg.templateIdOrderConfirmation,
+      mapping: this.configService.paramMapping(cfg).mapping,
+      manuallyVerified: !!cfg.templateManuallyVerified && cfg.templateManuallyVerified === cfg.templateIdOrderConfirmation,
+      templateIdEnv: 'ZALO_ZBS_TEMPLATE_ORDER_CONFIRMATION',
+      manualEnv: 'ZALO_ZBS_TEMPLATE_MANUALLY_VERIFIED',
+    };
+  }
+
   /**
    * Sending is allowed only when the configured template is known to be ENABLE and the ENV
    * mapping matches its approved params — or the operator attested it manually
    * (ZALO_ZBS_TEMPLATE_MANUALLY_VERIFIED=<template id>) because the app lacks the
    * template-management permission. Approval is never assumed.
    */
-  async templateGate(cfg: ZaloZbsConfigSnapshot = this.configService.get()): Promise<TemplateGate> {
-    const templateId = cfg.templateIdOrderConfirmation;
-    let record = await this.templateModel.findOne({ templateKey: ZBS_TEMPLATE_ORDER_CONFIRMATION, templateId }).lean().exec();
-    const stale =
-      !record?.lastCheckAt ||
-      Date.now() - new Date(record.lastCheckAt).getTime() > TEMPLATE_RECHECK_MS ||
-      // Never verified because Zalo was unreachable → try again on the next attempt.
-      (record.status === 'UNVERIFIED' && record.lastCheckErrorClass === 'RETRYABLE');
-    const manual = !!cfg.templateManuallyVerified && cfg.templateManuallyVerified === templateId;
-    if (stale && !manual) {
-      await this.verifyTemplate();
-      record = await this.templateModel.findOne({ templateKey: ZBS_TEMPLATE_ORDER_CONFIRMATION, templateId }).lean().exec();
-    }
-    const specs: ZbsTemplateParamSpec[] = record?.status === 'ENABLE' ? (record.listParams ?? []) : [];
-
-    if (manual) return { ready: true, specs };
-    if (!record || record.status === 'UNVERIFIED') {
-      return {
-        ready: false,
-        retryable: record?.lastCheckErrorClass === 'RETRYABLE',
-        specs,
-        errorCode: 'TEMPLATE_NOT_VERIFIED',
-        message: `Chưa xác minh được trạng thái template ${templateId}${record?.lastCheckErrorCode ? ` (${record.lastCheckErrorCode})` : ''} — bấm "Kiểm tra template" hoặc đặt ZALO_ZBS_TEMPLATE_MANUALLY_VERIFIED`,
-      };
-    }
-    if (record.status !== 'ENABLE') {
-      return {
-        ready: false,
-        specs,
-        errorCode: 'TEMPLATE_NOT_ENABLED',
-        message: `Template ${templateId} đang ở trạng thái ${record.status}${record.reason ? ` (${record.reason})` : ''} — chỉ gửi khi ENABLE`,
-      };
-    }
-    const cmp = compareMappingWithTemplate(this.configService.paramMapping(cfg).mapping, specs);
-    if (!cmp.compatible) {
-      return {
-        ready: false,
-        specs,
-        errorCode: 'TEMPLATE_PARAMS_MISMATCH',
-        message: [
-          cmp.missingRequired.length ? `thiếu tham số bắt buộc: ${cmp.missingRequired.join(', ')}` : '',
-          cmp.unknownParams.length ? `tham số không có trong template: ${cmp.unknownParams.join(', ')}` : '',
-        ]
-          .filter(Boolean)
-          .join('; '),
-      };
-    }
-    return { ready: true, specs };
+  templateGate(cfg: ZaloZbsConfigSnapshot = this.configService.get()): Promise<ZbsTemplateGate> {
+    return this.templates.gate(this.templateTarget(cfg));
   }
 
   /** GET /template/info/v2 for the configured template; stores the result. Works while
    * ZALO_ZBS_ENABLED=false so the operator can verify before activation. */
-  async verifyTemplate(): Promise<{
-    ok: boolean;
-    templateId: string;
-    status?: string;
-    errorCode?: string;
-    description?: string;
-    mapping?: { compatible: boolean; missingRequired: string[]; unknownParams: string[] };
-  }> {
-    const cfg = this.configService.get();
-    const templateId = cfg.templateIdOrderConfirmation;
-    if (!templateId) return { ok: false, templateId, errorCode: 'TEMPLATE_ID_MISSING', description: 'Chưa cấu hình ZALO_ZBS_TEMPLATE_ORDER_CONFIRMATION' };
-    const filter = { templateKey: ZBS_TEMPLATE_ORDER_CONFIRMATION, templateId };
-    const now = new Date();
-
-    const recordFailure = async (errorCode: string, description: string, errorClass: ZbsErrorClass) => {
-      await this.templateModel
-        .updateOne(
-          filter,
-          {
-            $setOnInsert: { status: 'UNVERIFIED', listParams: [] },
-            $set: {
-              lastCheckAt: now,
-              lastCheckErrorCode: errorCode,
-              lastCheckErrorMessage: description.slice(0, 300),
-              lastCheckErrorClass: errorClass === 'UNKNOWN_OUTCOME' ? 'RETRYABLE' : errorClass,
-            },
-          },
-          { upsert: true },
-        )
-        .exec()
-        .catch(() => undefined);
-      this.logger.warn(`ZBS: không kiểm tra được template ${templateId} (${errorCode})`);
-      return { ok: false, templateId, errorCode, description };
-    };
-
-    const token = await this.auth.getAccessToken();
-    if (!token.ok) return recordFailure(token.errorCode, token.description, token.errorClass);
-    let res = await this.client.getTemplateInfo(token.accessToken, templateId);
-    if (!res.ok && res.kind === 'TOKEN_INVALID') {
-      const renewed = await this.auth.handleRejectedAccessToken(token.accessToken);
-      if (!renewed.ok) return recordFailure(renewed.errorCode, renewed.description, renewed.errorClass);
-      res = await this.client.getTemplateInfo(renewed.accessToken, templateId);
-    }
-    if (!res.ok) {
-      // A definitive "this template is unusable" answer must close the gate; transient
-      // failures keep the last known state.
-      if (res.providerError !== undefined && ZBS_TEMPLATE_UNUSABLE_CODES.has(res.providerError)) {
-        await this.markTemplateRejected(templateId, res.providerError, res.description);
-      }
-      return recordFailure(res.errorCode, res.description, res.errorClass);
-    }
-
-    const d = res.data;
-    const listParams: ZbsTemplateParamSpec[] = (d.listParams ?? [])
-      .filter((p) => p && typeof p.name === 'string')
-      .map((p) => ({
-        name: String(p.name),
-        require: p.require !== false,
-        type: p.type,
-        maxLength: toInt(p.maxLength),
-        minLength: toInt(p.minLength),
-        acceptNull: p.acceptNull,
-      }));
-    const status = String(d.status ?? 'UNKNOWN');
-    await this.templateModel
-      .updateOne(
-        filter,
-        {
-          $set: {
-            status,
-            reason: d.reason,
-            templateName: d.templateName,
-            templateTag: d.templateTag,
-            templateQuality: d.templateQuality ?? undefined,
-            listParams,
-            buttonCount: Array.isArray(d.listButtons) ? d.listButtons.length : 0,
-            priceSdt: toInt(d.price_sdt ?? d.price),
-            previewUrl: d.previewUrl,
-            verifiedAt: now,
-            lastCheckAt: now,
-          },
-          $unset: { lastCheckErrorCode: 1, lastCheckErrorMessage: 1, lastCheckErrorClass: 1 },
-        },
-        { upsert: true },
-      )
-      .exec();
-    const mapping = compareMappingWithTemplate(this.configService.paramMapping(cfg).mapping, listParams);
-    this.logger.log(`ZBS: template ${templateId} = ${status}, mapping ${mapping.compatible ? 'khớp' : 'KHÔNG khớp'}`);
-    return { ok: true, templateId, status, mapping };
+  verifyTemplate(): Promise<ZbsTemplateVerifyResult> {
+    return this.templates.verify(this.templateTarget());
   }
 
-  private async markTemplateRejected(templateId: string, code: number, description: string): Promise<void> {
-    await this.templateModel
-      .updateOne(
-        { templateKey: ZBS_TEMPLATE_ORDER_CONFIRMATION, templateId },
-        {
-          $set: { status: `SEND_REJECTED_${code}`, reason: description.slice(0, 300), lastCheckAt: new Date() },
-          $setOnInsert: { listParams: [] },
-        },
-        { upsert: true },
-      )
-      .exec()
-      .catch(() => undefined);
-    this.logger.error(`ZBS: Zalo từ chối template ${templateId} (${code}) — tạm dừng gửi tới khi kiểm tra lại template`);
+  private markTemplateRejected(templateId: string, code: number, description: string): Promise<void> {
+    return this.templates.markRejected(ZBS_TEMPLATE_ORDER_CONFIRMATION, templateId, code, description);
   }
 
-  async templateView() {
+  templateView() {
     const cfg = this.configService.get();
-    const record = cfg.templateIdOrderConfirmation
-      ? await this.templateModel
-          .findOne({ templateKey: ZBS_TEMPLATE_ORDER_CONFIRMATION, templateId: cfg.templateIdOrderConfirmation })
-          .lean()
-          .exec()
-      : null;
     const mapping = this.configService.paramMapping(cfg);
-    return {
-      templateKey: ZBS_TEMPLATE_ORDER_CONFIRMATION,
-      templateId: cfg.templateIdOrderConfirmation || null,
-      record: record
-        ? {
-            status: record.status,
-            reason: record.reason,
-            templateName: record.templateName,
-            templateTag: record.templateTag,
-            templateQuality: record.templateQuality,
-            listParams: record.listParams,
-            buttonCount: record.buttonCount,
-            priceSdt: record.priceSdt,
-            previewUrl: record.previewUrl,
-            verifiedAt: record.verifiedAt,
-            lastCheckAt: record.lastCheckAt,
-            lastCheckErrorCode: record.lastCheckErrorCode,
-            lastCheckErrorMessage: record.lastCheckErrorMessage,
-          }
-        : null,
-      mapping: mapping.mapping.map((m) => ({ param: m.param, source: m.source ?? 'const' })),
-      mappingErrors: mapping.errors,
-      comparison: record?.listParams?.length ? compareMappingWithTemplate(mapping.mapping, record.listParams) : null,
-      manuallyVerified: !!cfg.templateManuallyVerified && cfg.templateManuallyVerified === cfg.templateIdOrderConfirmation,
-    };
+    return this.templates.view(
+      this.templateTarget(cfg),
+      mapping.mapping.map((m) => ({ param: m.param, source: m.source ?? 'const' })),
+      mapping.errors,
+    );
   }
 
   // ─── Admin operations ────────────────────────────────────────────────────
@@ -879,9 +699,7 @@ export class ZbsOrderConfirmationService implements OnModuleInit, OnModuleDestro
         .sort({ acceptedAt: -1 })
         .lean()
         .exec(),
-      cfg.templateIdOrderConfirmation
-        ? this.templateModel.findOne({ templateKey: ZBS_TEMPLATE_ORDER_CONFIRMATION, templateId: cfg.templateIdOrderConfirmation }).lean().exec()
-        : null,
+      cfg.templateIdOrderConfirmation ? this.templates.record(ZBS_TEMPLATE_ORDER_CONFIRMATION, cfg.templateIdOrderConfirmation) : null,
     ]);
     const unitPrice = cfg.unitPriceVnd > 0 ? cfg.unitPriceVnd : (template?.priceSdt ?? null);
     return {
@@ -1021,12 +839,6 @@ const RETRYABLE_STATUSES: NotificationStatus[] = [
   NotificationStatus.SKIPPED_NOT_CONFIGURED,
   NotificationStatus.SKIPPED_INVALID_RECIPIENT,
 ];
-
-function toInt(v: unknown): number | undefined {
-  if (v === undefined || v === null || v === '') return undefined;
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.round(n) : undefined;
-}
 
 /** Zalo timestamps are millisecond strings ("1626926349402"). */
 function toDateFromMs(v: unknown): Date | undefined {
