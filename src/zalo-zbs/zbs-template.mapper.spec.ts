@@ -135,6 +135,54 @@ describe('mapOrderToTemplateData (TEST 09)', () => {
   });
 });
 
+describe('template 652770 (approved 2026-10-26)', () => {
+  const MAPPING_652770 = JSON.stringify({
+    name: 'customerName',
+    phone_number: 'customerPhone',
+    price: 'orderTotal',
+    status: 'orderStatus',
+    date: 'orderDate',
+    order_code: 'orderCode',
+    order_id: 'orderId',
+  });
+  const SPECS = [
+    { name: 'name', maxLength: 30 },
+    { name: 'phone_number', maxLength: 50 },
+    { name: 'price', maxLength: 30 },
+    { name: 'status', maxLength: 30 },
+    { name: 'date', maxLength: 20 },
+    { name: 'order_code', maxLength: 30 },
+    { name: 'order_id', maxLength: 200 },
+  ].map((s) => ({ ...s, require: true, acceptNull: false }));
+
+  it('maps every approved param, within its maxLength', () => {
+    const { mapping, errors } = parseParamMapping(MAPPING_652770);
+    expect(errors).toEqual([]);
+    expect(compareMappingWithTemplate(mapping, SPECS)).toEqual({ compatible: true, missingRequired: [], unknownParams: [] });
+    const res = mapOrderToTemplateData(order({ shippingInfo: { recipientName: 'Nguyễn Văn A', phone: '+84 912 345 689' } }), mapping, { specs: SPECS });
+    expect(res).toEqual({
+      ok: true,
+      templateData: {
+        name: 'Nguyễn Văn A',
+        phone_number: '0912345689',
+        price: '259.000đ',
+        status: 'Đã tiếp nhận',
+        date: '18/10/2026',
+        order_code: '#08192A3B',
+        order_id: ORDER_ID,
+      },
+    });
+  });
+
+  it('customerPhone refuses a masked/invalid number instead of sending it', () => {
+    const m = parseParamMapping('{"phone_number":"customerPhone"}').mapping;
+    expect(mapOrderToTemplateData(order({ shippingInfo: { recipientName: 'A', phone: '(+84)******123' } }), m)).toMatchObject({
+      ok: false,
+      errorCode: 'ORDER_FIELD_MISSING',
+    });
+  });
+});
+
 describe('compareMappingWithTemplate (TEST 15 support)', () => {
   it('flags missing required and unknown params', () => {
     const { mapping } = parseParamMapping(MAPPING_JSON);

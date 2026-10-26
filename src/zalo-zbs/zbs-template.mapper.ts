@@ -1,5 +1,6 @@
 import { describePaymentStatus, formatVnd, orderDisplayCode } from '../zalo-bot/order-message.formatter';
 import { ZBS_TRACKING_ID_MAX_LENGTH } from './zalo-zbs.constants';
+import { normalizeVnPhone } from './zbs-phone';
 
 /**
  * ORDER_CONFIRMATION template mapping. Parameter NAMES come from the approved Zalo template
@@ -10,6 +11,7 @@ import { ZBS_TRACKING_ID_MAX_LENGTH } from './zalo-zbs.constants';
 /** Order facts a template parameter may be mapped to. */
 export const ZBS_ORDER_SOURCES = [
   'customerName',
+  'customerPhone',
   'orderCode',
   'orderId',
   'orderTotal',
@@ -120,7 +122,7 @@ export interface ZbsOrderInput {
   createdAt?: Date | string;
   status?: string;
   items?: Array<{ quantity?: number }>;
-  shippingInfo?: { recipientName?: string };
+  shippingInfo?: { recipientName?: string; phone?: string };
   total?: number;
   paidAmount?: number;
 }
@@ -219,6 +221,13 @@ function resolveSource(order: ZbsOrderInput, source: ZbsOrderSource, ctx: ZbsMap
     case 'customerName': {
       const name = String(order.shippingInfo?.recipientName ?? '').replace(/\s+/g, ' ').trim();
       return name ? { ok: true, value: name } : { ok: false, errorCode: 'ORDER_FIELD_MISSING', message: 'đơn không có tên người nhận' };
+    }
+    case 'customerPhone': {
+      // The recipient's own number, shown the way Vietnamese customers write it (0912345678).
+      const phone = normalizeVnPhone(order.shippingInfo?.phone);
+      return phone.ok
+        ? { ok: true, value: `0${phone.phone.slice(2)}` }
+        : { ok: false, errorCode: 'ORDER_FIELD_MISSING', message: 'đơn không có SĐT di động hợp lệ' };
     }
     case 'orderCode':
       return { ok: true, value: orderDisplayCode(orderId) };
