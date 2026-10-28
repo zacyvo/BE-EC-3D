@@ -29,5 +29,7 @@ import { DocumentSigningModule } from '../document-signing/document-signing.modu
   ],
   controllers: [AdminContractsController, PublicContractsController],
   providers: [ContractsService],
+  // EInvoiceModule dùng để xác thực phiên hợp đồng khi khách xem hoá đơn liên kết
+  exports: [ContractsService],
 })
 export class ContractsModule {}

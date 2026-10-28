@@ -3,11 +3,16 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { JwtModule } from '@nestjs/jwt';
 import { EInvoiceService } from './einvoice.service';
 import { EasyInvoiceClientService } from './easyinvoice-client.service';
-import { AdminEInvoiceController, PublicEInvoiceController } from './einvoice.controller';
+import {
+  AdminEInvoiceController,
+  ContractEInvoiceController,
+  PublicEInvoiceController,
+} from './einvoice.controller';
 import { EInvoice, EInvoiceSchema } from './schemas/einvoice.schema';
 import { Contract, ContractSchema } from '../contracts/schemas/contract.schema';
 import { Order, OrderSchema } from '../orders/schemas/order.schema';
 import { StaffModule } from '../staff/staff.module';
+import { ContractsModule } from '../contracts/contracts.module';
 import { AuditModule } from '../audit/audit.module';
 
 @Module({
@@ -23,8 +28,9 @@ import { AuditModule } from '../audit/audit.module';
     JwtModule.register({}),
     StaffModule,
     AuditModule,
+    ContractsModule,
   ],
-  controllers: [AdminEInvoiceController, PublicEInvoiceController],
+  controllers: [AdminEInvoiceController, PublicEInvoiceController, ContractEInvoiceController],
   providers: [EInvoiceService, EasyInvoiceClientService],
 })
 export class EInvoiceModule {}

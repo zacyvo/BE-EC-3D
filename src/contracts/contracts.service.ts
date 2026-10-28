@@ -1192,6 +1192,11 @@ export class ContractsService {
     return contract;
   }
 
+  /** Xác thực phiên khách của hợp đồng cho module khác (VD: hoá đơn điện tử liên kết) */
+  resolvePublicAccess(token: string, jwt?: string): Promise<ContractDocument> {
+    return this.resolveAuthorized(token, jwt);
+  }
+
   async getPublicContract(token: string, jwt?: string) {
     const contract = await this.resolveAuthorized(token, jwt);
     return this.sanitizeForUser(contract);

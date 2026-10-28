@@ -22,6 +22,7 @@ import {
 import { Contract, ContractDocument } from '../contracts/schemas/contract.schema';
 import { Order, OrderDocument } from '../orders/schemas/order.schema';
 import { StaffService } from '../staff/staff.service';
+import { ContractsService } from '../contracts/contracts.service';
 import { AuditService } from '../audit/audit.service';
 import {
   EasyInvoiceBuildInput,
@@ -64,6 +65,7 @@ export class EInvoiceService {
     private readonly auditService: AuditService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly contractsService: ContractsService,
   ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -845,6 +847,44 @@ export class EInvoiceService {
 
   async downloadPublic(token: string, jwt: string | undefined, format: DownloadFormat) {
     const invoice = await this.resolveAuthorized(token, jwt);
+    return this.downloadFile(invoice, format);
+  }
+
+  // ─── Xem qua trang hợp đồng (dùng phiên đã xác thực của hợp đồng liên kết) ───
+
+  /** Điều kiện hoá đơn liên kết hợp đồng mà khách được xem — cùng quy tắc với assertPublicAccessible */
+  private contractInvoiceFilter(contractId: Types.ObjectId) {
+    return {
+      contractId,
+      invoiceKind: EInvoiceKind.TAX_AUTHORITY,
+      localStatus: { $in: [EInvoiceLocalStatus.ISSUED, EInvoiceLocalStatus.CANCELLED] },
+    };
+  }
+
+  /**
+   * Hoá đơn điện tử liên kết với hợp đồng. Hoá đơn liên kết hợp đồng dùng chung khoá với hợp đồng
+   * nên khách đã mở hợp đồng không cần nhập khoá lại; `token` dùng để tải file / mở trang hoá đơn riêng.
+   */
+  async listForContract(contractToken: string, contractJwt: string | undefined) {
+    const contract = await this.contractsService.resolvePublicAccess(contractToken, contractJwt);
+    const invoices = await this.model
+      .find(this.contractInvoiceFilter(contract._id))
+      .sort({ arisingDate: -1, createdAt: -1 })
+      .exec();
+    return invoices.map((inv) => ({ token: inv.accessToken, ...this.sanitizeForUser(inv) }));
+  }
+
+  async downloadForContract(
+    contractToken: string,
+    contractJwt: string | undefined,
+    invoiceToken: string,
+    format: DownloadFormat,
+  ) {
+    const contract = await this.contractsService.resolvePublicAccess(contractToken, contractJwt);
+    const invoice = await this.model
+      .findOne({ ...this.contractInvoiceFilter(contract._id), accessToken: invoiceToken })
+      .exec();
+    if (!invoice) throw new NotFoundException('Không tìm thấy hoá đơn của hợp đồng này');
     return this.downloadFile(invoice, format);
   }
 }

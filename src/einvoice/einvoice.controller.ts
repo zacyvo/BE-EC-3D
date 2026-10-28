@@ -148,6 +148,39 @@ export class AdminEInvoiceController {
   }
 }
 
+// ─── Public qua trang hợp đồng (phiên khách của hợp đồng liên kết) ───────────────
+
+@Controller('contracts/public/:token/einvoices')
+export class ContractEInvoiceController {
+  constructor(private readonly service: EInvoiceService) {}
+
+  @Get()
+  list(
+    @Param('token') token: string,
+    @Headers('x-contract-access') accessJwt?: string,
+  ) {
+    return this.service.listForContract(token, accessJwt);
+  }
+
+  @Get(':invoiceToken/download')
+  async download(
+    @Param('token') token: string,
+    @Param('invoiceToken') invoiceToken: string,
+    @Query('format') formatQuery: string | undefined,
+    @Headers('x-contract-access') accessJwt: string | undefined,
+    @Res() res: Response,
+  ) {
+    const format = parseFormat(formatQuery);
+    const { buffer, filename } = await this.service.downloadForContract(token, accessJwt, invoiceToken, format);
+    res.set({
+      'Content-Type': CONTENT_TYPES[format],
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+      'Content-Length': String(buffer.length),
+    });
+    res.send(buffer);
+  }
+}
+
 // ─── Public (khách truy cập qua link + khoá mở hoá đơn) ─────────────────────────
 
 @Controller('einvoices/public')

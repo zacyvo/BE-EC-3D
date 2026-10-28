@@ -80,6 +80,7 @@ beforeAll(async () => {
     audit as unknown as AuditService,
     {} as never,
     config,
+    {} as never,
   );
 });
 
