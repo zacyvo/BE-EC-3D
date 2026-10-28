@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -13,21 +14,29 @@ import * as crypto from 'crypto';
 import {
   EInvoice,
   EInvoiceDocument,
+  EInvoiceItem,
   EInvoiceKind,
   EInvoiceLocalStatus,
+  EasyInvoiceStatus,
 } from './schemas/einvoice.schema';
 import { Contract, ContractDocument } from '../contracts/schemas/contract.schema';
 import { Order, OrderDocument } from '../orders/schemas/order.schema';
 import { StaffService } from '../staff/staff.service';
 import { AuditService } from '../audit/audit.service';
 import {
+  EasyInvoiceBuildInput,
   EasyInvoiceClientService,
   EasyInvoiceDownloadOption,
   EasyInvoiceInvoiceObject,
-  EasyInvoiceProductInput,
 } from './easyinvoice-client.service';
 import { numberToVietnameseWords } from './number-to-words.util';
-import { CancelEInvoiceDto, CreateEInvoiceDto, VerifyEInvoiceDto } from './dto/einvoice.dto';
+import {
+  CancelEInvoiceDto,
+  CreateEInvoiceDto,
+  PublishEInvoiceDraftDto,
+  UpdateEInvoiceDraftDto,
+  VerifyEInvoiceDto,
+} from './dto/einvoice.dto';
 
 /** Không dùng ký tự dễ nhầm lẫn (0/O, 1/I) — cùng bộ ký tự với Contract để đồng nhất trải nghiệm */
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -179,9 +188,8 @@ export class EInvoiceService {
     };
   }
 
-  // ─── Admin ──────────────────────────────────────────────────────────────────
-
-  async create(dto: CreateEInvoiceDto, staffId: string) {
+  /** Kiểm tra đơn hàng/hợp đồng liên kết — trả về hợp đồng (kèm securityCode) nếu có */
+  private async resolveLinks(dto: { orderId?: string; contractId?: string }) {
     let contract: ContractDocument | null = null;
     if (dto.contractId) {
       if (!Types.ObjectId.isValid(dto.contractId)) {
@@ -201,26 +209,40 @@ export class EInvoiceService {
       const order = await this.orderModel.findById(dto.orderId).exec();
       if (!order) throw new NotFoundException('Không tìm thấy đơn hàng liên kết');
     }
+    return contract;
+  }
 
-    const { computed, totalBeforeTax, vatAmount, totalAmount } = this.computeItems(dto.items);
-    const arisingDate = dto.arisingDate ? new Date(dto.arisingDate) : new Date();
-    const ikey = this.genIkey();
-    const pattern = this.easyInvoiceClient.defaultPattern;
-    const serial = this.easyInvoiceClient.defaultSerial;
-    const kind = dto.invoiceKind ?? EInvoiceKind.TAX_AUTHORITY;
-
-    let issued: EasyInvoiceInvoiceObject | undefined;
-    let invoiceNo: string | undefined;
-    let issueDate: Date;
-
-    if (kind === EInvoiceKind.SALES) {
-      // Hoá đơn bán hàng nội bộ — KHÔNG gọi EasyInvoice, tự sinh số hoá đơn 6 chữ số.
-      invoiceNo = await this.genSalesInvoiceNo();
-      issueDate = arisingDate;
-    } else {
-      const products: EasyInvoiceProductInput[] = computed.map((c) => ({
+  /** Dữ liệu hoá đơn gửi sang EasyInvoice — dùng chung cho tạo mới, bản nháp và cập nhật ngày lập */
+  private toEasyInvoiceInput(src: {
+    ikey: string;
+    buyerName: string;
+    customerName: string;
+    customerTaxCode?: string;
+    customerAddress?: string;
+    customerPhone?: string;
+    customerEmail?: string;
+    paymentMethod: string;
+    currencyUnit?: string;
+    arisingDate: Date;
+    items: EInvoiceItem[];
+    totalBeforeTax: number;
+    vatAmount: number;
+    totalAmount: number;
+  }): EasyInvoiceBuildInput {
+    return {
+      ikey: src.ikey,
+      buyer: src.buyerName,
+      cusName: src.customerName,
+      cusTaxCode: src.customerTaxCode || undefined,
+      cusAddress: src.customerAddress || undefined,
+      cusPhone: src.customerPhone || undefined,
+      cusEmail: src.customerEmail || undefined,
+      paymentMethod: src.paymentMethod,
+      arisingDate: src.arisingDate,
+      currencyUnit: src.currencyUnit || 'VND',
+      products: src.items.map((c, idx) => ({
         code: c.code,
-        no: c.no,
+        no: idx + 1,
         feature: c.feature,
         name: c.name,
         unit: c.unit,
@@ -233,33 +255,97 @@ export class EInvoiceService {
         vatRateOther: c.vatRateOther,
         vatAmount: c.vatAmount,
         amount: c.amount,
-      }));
+      })),
+      total: src.totalBeforeTax,
+      vatAmount: src.vatAmount,
+      amount: src.totalAmount,
+      amountInWords: numberToVietnameseWords(src.totalAmount),
+    };
+  }
 
-      const result = await this.easyInvoiceClient.importAndIssueInvoice(
-        {
-          ikey,
-          buyer: dto.buyerName,
-          cusName: dto.customerName,
-          cusTaxCode: dto.customerTaxCode,
-          cusAddress: dto.customerAddress,
-          cusPhone: dto.customerPhone,
-          cusEmail: dto.customerEmail,
-          paymentMethod: dto.paymentMethod,
-          arisingDate,
-          currencyUnit: dto.currencyUnit || 'VND',
-          products,
-          total: totalBeforeTax,
-          vatAmount,
-          amount: totalAmount,
-          amountInWords: numberToVietnameseWords(totalAmount),
-        },
-        pattern,
-        serial,
-      );
+  /** Ghi nhận kết quả phát hành từ EasyInvoice (số hoá đơn, mã tra cứu, trạng thái…) vào hoá đơn */
+  private applyIssued(invoice: EInvoiceDocument, issued: EasyInvoiceInvoiceObject | undefined, invoiceNo?: string) {
+    invoice.invoiceNo = issued?.No || invoiceNo || invoice.invoiceNo;
+    if (issued?.Pattern) invoice.pattern = issued.Pattern;
+    if (issued?.Serial) invoice.serial = issued.Serial;
+    if (issued?.LookupCode) invoice.lookupCode = issued.LookupCode;
+    if (issued?.LinkView) invoice.linkView = issued.LinkView;
+    if (issued?.InvoiceStatus !== undefined) invoice.easyInvoiceStatus = issued.InvoiceStatus;
+    if (issued?.TCTCheckStatus !== undefined) invoice.tctCheckStatus = issued.TCTCheckStatus;
+    if (issued?.TCTErrorMessage !== undefined) invoice.tctErrorMessage = issued.TCTErrorMessage;
+    invoice.issueDate = this.parseVNDate(issued?.IssueDate) ?? new Date();
+    invoice.localStatus = EInvoiceLocalStatus.ISSUED;
+    invoice.errorMessage = '';
+  }
 
-      issued = result.Invoices?.[0];
-      invoiceNo = issued?.No;
-      issueDate = this.parseVNDate(issued?.IssueDate) ?? new Date();
+  /** Hoá đơn trên EasyInvoice đã được ký số (phát hành) — dùng để đối soát bản nháp */
+  private isIssuedOnEasyInvoice(found: EasyInvoiceInvoiceObject | undefined): boolean {
+    return (
+      !!found?.No &&
+      (found.InvoiceStatus === EasyInvoiceStatus.SIGNED ||
+        found.InvoiceStatus === EasyInvoiceStatus.TAX_DECLARED)
+    );
+  }
+
+  private async findDraftOrThrow(id: string): Promise<EInvoiceDocument> {
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Hoá đơn không tồn tại');
+    const invoice = await this.model.findById(id).exec();
+    if (!invoice) throw new NotFoundException('Hoá đơn không tồn tại');
+    if (invoice.localStatus !== EInvoiceLocalStatus.DRAFT) {
+      throw new BadRequestException('Chỉ thao tác được với hoá đơn đang ở trạng thái bản nháp');
+    }
+    if (invoice.publishLockUntil && invoice.publishLockUntil > new Date()) {
+      throw new ConflictException('Bản nháp đang được phát hành, vui lòng thử lại sau ít phút');
+    }
+    return invoice;
+  }
+
+  // ─── Admin ──────────────────────────────────────────────────────────────────
+
+  async create(dto: CreateEInvoiceDto, staffId: string) {
+    const kind = dto.invoiceKind ?? EInvoiceKind.TAX_AUTHORITY;
+    const isDraft = !!dto.saveAsDraft;
+    if (isDraft && kind !== EInvoiceKind.TAX_AUTHORITY) {
+      throw new BadRequestException('Chỉ hoá đơn Cơ quan Thuế mới hỗ trợ lưu bản nháp');
+    }
+
+    const contract = await this.resolveLinks(dto);
+
+    const { computed, totalBeforeTax, vatAmount, totalAmount } = this.computeItems(dto.items);
+    const arisingDate = dto.arisingDate ? new Date(dto.arisingDate) : new Date();
+    const ikey = this.genIkey();
+    const pattern = this.easyInvoiceClient.defaultPattern;
+    const serial = this.easyInvoiceClient.defaultSerial;
+
+    let issued: EasyInvoiceInvoiceObject | undefined;
+    let invoiceNo: string | undefined;
+    let issueDate: Date | undefined;
+
+    if (kind === EInvoiceKind.SALES) {
+      // Hoá đơn bán hàng nội bộ — KHÔNG gọi EasyInvoice, tự sinh số hoá đơn 6 chữ số.
+      invoiceNo = await this.genSalesInvoiceNo();
+      issueDate = arisingDate;
+    } else {
+      const input = this.toEasyInvoiceInput({
+        ...dto,
+        ikey,
+        arisingDate,
+        items: computed,
+        totalBeforeTax,
+        vatAmount,
+        totalAmount,
+      });
+
+      if (isDraft) {
+        // Bản nháp (V.1): EasyInvoice lưu hoá đơn chưa ký, chưa cấp số.
+        const result = await this.easyInvoiceClient.importInvoice(input, pattern, serial);
+        issued = result.Invoices?.[0];
+      } else {
+        const result = await this.easyInvoiceClient.importAndIssueInvoice(input, pattern, serial);
+        issued = result.Invoices?.[0];
+        invoiceNo = issued?.No;
+        issueDate = this.parseVNDate(issued?.IssueDate) ?? new Date();
+      }
     }
 
     // Khoá mở hoá đơn: liên kết hợp đồng -> dùng CHUNG khoá bảo mật của hợp đồng.
@@ -277,7 +363,7 @@ export class EInvoiceService {
       lookupCode: issued?.LookupCode,
       linkView: issued?.LinkView,
       easyInvoiceStatus: issued?.InvoiceStatus,
-      localStatus: EInvoiceLocalStatus.ISSUED,
+      localStatus: isDraft ? EInvoiceLocalStatus.DRAFT : EInvoiceLocalStatus.ISSUED,
       orderId: dto.orderId ? new Types.ObjectId(dto.orderId) : undefined,
       contractId: contract ? contract._id : undefined,
       buyerName: dto.buyerName,
@@ -304,13 +390,194 @@ export class EInvoiceService {
     await this.auditService.log({
       actorId: staffId,
       actorType: 'staff',
-      action: 'EINVOICE_CREATE',
+      action: isDraft ? 'EINVOICE_DRAFT_CREATE' : 'EINVOICE_CREATE',
       module: 'einvoice',
       targetId: invoice._id.toString(),
       afterData: { ikey, invoiceKind: kind, invoiceNo: invoice.invoiceNo, totalAmount, contractId: dto.contractId, orderId: dto.orderId },
     });
 
     return this.toAdminResponse(invoice);
+  }
+
+  /** Sửa bản nháp — import lại cùng ikey, EasyInvoice ghi đè hoá đơn đang ở trạng thái mới tạo lập (V.1) */
+  async updateDraft(id: string, dto: UpdateEInvoiceDraftDto, staffId: string) {
+    const invoice = await this.findDraftOrThrow(id);
+    const contract = await this.resolveLinks(dto);
+
+    const { computed, totalBeforeTax, vatAmount, totalAmount } = this.computeItems(dto.items);
+    const arisingDate = dto.arisingDate ? new Date(dto.arisingDate) : invoice.arisingDate;
+
+    const result = await this.easyInvoiceClient.importInvoice(
+      this.toEasyInvoiceInput({
+        ...dto,
+        ikey: invoice.ikey,
+        arisingDate,
+        items: computed,
+        totalBeforeTax,
+        vatAmount,
+        totalAmount,
+      }),
+      invoice.pattern,
+      invoice.serial,
+    );
+    const imported = result.Invoices?.[0];
+    if (imported?.InvoiceStatus !== undefined) invoice.easyInvoiceStatus = imported.InvoiceStatus;
+
+    const before = { totalAmount: invoice.totalAmount, contractId: invoice.contractId?.toString() };
+
+    // Đổi hợp đồng liên kết -> đổi khoá mở hoá đơn theo (dùng chung khoá hợp đồng mới,
+    // hoặc sinh khoá riêng nếu bỏ liên kết hợp đồng).
+    const prevContractId = invoice.contractId?.toString();
+    if (contract && contract._id.toString() !== prevContractId) {
+      invoice.securityCode = contract.securityCode;
+      invoice.sharedKeyFromContract = true;
+    } else if (!contract && invoice.sharedKeyFromContract) {
+      invoice.securityCode = this.genSecurityCode();
+      invoice.sharedKeyFromContract = false;
+    }
+
+    invoice.orderId = dto.orderId ? new Types.ObjectId(dto.orderId) : undefined;
+    invoice.contractId = contract ? contract._id : undefined;
+    invoice.buyerName = dto.buyerName;
+    invoice.customerName = dto.customerName;
+    invoice.customerTaxCode = dto.customerTaxCode ?? '';
+    invoice.customerAddress = dto.customerAddress ?? '';
+    invoice.customerPhone = dto.customerPhone ?? '';
+    invoice.customerEmail = dto.customerEmail ?? '';
+    invoice.items = computed;
+    invoice.totalBeforeTax = totalBeforeTax;
+    invoice.vatAmount = vatAmount;
+    invoice.totalAmount = totalAmount;
+    invoice.paymentMethod = dto.paymentMethod;
+    invoice.currencyUnit = dto.currencyUnit || 'VND';
+    invoice.arisingDate = arisingDate;
+    invoice.note = dto.note ?? '';
+    await invoice.save();
+
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'EINVOICE_DRAFT_UPDATE',
+      module: 'einvoice',
+      targetId: id,
+      beforeData: before,
+      afterData: { totalAmount, contractId: dto.contractId },
+    });
+
+    return this.toAdminResponse(invoice);
+  }
+
+  /**
+   * Chuyển bản nháp thành hoá đơn chính thức — phát hành ký server (V.10.1 api/publish/issueInvoices).
+   * Nếu truyền ngày lập mới, cập nhật bản nháp trên EasyInvoice (import lại cùng ikey) trước khi phát hành.
+   */
+  async publishDraft(id: string, dto: PublishEInvoiceDraftDto, staffId: string) {
+    await this.findDraftOrThrow(id);
+
+    // Khoá nguyên tử: chỉ 1 request được phát hành, đồng thời chặn sửa/xoá trong lúc phát hành.
+    const now = new Date();
+    const invoice = await this.model
+      .findOneAndUpdate(
+        {
+          _id: id,
+          localStatus: EInvoiceLocalStatus.DRAFT,
+          $or: [{ publishLockUntil: { $exists: false } }, { publishLockUntil: { $lte: now } }],
+        },
+        { $set: { publishLockUntil: new Date(now.getTime() + 2 * 60 * 1000) } },
+        { new: true },
+      )
+      .exec();
+    if (!invoice) {
+      throw new ConflictException('Bản nháp đang được phát hành hoặc đã được phát hành');
+    }
+
+    try {
+      if (dto.arisingDate) {
+        const newDate = new Date(dto.arisingDate);
+        if (newDate.toDateString() !== invoice.arisingDate.toDateString()) {
+          await this.easyInvoiceClient.importInvoice(
+            this.toEasyInvoiceInput({ ...invoice.toObject(), ikey: invoice.ikey, arisingDate: newDate }),
+            invoice.pattern,
+            invoice.serial,
+          );
+          invoice.arisingDate = newDate;
+        }
+      }
+
+      let issued: EasyInvoiceInvoiceObject | undefined;
+      let issuedNo: string | undefined;
+      try {
+        const result = await this.easyInvoiceClient.issueInvoices(
+          [invoice.ikey],
+          invoice.pattern,
+          invoice.serial,
+        );
+        issued = result.Invoices?.find((i) => i.Ikey === invoice.ikey) ?? result.Invoices?.[0];
+        issuedNo = result.KeyInvoiceNo?.[invoice.ikey];
+      } catch (err) {
+        // Mất kết nối/timeout sau khi EasyInvoice đã ký -> đối soát lại để không kẹt ở bản nháp.
+        const found = await this.easyInvoiceClient
+          .getInvoicesByIkeys([invoice.ikey])
+          .then((r) => r.Invoices?.[0])
+          .catch(() => undefined);
+        if (!this.isIssuedOnEasyInvoice(found)) {
+          invoice.errorMessage = (err as Error).message;
+          throw err;
+        }
+        issued = found;
+      }
+
+      this.applyIssued(invoice, issued, issuedNo);
+      invoice.publishedBy = new Types.ObjectId(staffId);
+      invoice.publishedAt = new Date();
+    } finally {
+      invoice.publishLockUntil = undefined;
+      await invoice.save();
+    }
+
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'EINVOICE_PUBLISH',
+      module: 'einvoice',
+      targetId: id,
+      beforeData: { localStatus: EInvoiceLocalStatus.DRAFT },
+      afterData: { localStatus: EInvoiceLocalStatus.ISSUED, invoiceNo: invoice.invoiceNo },
+    });
+
+    return this.toAdminResponse(invoice);
+  }
+
+  /** Xoá bản nháp — xoá trên EasyInvoice (V.7 removeUnsignedInvoice) rồi xoá mềm tại hệ thống */
+  async deleteDraft(id: string, staffId: string) {
+    const invoice = await this.findDraftOrThrow(id);
+
+    try {
+      await this.easyInvoiceClient.removeUnsignedInvoice(invoice.ikey, invoice.pattern, invoice.serial);
+    } catch (err) {
+      // Bản nháp có thể đã bị xoá/phát hành trực tiếp trên cổng EasyInvoice — chỉ xoá local
+      // khi xác nhận không còn tồn tại; nếu đã ký số thì phải đồng bộ thay vì xoá.
+      const stillExists = await this.easyInvoiceClient
+        .getInvoicesByIkeys([invoice.ikey])
+        .then((r) => !!r.Invoices?.length)
+        .catch(() => true);
+      if (stillExists) throw err;
+    }
+
+    invoice.isDeleted = true;
+    invoice.deletedAt = new Date();
+    await invoice.save();
+
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'EINVOICE_DRAFT_DELETE',
+      module: 'einvoice',
+      targetId: id,
+      beforeData: { ikey: invoice.ikey, totalAmount: invoice.totalAmount },
+    });
+
+    return { deleted: true };
   }
 
   async findAll(params: {
@@ -392,6 +659,9 @@ export class EInvoiceService {
     if (invoice.localStatus === EInvoiceLocalStatus.CANCELLED) {
       throw new BadRequestException('Hoá đơn đã được huỷ trước đó');
     }
+    if (invoice.localStatus === EInvoiceLocalStatus.DRAFT) {
+      throw new BadRequestException('Bản nháp chưa phát hành — vui lòng dùng chức năng Xoá bản nháp');
+    }
 
     // Hoá đơn bán hàng nội bộ không được phát hành qua EasyInvoice nên chỉ huỷ cục bộ.
     if (invoice.invoiceKind !== EInvoiceKind.SALES) {
@@ -432,7 +702,12 @@ export class EInvoiceService {
 
     const result = await this.easyInvoiceClient.getInvoicesByIkeys([invoice.ikey]);
     const found = result.Invoices?.[0];
-    if (found) {
+    if (found && invoice.localStatus === EInvoiceLocalStatus.DRAFT) {
+      // Bản nháp có thể đã được ký trực tiếp trên cổng EasyInvoice -> chuyển sang chính thức.
+      if (this.isIssuedOnEasyInvoice(found)) this.applyIssued(invoice, found);
+      else if (found.InvoiceStatus !== undefined) invoice.easyInvoiceStatus = found.InvoiceStatus;
+      await invoice.save();
+    } else if (found) {
       if (found.InvoiceStatus !== undefined) invoice.easyInvoiceStatus = found.InvoiceStatus;
       if (found.TCTCheckStatus !== undefined) invoice.tctCheckStatus = found.TCTCheckStatus;
       if (found.TCTErrorMessage !== undefined) invoice.tctErrorMessage = found.TCTErrorMessage;
@@ -471,7 +746,8 @@ export class EInvoiceService {
       option,
     );
     const ext = format === 'xml' ? 'xml' : 'pdf';
-    const filename = `hoa-don-${invoice.invoiceNo || invoice.ikey}.${ext}`;
+    const prefix = invoice.localStatus === EInvoiceLocalStatus.DRAFT ? 'ban-nhap-hoa-don' : 'hoa-don';
+    const filename = `${prefix}-${invoice.invoiceNo || invoice.ikey}.${ext}`;
     return { buffer, contentType, filename };
   }
 
@@ -549,9 +825,15 @@ export class EInvoiceService {
     return invoice;
   }
 
-  /** Hoá đơn bán hàng nội bộ không có mục đích xác thực công khai — ẩn hoàn toàn khỏi route public */
+  /**
+   * Hoá đơn bán hàng nội bộ không có mục đích xác thực công khai, bản nháp chưa có giá trị pháp lý
+   * — ẩn hoàn toàn khỏi route public.
+   */
   private assertPublicAccessible(invoice: EInvoiceDocument): void {
-    if (invoice.invoiceKind === EInvoiceKind.SALES) {
+    if (
+      invoice.invoiceKind === EInvoiceKind.SALES ||
+      invoice.localStatus === EInvoiceLocalStatus.DRAFT
+    ) {
       throw new NotFoundException('Liên kết không hợp lệ hoặc đã bị xóa');
     }
   }

@@ -2,10 +2,12 @@ import {
   Body,
   Controller,
   DefaultValuePipe,
+  Delete,
   Get,
   Headers,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
   Res,
@@ -17,7 +19,9 @@ import { EInvoiceService, DownloadFormat } from './einvoice.service';
 import {
   CancelEInvoiceDto,
   CreateEInvoiceDto,
+  PublishEInvoiceDraftDto,
   RevealKeyDto,
+  UpdateEInvoiceDraftDto,
   VerifyEInvoiceDto,
 } from './dto/einvoice.dto';
 import { JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
@@ -68,6 +72,35 @@ export class AdminEInvoiceController {
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
   findOne(@Param('id') id: string) {
     return this.service.findById(id);
+  }
+
+  /** Sửa bản nháp hoá đơn Cơ quan Thuế (chưa ký, chưa cấp số) */
+  @Patch(':id')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  updateDraft(
+    @Param('id') id: string,
+    @Body() dto: UpdateEInvoiceDraftDto,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    return this.service.updateDraft(id, dto, staff.sub);
+  }
+
+  /** Chuyển bản nháp thành hoá đơn chính thức (phát hành, ký server) */
+  @Post(':id/publish')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  publishDraft(
+    @Param('id') id: string,
+    @Body() dto: PublishEInvoiceDraftDto,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    return this.service.publishDraft(id, dto, staff.sub);
+  }
+
+  /** Xoá bản nháp (chỉ hoá đơn chưa phát hành) */
+  @Delete(':id')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  deleteDraft(@Param('id') id: string, @CurrentUser() staff: { sub: string }) {
+    return this.service.deleteDraft(id, staff.sub);
   }
 
   /** Xem khoá mở hoá đơn — yêu cầu nhập lại mật khẩu tài khoản admin */

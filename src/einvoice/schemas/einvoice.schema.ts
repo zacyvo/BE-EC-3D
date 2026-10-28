@@ -5,6 +5,7 @@ export type EInvoiceDocument = EInvoice & Document;
 
 /** Trạng thái cục bộ tại hệ thống của chúng ta (khác với InvoiceStatus của EasyInvoice) */
 export enum EInvoiceLocalStatus {
+  DRAFT = 'DRAFT', // Bản nháp trên EasyInvoice (importInvoice) — chưa ký số, chưa có số hoá đơn
   ISSUED = 'ISSUED', // Đã tạo và phát hành thành công qua EasyInvoice
   CANCELLED = 'CANCELLED', // Đã hủy (EasyInvoice thay thế bằng hoá đơn 0 đồng theo NĐ70)
   FAILED = 'FAILED', // Gọi EasyInvoice thất bại
@@ -138,6 +139,14 @@ export class EInvoice {
 
   @Prop({ type: Types.ObjectId, ref: 'Staff', required: true })
   createdBy: Types.ObjectId;
+
+  /** Người chuyển bản nháp thành hoá đơn chính thức (chỉ có với hoá đơn tạo từ bản nháp) */
+  @Prop({ type: Types.ObjectId, ref: 'Staff' })
+  publishedBy?: Types.ObjectId;
+  @Prop() publishedAt?: Date;
+
+  /** Khoá ngắn hạn khi đang phát hành bản nháp — chặn phát hành/sửa/xoá song song */
+  @Prop() publishLockUntil?: Date;
 
   @Prop({ default: false }) isDeleted: boolean;
   @Prop() deletedAt?: Date;

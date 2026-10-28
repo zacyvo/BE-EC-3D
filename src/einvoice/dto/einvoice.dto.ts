@@ -1,7 +1,9 @@
 import { Type } from 'class-transformer';
+import { OmitType } from '@nestjs/swagger';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsEmail,
   IsEnum,
@@ -101,6 +103,19 @@ export class CreateEInvoiceDto {
   @ValidateNested({ each: true })
   @Type(() => EInvoiceItemDto)
   items: EInvoiceItemDto[];
+
+  /** true: chỉ tạo bản nháp trên EasyInvoice (chưa ký, chưa cấp số) — chỉ áp dụng hoá đơn Cơ quan Thuế */
+  @IsOptional() @IsBoolean()
+  saveAsDraft?: boolean;
+}
+
+/** Cập nhật bản nháp — gửi lại toàn bộ nội dung hoá đơn (EasyInvoice ghi đè theo ikey) */
+export class UpdateEInvoiceDraftDto extends OmitType(CreateEInvoiceDto, ['invoiceKind', 'saveAsDraft'] as const) {}
+
+export class PublishEInvoiceDraftDto {
+  /** Ngày lập mới trước khi phát hành (tuỳ chọn) — bỏ trống để giữ ngày lập của bản nháp */
+  @IsOptional() @IsDateString()
+  arisingDate?: string;
 }
 
 export class CancelEInvoiceDto {

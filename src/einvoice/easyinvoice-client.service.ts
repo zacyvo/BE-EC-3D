@@ -61,6 +61,20 @@ export interface ImportAndIssueResult {
   Invoices?: EasyInvoiceInvoiceObject[];
 }
 
+export interface ImportInvoiceResult {
+  Pattern?: string;
+  Serial?: string;
+  Ikeys?: string[];
+  Invoices?: EasyInvoiceInvoiceObject[];
+}
+
+export interface IssueInvoicesResult {
+  Pattern?: string;
+  Serial?: string;
+  KeyInvoiceNo?: Record<string, string>;
+  Invoices?: EasyInvoiceInvoiceObject[];
+}
+
 export interface CancelInvoiceResult {
   Pattern?: string;
   Serial?: string;
@@ -222,6 +236,37 @@ export class EasyInvoiceClientService {
     });
   }
 
+  /**
+   * api/publish/importInvoice — Tạo hoá đơn bản nháp (chưa ký số, chưa có số hoá đơn).
+   * Gọi lại với cùng ikey sẽ cập nhật hoá đơn nếu hoá đơn vẫn ở trạng thái mới tạo lập.
+   */
+  async importInvoice(input: EasyInvoiceBuildInput, pattern?: string, serial?: string) {
+    const xmlData = this.buildInvoiceXml(input);
+    return this.postJson<ImportInvoiceResult>('api/publish/importInvoice', {
+      XmlData: xmlData,
+      Pattern: pattern || undefined,
+      Serial: serial || undefined,
+    });
+  }
+
+  /** api/publish/issueInvoices — Phát hành (ký server) hoá đơn nháp/chờ ký đã tạo từ trước */
+  async issueInvoices(ikeys: string[], pattern: string, serial?: string) {
+    return this.postJson<IssueInvoicesResult>('api/publish/issueInvoices', {
+      Ikeys: ikeys,
+      Pattern: pattern,
+      Serial: serial || undefined,
+    });
+  }
+
+  /** api/business/removeUnsignedInvoice — Xoá hoá đơn chưa phát hành (chưa ký số) */
+  async removeUnsignedInvoice(ikey: string, pattern?: string, serial?: string) {
+    return this.postJson<Record<string, never>>('api/business/removeUnsignedInvoice', {
+      Ikey: ikey,
+      Pattern: pattern || undefined,
+      Serial: serial || undefined,
+    });
+  }
+
   /** api/business/cancelInvoice — Huỷ bỏ hoá đơn đã phát hành (đã ký số) */
   async cancelInvoice(ikey: string, pattern?: string, serial?: string) {
     return this.postJson<CancelInvoiceResult>('api/business/cancelInvoice', {
@@ -314,7 +359,7 @@ export class EasyInvoiceClientService {
   }
 
   /**
-   * Xây dựng XmlData cho api/publish/importAndIssueInvoice.
+   * Xây dựng XmlData cho api/publish/importAndIssueInvoice và api/publish/importInvoice (cùng cấu trúc).
    * Chỉ hỗ trợ các trường phổ biến cho hoá đơn bán lẻ/dịch vụ thông thường
    * (không hỗ trợ hoá đơn kèm bảng kê, tài sản công, hàng dự trữ quốc gia, CTTC…).
    */
