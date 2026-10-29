@@ -96,9 +96,9 @@ beforeEach(async () => {
 });
 
 describe('Danh sách hoá đơn của hợp đồng', () => {
-  it('chỉ trả hoá đơn Cơ quan Thuế đã phát hành/đã huỷ của đúng hợp đồng, mới nhất trước', async () => {
+  it('mặc định chỉ trả hoá đơn Cơ quan Thuế đã phát hành của đúng hợp đồng', async () => {
     const issued = await seedInvoice();
-    const cancelled = await seedInvoice({ localStatus: EInvoiceLocalStatus.CANCELLED, cancelReason: 'Sai MST' });
+    await seedInvoice({ localStatus: EInvoiceLocalStatus.CANCELLED, cancelReason: 'Sai MST' });
     await seedInvoice({ localStatus: EInvoiceLocalStatus.DRAFT, invoiceNo: undefined });
     await seedInvoice({ invoiceKind: EInvoiceKind.SALES });
     await seedInvoice({ contractId: otherContractId });
@@ -106,8 +106,23 @@ describe('Danh sách hoá đơn của hợp đồng', () => {
 
     const list = await service.listForContract(CONTRACT_TOKEN, 'valid-jwt');
 
-    expect(list.map((i) => i.token)).toEqual([cancelled.accessToken, issued.accessToken]);
-    expect(list[0]).toMatchObject({ localStatus: 'CANCELLED', cancelReason: 'Sai MST', totalAmount: 110000 });
+    expect(list.map((i) => i.token)).toEqual([issued.accessToken]);
+  });
+
+  it('hoá đơn đã huỷ / bản nháp được "Cho phép xem" -> hiển thị, mới nhất trước', async () => {
+    const issued = await seedInvoice();
+    const cancelled = await seedInvoice({
+      localStatus: EInvoiceLocalStatus.CANCELLED,
+      cancelReason: 'Sai MST',
+      customerVisible: true,
+    });
+    const draft = await seedInvoice({ localStatus: EInvoiceLocalStatus.DRAFT, invoiceNo: undefined, customerVisible: true });
+    await seedInvoice({ invoiceKind: EInvoiceKind.SALES, customerVisible: true });
+
+    const list = await service.listForContract(CONTRACT_TOKEN, 'valid-jwt');
+
+    expect(list.map((i) => i.token)).toEqual([draft.accessToken, cancelled.accessToken, issued.accessToken]);
+    expect(list[1]).toMatchObject({ localStatus: 'CANCELLED', cancelReason: 'Sai MST', totalAmount: 110000 });
   });
 
   it('không lộ khoá bảo mật / ikey / id nội bộ', async () => {
@@ -142,11 +157,12 @@ describe('Tải hoá đơn qua trang hợp đồng', () => {
     expect(body).toEqual({ Ikey: inv.ikey, Pattern: '1C26TLG', Option: 0 });
   });
 
-  it('không tải được hoá đơn của hợp đồng khác / bản nháp bằng phiên hợp đồng này', async () => {
+  it('không tải được hoá đơn của hợp đồng khác / bản nháp, đã huỷ chưa được cho phép xem', async () => {
     const other = await seedInvoice({ contractId: otherContractId });
     const draft = await seedInvoice({ localStatus: EInvoiceLocalStatus.DRAFT });
+    const cancelled = await seedInvoice({ localStatus: EInvoiceLocalStatus.CANCELLED });
 
-    for (const token of [other.accessToken, draft.accessToken, 'khong-ton-tai']) {
+    for (const token of [other.accessToken, draft.accessToken, cancelled.accessToken, 'khong-ton-tai']) {
       await expect(
         service.downloadForContract(CONTRACT_TOKEN, 'valid-jwt', token, 'pdf'),
       ).rejects.toBeInstanceOf(NotFoundException);

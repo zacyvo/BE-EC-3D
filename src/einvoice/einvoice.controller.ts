@@ -21,6 +21,7 @@ import {
   CreateEInvoiceDto,
   PublishEInvoiceDraftDto,
   RevealKeyDto,
+  SetEInvoiceVisibilityDto,
   UpdateEInvoiceDraftDto,
   VerifyEInvoiceDto,
 } from './dto/einvoice.dto';
@@ -101,6 +102,17 @@ export class AdminEInvoiceController {
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
   deleteDraft(@Param('id') id: string, @CurrentUser() staff: { sub: string }) {
     return this.service.deleteDraft(id, staff.sub);
+  }
+
+  /** Cho phép / ẩn hoá đơn chưa phát hành chính thức (bản nháp, đã huỷ…) với khách */
+  @Patch(':id/customer-visibility')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  setCustomerVisibility(
+    @Param('id') id: string,
+    @Body() dto: SetEInvoiceVisibilityDto,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    return this.service.setCustomerVisibility(id, dto.visible, staff.sub);
   }
 
   /** Xem khoá mở hoá đơn — yêu cầu nhập lại mật khẩu tài khoản admin */

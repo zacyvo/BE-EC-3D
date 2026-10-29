@@ -148,6 +148,8 @@ export class EInvoiceService {
   }
 
   /** Loại bỏ dữ liệu nội bộ (khoá bảo mật, ikey, id liên kết…) trước khi trả về phía user */
+  /** Dữ liệu hiển thị cho khách — cùng nguồn với XmlData gửi EasyInvoice (toEasyInvoiceInput)
+   * để nội dung trên web khớp với hoá đơn PDF/XML. */
   private sanitizeForUser(doc: EInvoiceDocument) {
     const e = doc.toObject();
     return {
@@ -159,6 +161,7 @@ export class EInvoiceService {
       arisingDate: e.arisingDate,
       sellerName: this.easyInvoiceClient.sellerName,
       sellerTaxCode: this.easyInvoiceClient.sellerTaxCode,
+      sellerAddress: this.easyInvoiceClient.sellerAddress,
       buyerName: e.buyerName,
       customerName: e.customerName,
       customerTaxCode: e.customerTaxCode,
@@ -167,6 +170,7 @@ export class EInvoiceService {
       totalBeforeTax: e.totalBeforeTax,
       vatAmount: e.vatAmount,
       totalAmount: e.totalAmount,
+      amountInWords: numberToVietnameseWords(e.totalAmount),
       paymentMethod: e.paymentMethod,
       currencyUnit: e.currencyUnit,
       localStatus: e.localStatus,
@@ -278,6 +282,8 @@ export class EInvoiceService {
     invoice.issueDate = this.parseVNDate(issued?.IssueDate) ?? new Date();
     invoice.localStatus = EInvoiceLocalStatus.ISSUED;
     invoice.errorMessage = '';
+    // Quyền xem do admin cấp cho bản nháp không được mang sang trạng thái sau (VD: huỷ)
+    invoice.customerVisible = false;
   }
 
   /** Hoá đơn trên EasyInvoice đã được ký số (phát hành) — dùng để đối soát bản nháp */
@@ -679,6 +685,7 @@ export class EInvoiceService {
     invoice.localStatus = EInvoiceLocalStatus.CANCELLED;
     invoice.cancelReason = dto.reason ?? '';
     invoice.cancelledAt = new Date();
+    invoice.customerVisible = false;
     await invoice.save();
 
     await this.auditService.log({
@@ -689,6 +696,35 @@ export class EInvoiceService {
       targetId: id,
       beforeData: { localStatus: EInvoiceLocalStatus.ISSUED },
       afterData: { localStatus: EInvoiceLocalStatus.CANCELLED, reason: dto.reason },
+    });
+
+    return this.toAdminResponse(invoice);
+  }
+
+  /** Cho phép / ẩn hoá đơn chưa phát hành chính thức với khách (hoá đơn đã phát hành luôn hiển thị) */
+  async setCustomerVisibility(id: string, visible: boolean, staffId: string) {
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Hoá đơn không tồn tại');
+    const invoice = await this.model.findById(id).exec();
+    if (!invoice) throw new NotFoundException('Hoá đơn không tồn tại');
+    if (invoice.invoiceKind === EInvoiceKind.SALES) {
+      throw new BadRequestException('Hoá đơn mua bán nội bộ không hiển thị với khách');
+    }
+    if (invoice.localStatus === EInvoiceLocalStatus.ISSUED) {
+      throw new BadRequestException('Hoá đơn đã phát hành luôn hiển thị với khách');
+    }
+
+    const before = invoice.customerVisible;
+    invoice.customerVisible = visible;
+    await invoice.save();
+
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'EINVOICE_CUSTOMER_VISIBILITY',
+      module: 'einvoice',
+      targetId: id,
+      beforeData: { customerVisible: before, localStatus: invoice.localStatus },
+      afterData: { customerVisible: visible },
     });
 
     return this.toAdminResponse(invoice);
@@ -828,13 +864,13 @@ export class EInvoiceService {
   }
 
   /**
-   * Hoá đơn bán hàng nội bộ không có mục đích xác thực công khai, bản nháp chưa có giá trị pháp lý
-   * — ẩn hoàn toàn khỏi route public.
+   * Khách chỉ xem được hoá đơn Cơ quan Thuế đã phát hành; hoá đơn ở trạng thái khác (bản nháp, đã huỷ…)
+   * cần admin "Cho phép xem". Hoá đơn bán hàng nội bộ không bao giờ hiển thị công khai.
    */
   private assertPublicAccessible(invoice: EInvoiceDocument): void {
     if (
       invoice.invoiceKind === EInvoiceKind.SALES ||
-      invoice.localStatus === EInvoiceLocalStatus.DRAFT
+      (invoice.localStatus !== EInvoiceLocalStatus.ISSUED && !invoice.customerVisible)
     ) {
       throw new NotFoundException('Liên kết không hợp lệ hoặc đã bị xóa');
     }
@@ -857,7 +893,7 @@ export class EInvoiceService {
     return {
       contractId,
       invoiceKind: EInvoiceKind.TAX_AUTHORITY,
-      localStatus: { $in: [EInvoiceLocalStatus.ISSUED, EInvoiceLocalStatus.CANCELLED] },
+      $or: [{ localStatus: EInvoiceLocalStatus.ISSUED }, { customerVisible: true }],
     };
   }
 

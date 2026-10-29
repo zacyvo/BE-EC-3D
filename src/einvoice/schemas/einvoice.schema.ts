@@ -130,6 +130,11 @@ export class EInvoice {
   @Prop({ default: false })
   sharedKeyFromContract: boolean;
 
+  /** Khách mặc định chỉ xem được hoá đơn đã phát hành (ISSUED). Hoá đơn ở trạng thái khác (bản nháp,
+   * đã huỷ…) chỉ hiện với khách khi admin bấm "Cho phép xem". Tự tắt khi hoá đơn đổi trạng thái. */
+  @Prop({ default: false })
+  customerVisible: boolean;
+
   /** Chống dò khoá (bruteforce) — giống cơ chế của Contract */
   @Prop({ default: 0 }) unlockAttempts: number;
   @Prop() lockedUntil?: Date;

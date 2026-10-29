@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import mongoose, { Connection, Model, Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { EInvoice, EInvoiceDocument, EInvoiceKind, EInvoiceSchema } from './schemas/einvoice.schema';
@@ -20,6 +21,7 @@ const staffId = new Types.ObjectId().toString();
 const env: Record<string, string> = {
   EASYINVOICE_API_URL: 'http://ei.test',
   EASYINVOICE_PATTERN: '1C26TLG',
+  JWT_SECRET: 'test-secret',
   EASYINVOICE_SERIAL: '',
 };
 
@@ -78,7 +80,7 @@ beforeAll(async () => {
     new EasyInvoiceClientService(config),
     {} as never,
     audit as unknown as AuditService,
-    {} as never,
+    new JwtService(),
     config,
     {} as never,
   );
@@ -307,3 +309,81 @@ describe('Ràng buộc khác với bản nháp', () => {
     expect(res.invoiceNo).toBe('00000126');
   });
 });
+
+describe('Cho phép khách xem hoá đơn chưa phát hành chính thức', () => {
+  beforeEach(() => {
+    handlers['api/publish/importAndIssueInvoice'] = (b) => ({
+      Invoices: [{ No: '00000200', InvoiceStatus: 1, Pattern: b.Pattern }],
+    });
+  });
+
+  it('bản nháp được "Cho phép xem" -> khách mở được qua link; ẩn lại -> không mở được', async () => {
+    const draft = await service.create(draftDto(), staffId);
+    const id = draft._id.toString();
+
+    const shown = await service.setCustomerVisibility(id, true, staffId);
+    expect(shown.customerVisible).toBe(true);
+    await expect(service.getPublicMeta(draft.accessToken)).resolves.toMatchObject({ localStatus: 'DRAFT' });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'EINVOICE_CUSTOMER_VISIBILITY', afterData: { customerVisible: true } }),
+    );
+
+    await service.setCustomerVisibility(id, false, staffId);
+    await expect(service.getPublicMeta(draft.accessToken)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('không áp dụng cho hoá đơn đã phát hành (luôn hiển thị) và hoá đơn mua bán', async () => {
+    const issued = await service.create(draftDto({ saveAsDraft: false }), staffId);
+    await expect(service.setCustomerVisibility(issued._id.toString(), true, staffId)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(service.getPublicMeta(issued.accessToken)).resolves.toMatchObject({ localStatus: 'ISSUED' });
+
+    const sales = await service.create(draftDto({ saveAsDraft: false, invoiceKind: EInvoiceKind.SALES }), staffId);
+    await expect(service.setCustomerVisibility(sales._id.toString(), true, staffId)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('quyền xem của bản nháp không mang sang khi phát hành rồi huỷ', async () => {
+    const draft = await service.create(draftDto(), staffId);
+    const id = draft._id.toString();
+    await service.setCustomerVisibility(id, true, staffId);
+    await service.publishDraft(id, {}, staffId);
+    handlers['api/business/cancelInvoice'] = () => ({ Invoices: [{ InvoiceStatus: 3 }] });
+
+    const cancelled = await service.cancel(id, { reason: 'Sai MST' }, staffId);
+
+    expect(cancelled.customerVisible).toBe(false);
+    await expect(service.getPublicMeta(draft.accessToken)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('dữ liệu hiển thị cho khách khớp nội dung hoá đơn gửi EasyInvoice', async () => {
+    let xml = '';
+    handlers['api/publish/importAndIssueInvoice'] = (b) => {
+      xml = b.XmlData;
+      return { Invoices: [{ No: '00000200', InvoiceStatus: 1, Pattern: b.Pattern }] };
+    };
+    const issued = await service.create(
+      draftDto({ saveAsDraft: false, customerAddress: '1 Lê Lợi, Q1', customerTaxCode: '0312345678' }),
+      staffId,
+    );
+    const { accessJwt, invoice } = await service.verifyAccess(issued.accessToken, { securityCode: await codeOf(issued._id) });
+    expect(accessJwt).toBeTruthy();
+
+    const tag = (name: string) => new RegExp(`<${name}>(.*?)</${name}>`).exec(xml)?.[1];
+    expect(invoice.buyerName).toBe(tag('Buyer'));
+    expect(invoice.customerName).toBe(tag('CusName'));
+    expect(invoice.customerTaxCode).toBe(tag('CusTaxCode'));
+    expect(invoice.customerAddress).toBe(tag('CusAddress'));
+    expect(invoice.paymentMethod).toBe(tag('PaymentMethod'));
+    expect(invoice.amountInWords).toBe(tag('AmountInWords'));
+    expect(String(invoice.totalAmount)).toBe(/<\/Products>[\s\S]*?<Amount>(.*?)<\/Amount>/.exec(xml)?.[1]);
+    expect(invoice.items.map((i: { name: string }) => i.name)).toEqual([tag('ProdName')]);
+  });
+});
+
+async function codeOf(id: unknown): Promise<string> {
+  const doc = await InvoiceModel.findById(id).select('+securityCode').exec();
+  return doc!.securityCode;
+}

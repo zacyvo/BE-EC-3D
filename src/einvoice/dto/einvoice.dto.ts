@@ -123,6 +123,11 @@ export class CancelEInvoiceDto {
   reason?: string;
 }
 
+export class SetEInvoiceVisibilityDto {
+  @IsBoolean()
+  visible: boolean;
+}
+
 export class RevealKeyDto {
   @IsString() @IsNotEmpty({ message: 'Vui lòng nhập mật khẩu để xác thực' })
   password: string;
