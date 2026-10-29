@@ -14,7 +14,7 @@ import {
 import { StaffService } from './staff.service';
 import { JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
+import { AllowShopeeReviewer, Roles, StaffRole } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import {
   IsEmail,
@@ -119,12 +119,14 @@ export class StaffController {
 
   @Get('me')
   @Roles() // override SUPER_ADMIN restriction
+  @AllowShopeeReviewer()
   async getMe(@CurrentUser() staff: { sub: string }) {
     return this.staffService.getMe(staff.sub);
   }
 
   @Patch('me/profile')
   @Roles()
+  @AllowShopeeReviewer()
   async updateProfile(
     @CurrentUser() staff: { sub: string },
     @Body() dto: UpdateProfileDto,
@@ -134,6 +136,7 @@ export class StaffController {
 
   @Patch('me/password')
   @Roles()
+  @AllowShopeeReviewer()
   async changePassword(
     @CurrentUser() staff: { sub: string },
     @Body() dto: ChangePasswordDto,

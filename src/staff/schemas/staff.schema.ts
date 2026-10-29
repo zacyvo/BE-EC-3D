@@ -8,6 +8,8 @@ export enum StaffRole {
   ADMIN = 'ADMIN',
   CS = 'CS',
   SELLER = 'SELLER',
+  /** External Shopee app-review account — deny-by-default, see auth/decorators/roles.decorator.ts. */
+  SHOPEE_REVIEWER = 'SHOPEE_REVIEWER',
 }
 
 @Schema({ timestamps: true, collection: 'staff' })

@@ -39,12 +39,26 @@ export enum ShopeeSyncMode {
   MANUAL = 'MANUAL',
 }
 
+/**
+ * Who collects the data that feeds this session's staging rows:
+ * EXTENSION — the Chrome Extension (private Seller Center API), uploading with the upload token.
+ * OPEN_API  — the backend itself, calling Shopee Open Platform v2 (ShopeeOpenApiProductSyncService).
+ * Everything from processListSnapshot() onward (staging → preview → commit → publish) is shared.
+ */
+export enum ShopeeSyncSource {
+  EXTENSION = 'EXTENSION',
+  OPEN_API = 'OPEN_API',
+}
+
 @Schema({ timestamps: true, collection: 'shopee_sync_sessions' })
 export class ShopeeSyncSession {
   _id: Types.ObjectId;
 
   @Prop({ required: true, trim: true, index: true })
   shopId: string;
+
+  @Prop({ required: true, enum: Object.values(ShopeeSyncSource), type: String, default: ShopeeSyncSource.EXTENSION })
+  source: ShopeeSyncSource;
 
   @Prop({ type: Types.ObjectId, ref: 'Staff', required: true })
   adminId: Types.ObjectId;

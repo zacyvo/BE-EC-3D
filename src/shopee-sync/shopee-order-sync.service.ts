@@ -4,9 +4,12 @@ import { Model, Types } from 'mongoose';
 import {
   ShopeeOrderSyncBatch,
   ShopeeOrderSyncBatchDocument,
+  ShopeeOrderSyncBatchStatus,
+  ShopeeOrderSyncSource,
   ShopeeOrderRowResult,
   ShopeeOrderRowStatus,
 } from './schemas/shopee-order-sync-batch.schema';
+import { MarketplaceChannel, MarketplaceProduct, MarketplaceProductDocument } from './schemas/marketplace-product.schema';
 import {
   ShopeeOrderSyncIssue,
   ShopeeOrderSyncIssueDocument,
@@ -22,12 +25,13 @@ import { ShopeeSyncException } from './shopee-sync.exceptions';
 import { ShopeeSyncErrorCode, SHOPEE_SYNC_AUDIT_MODULE } from './shopee-sync.constants';
 import {
   SHOPEE_ORDER_COLUMNS,
+  SHOPEE_API_ROW_KEYS,
   ShopeeOrderRawRow,
   parseShopeeOrderWorkbook,
   groupRowsByOrderCode,
   parseVndAmount,
   parseShopeeDate,
-  mapShopeeOrderStatus,
+  resolveOrderStatusFromRow,
   isMasked,
   isValidVnMobile,
   normalizeVnPhone,
@@ -54,6 +58,7 @@ export class ShopeeOrderSyncService {
   constructor(
     @InjectModel(ShopeeOrderSyncBatch.name) private readonly batchModel: Model<ShopeeOrderSyncBatchDocument>,
     @InjectModel(ShopeeOrderSyncIssue.name) private readonly issueModel: Model<ShopeeOrderSyncIssueDocument>,
+    @InjectModel(MarketplaceProduct.name) private readonly marketplaceProductModel: Model<MarketplaceProductDocument>,
     private readonly ordersService: OrdersService,
     private readonly productsService: ProductsService,
     private readonly auditService: AuditService,
@@ -67,26 +72,61 @@ export class ShopeeOrderSyncService {
 
     const rows = parseShopeeOrderWorkbook(buffer);
     const groups = groupRowsByOrderCode(rows);
+    const batch = await this.createBatch({ fileName, staffId, source: ShopeeOrderSyncSource.EXCEL });
+    return this.importOrderGroups(batch, groups, staffId);
+  }
 
+  /** An empty RUNNING batch — the Open API job creates it up front so the Admin page can
+   * show progress before any order is processed. */
+  async createBatch(opts: { fileName: string; staffId: string; source: ShopeeOrderSyncSource }): Promise<ShopeeOrderSyncBatchDocument> {
+    return this.batchModel.create({
+      fileName: opts.fileName,
+      uploadedBy: new Types.ObjectId(opts.staffId),
+      source: opts.source,
+      status: ShopeeOrderSyncBatchStatus.RUNNING,
+      totalRows: 0,
+      totalOrders: 0,
+      rows: [],
+    });
+  }
+
+  async failBatch(batch: ShopeeOrderSyncBatchDocument, message: string): Promise<void> {
+    batch.status = ShopeeOrderSyncBatchStatus.FAILED;
+    batch.errorMessage = message.slice(0, 500);
+    await batch.save();
+  }
+
+  /**
+   * Shared import core for both sources (Excel rows and Open API orders mapped to the same
+   * row shape — see SHOPEE_API_ROW_KEYS): one entry in `groups` per order code. Existing
+   * order → update; otherwise create when every line matches a product, else queue for review.
+   * `preFailed` = orders the caller already knows failed (e.g. a Shopee call for that order
+   * errored) — recorded in the batch so nothing silently disappears.
+   */
+  async importOrderGroups(
+    batch: ShopeeOrderSyncBatchDocument,
+    groups: Map<string, ShopeeOrderRawRow[]>,
+    staffId: string,
+    preFailed: { orderCode: string; message: string }[] = [],
+  ): Promise<ShopeeOrderSyncBatchDocument> {
     const productsResult = await this.productsService.findAll({ page: 1, limit: 5000, forAdmin: true });
     const productList = productsResult.data as unknown as ProductForMatching[];
     const productIndex = productList.map((p) => ({ id: p._id.toString(), name: p.name }));
     const productById = new Map(productList.map((p) => [p._id.toString(), p]));
+    const itemLinks = await this.loadShopeeItemLinks(groups);
 
-    const batch = await this.batchModel.create({
-      fileName,
-      uploadedBy: new Types.ObjectId(staffId),
-      totalRows: rows.length,
-      totalOrders: groups.size,
-      rows: [],
-    });
+    batch.totalRows = Array.from(groups.values()).reduce((n, rows) => n + rows.length, 0);
+    batch.totalOrders = groups.size + preFailed.length;
 
     const rowResults: ShopeeOrderRowResult[] = [];
     let createdCount = 0;
     let updatedCount = 0;
     let needsReviewCount = 0;
     let dismissedCount = 0;
-    let failedCount = 0;
+    let failedCount = preFailed.length;
+    for (const f of preFailed) {
+      rowResults.push({ orderCode: f.orderCode, status: ShopeeOrderRowStatus.FAILED, message: f.message } as ShopeeOrderRowResult);
+    }
 
     for (const [orderCode, groupRows] of groups) {
       try {
@@ -113,7 +153,7 @@ export class ShopeeOrderSyncService {
           continue;
         }
 
-        const { items, issueItems, reasons, allMatched } = this.matchGroupItems(groupRows, productIndex, productById);
+        const { items, issueItems, reasons, allMatched } = this.matchGroupItems(groupRows, productIndex, productById, itemLinks);
 
         if (allMatched) {
           const nonItemFields = this.buildNonItemFields(orderCode, groupRows);
@@ -152,12 +192,13 @@ export class ShopeeOrderSyncService {
     batch.needsReviewCount = needsReviewCount;
     batch.dismissedCount = dismissedCount;
     batch.failedCount = failedCount;
+    batch.status = ShopeeOrderSyncBatchStatus.COMPLETED;
     await batch.save();
 
     await this.auditService.log({
       actorId: staffId,
       actorType: 'staff',
-      action: 'IMPORT_SHOPEE_ORDERS_BATCH',
+      action: batch.source === ShopeeOrderSyncSource.OPEN_API ? 'SYNC_SHOPEE_ORDERS_OPEN_API' : 'IMPORT_SHOPEE_ORDERS_BATCH',
       module: SHOPEE_SYNC_AUDIT_MODULE,
       targetId: batch._id.toString(),
     });
@@ -302,7 +343,7 @@ export class ShopeeOrderSyncService {
   ): Omit<ImportExternalOrderInput, 'items' | 'staffId'> {
     const shippingInfo = buildShippingPreviewFromGroup(rows);
     const money = computeOrderMoney(rows);
-    const status = mapShopeeOrderStatus(rows[0][SHOPEE_ORDER_COLUMNS.status], rows[0][SHOPEE_ORDER_COLUMNS.returnStatus]);
+    const status = resolveOrderStatusFromRow(rows[0]);
     const estimatedDeliveryDate = parseShopeeDate(rows[0][SHOPEE_ORDER_COLUMNS.estimatedDeliveryDate]);
     const carrierName = rows[0][SHOPEE_ORDER_COLUMNS.carrierName]?.trim() || undefined;
     const trackingCode = rows[0][SHOPEE_ORDER_COLUMNS.trackingCode]?.trim() || undefined;
@@ -347,6 +388,7 @@ export class ShopeeOrderSyncService {
     rows: ShopeeOrderRawRow[],
     productIndex: { id: string; name: string }[],
     productById: Map<string, ProductForMatching>,
+    itemLinks: Map<string, string> = new Map(),
   ): { items: ExternalOrderItemInput[]; issueItems: ShopeeOrderIssueItem[]; reasons: string[]; allMatched: boolean } {
     const items: ExternalOrderItemInput[] = [];
     const issueItems: ShopeeOrderIssueItem[] = [];
@@ -358,12 +400,15 @@ export class ShopeeOrderSyncService {
       const quantity = Math.max(1, Math.round(parseVndAmount(row[SHOPEE_ORDER_COLUMNS.quantity])) || 1);
       const unitPrice = parseVndAmount(row[SHOPEE_ORDER_COLUMNS.offerPrice]);
       const variantLabel = row[SHOPEE_ORDER_COLUMNS.variantName]?.trim() || undefined;
-      const matches = findBestProductMatches(rawName, productIndex);
+      // Open API rows know the Shopee item_id: a product published by the product sync is
+      // linked exactly (marketplace_products.internalProductId), whatever its name is now.
+      const linkedProductId = itemLinks.get(row[SHOPEE_API_ROW_KEYS.itemId] || '');
+      const matches = linkedProductId && productById.has(linkedProductId) ? [] : findBestProductMatches(rawName, productIndex);
       const top = matches[0];
-      const matched = !!top && top.score >= AUTO_MATCH_SCORE;
+      const matched = (!!linkedProductId && productById.has(linkedProductId)) || (!!top && top.score >= AUTO_MATCH_SCORE);
 
       if (matched) {
-        const product = productById.get(top.productId);
+        const product = productById.get(linkedProductId && productById.has(linkedProductId) ? linkedProductId : top.productId);
         if (!product) {
           allMatched = false;
           reasons.push(`Lỗi tra cứu sản phẩm cho dòng #${idx + 1}: "${rawName}"`);
@@ -408,6 +453,24 @@ export class ShopeeOrderSyncService {
     });
 
     return { items, issueItems, reasons, allMatched };
+  }
+
+  /** Shopee item_id → Luxe Glow product id, for the item ids present in these groups. */
+  private async loadShopeeItemLinks(groups: Map<string, ShopeeOrderRawRow[]>): Promise<Map<string, string>> {
+    const itemIds = new Set<string>();
+    for (const rows of groups.values()) for (const r of rows) if (r[SHOPEE_API_ROW_KEYS.itemId]) itemIds.add(r[SHOPEE_API_ROW_KEYS.itemId]);
+    if (itemIds.size === 0) return new Map();
+    const linked = await this.marketplaceProductModel
+      .find({
+        channel: MarketplaceChannel.SHOPEE,
+        shopId: this.shopeeSyncConfigService.get().shopId,
+        externalProductId: { $in: Array.from(itemIds) },
+        internalProductId: { $ne: null },
+      })
+      .select('externalProductId internalProductId')
+      .lean()
+      .exec();
+    return new Map(linked.map((p) => [p.externalProductId, p.internalProductId!.toString()]));
   }
 
   private async resolveLingeringIssue(orderCode: string, orderId: Types.ObjectId, batchId: Types.ObjectId): Promise<void> {

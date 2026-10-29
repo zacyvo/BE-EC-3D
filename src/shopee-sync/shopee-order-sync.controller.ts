@@ -24,6 +24,14 @@ import { ResolveShopeeOrderIssueDto } from './dto/resolve-shopee-order-issue.dto
 import { ShopeeOrderIssueStatus } from './schemas/shopee-order-sync-issue.schema';
 
 const READ_ROLES = [StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER];
+/** The external reviewer sees the batch, not which staff member (name/email) ran it. */
+function hideUploader(batch: { toObject(): Record<string, unknown> }): Record<string, unknown> {
+  return { ...batch.toObject(), uploadedBy: null };
+}
+
+/** Batch history (order codes + outcome counts) is visible to the Shopee app-review account;
+ * the review queue (`issues`) is NOT — it carries recipient name/phone/address rows. */
+const BATCH_READ_ROLES = [...READ_ROLES, StaffRole.SHOPEE_REVIEWER];
 
 /**
  * Excel-based Shopee order sync — distinct upload mechanism from the Chrome
@@ -61,18 +69,21 @@ export class ShopeeOrderSyncController {
   }
 
   @Get('batches')
-  @Roles(...READ_ROLES)
-  listBatches(
+  @Roles(...BATCH_READ_ROLES)
+  async listBatches(
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @CurrentUser() staff: { role: StaffRole },
   ) {
-    return this.service.listBatches(page, limit);
+    const result = await this.service.listBatches(page, limit);
+    return staff.role === StaffRole.SHOPEE_REVIEWER ? { ...result, data: result.data.map(hideUploader) } : result;
   }
 
   @Get('batches/:id')
-  @Roles(...READ_ROLES)
-  getBatch(@Param('id') id: string) {
-    return this.service.getBatch(id);
+  @Roles(...BATCH_READ_ROLES)
+  async getBatch(@Param('id') id: string, @CurrentUser() staff: { role: StaffRole }) {
+    const batch = await this.service.getBatch(id);
+    return staff.role === StaffRole.SHOPEE_REVIEWER ? hideUploader(batch) : batch;
   }
 
   @Get('issues')

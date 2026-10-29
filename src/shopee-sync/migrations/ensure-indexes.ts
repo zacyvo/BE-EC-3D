@@ -5,6 +5,8 @@ import { MarketplaceVariant, MarketplaceVariantSchema } from '../schemas/marketp
 import { MarketplaceProductImage, MarketplaceProductImageSchema } from '../schemas/marketplace-product-image.schema';
 import { ShopeeSyncSession, ShopeeSyncSessionSchema } from '../schemas/shopee-sync-session.schema';
 import { ShopeeSyncItem, ShopeeSyncItemSchema } from '../schemas/shopee-sync-item.schema';
+import { ShopeeOpenApiCredential, ShopeeOpenApiCredentialSchema } from '../schemas/shopee-open-api-credential.schema';
+import { ShopeeOpenApiAuthState, ShopeeOpenApiAuthStateSchema } from '../schemas/shopee-open-api-auth-state.schema';
 
 dotenv.config();
 
@@ -30,6 +32,8 @@ async function migrate() {
     mongoose.model(MarketplaceProductImage.name, MarketplaceProductImageSchema),
     mongoose.model(ShopeeSyncSession.name, ShopeeSyncSessionSchema),
     mongoose.model(ShopeeSyncItem.name, ShopeeSyncItemSchema),
+    mongoose.model(ShopeeOpenApiCredential.name, ShopeeOpenApiCredentialSchema),
+    mongoose.model(ShopeeOpenApiAuthState.name, ShopeeOpenApiAuthStateSchema),
   ];
 
   for (const model of models) {

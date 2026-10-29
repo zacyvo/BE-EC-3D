@@ -17,6 +17,15 @@ import { ShopeeCatalogPublishService } from './shopee-catalog-publish.service';
 import { ShopeeOrderSyncService } from './shopee-order-sync.service';
 import { AdminIntegrationsShopeeController } from './shopee-sync.controller';
 import { ShopeeOrderSyncController } from './shopee-order-sync.controller';
+import { ShopeeOpenApiCredential, ShopeeOpenApiCredentialSchema } from './schemas/shopee-open-api-credential.schema';
+import { ShopeeOpenApiAuthState, ShopeeOpenApiAuthStateSchema } from './schemas/shopee-open-api-auth-state.schema';
+import { ShopeeOpenApiConfigService } from './open-api/shopee-open-api.config';
+import { ShopeeOpenApiClient } from './open-api/shopee-open-api.client';
+import { ShopeeOpenApiAuthService } from './open-api/shopee-open-api-auth.service';
+import { ShopeeOpenApiService } from './open-api/shopee-open-api.service';
+import { ShopeeOpenApiProductSyncService } from './open-api/shopee-open-api-product-sync.service';
+import { ShopeeOpenApiOrderSyncService } from './open-api/shopee-open-api-order-sync.service';
+import { ShopeeOpenApiAdminController, ShopeeOpenApiCallbackController } from './open-api/shopee-open-api.controller';
 
 @Module({
   imports: [
@@ -29,12 +38,30 @@ import { ShopeeOrderSyncController } from './shopee-order-sync.controller';
       { name: ShopeeOrderSyncBatch.name, schema: ShopeeOrderSyncBatchSchema },
       { name: ShopeeOrderSyncIssue.name, schema: ShopeeOrderSyncIssueSchema },
       { name: Category.name, schema: CategorySchema },
+      { name: ShopeeOpenApiCredential.name, schema: ShopeeOpenApiCredentialSchema },
+      { name: ShopeeOpenApiAuthState.name, schema: ShopeeOpenApiAuthStateSchema },
     ]),
     AuditModule,
     ProductsModule,
     OrdersModule,
   ],
-  controllers: [AdminIntegrationsShopeeController, ShopeeOrderSyncController],
-  providers: [ShopeeSyncService, ShopeeSyncConfigService, ShopeeCatalogPublishService, ShopeeOrderSyncService],
+  controllers: [
+    AdminIntegrationsShopeeController,
+    ShopeeOrderSyncController,
+    ShopeeOpenApiAdminController,
+    ShopeeOpenApiCallbackController,
+  ],
+  providers: [
+    ShopeeSyncService,
+    ShopeeSyncConfigService,
+    ShopeeCatalogPublishService,
+    ShopeeOrderSyncService,
+    ShopeeOpenApiConfigService,
+    ShopeeOpenApiClient,
+    ShopeeOpenApiAuthService,
+    ShopeeOpenApiService,
+    ShopeeOpenApiProductSyncService,
+    ShopeeOpenApiOrderSyncService,
+  ],
 })
 export class ShopeeSyncModule {}

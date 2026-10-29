@@ -25,14 +25,38 @@ export class ShopeeOrderRowResult {
 
 const ShopeeOrderRowResultSchema = SchemaFactory.createForClass(ShopeeOrderRowResult);
 
-/** Audit record of one Excel upload — lets admins see what happened to every order
- * code in the file without re-parsing it. */
+export enum ShopeeOrderSyncSource {
+  EXCEL = 'EXCEL',
+  OPEN_API = 'OPEN_API',
+}
+
+/** Excel imports run inside the request (created → COMPLETED at once); Open API syncs run
+ * in the background, so the batch exists as RUNNING while orders are being fetched. */
+export enum ShopeeOrderSyncBatchStatus {
+  RUNNING = 'RUNNING',
+  COMPLETED = 'COMPLETED',
+  FAILED = 'FAILED',
+}
+
+/** Audit record of one Excel upload or one Open API sync run — lets admins see what
+ * happened to every order code without re-parsing/re-fetching it. */
 @Schema({ timestamps: true, collection: 'shopee_order_sync_batches' })
 export class ShopeeOrderSyncBatch {
   _id: Types.ObjectId;
 
+  /** File name for Excel; a human label (e.g. time range) for Open API runs. */
   @Prop({ required: true }) fileName: string;
   @Prop({ type: Types.ObjectId, ref: 'Staff', required: true }) uploadedBy: Types.ObjectId;
+
+  @Prop({ required: true, enum: Object.values(ShopeeOrderSyncSource), type: String, default: ShopeeOrderSyncSource.EXCEL })
+  source: ShopeeOrderSyncSource;
+  @Prop({ required: true, enum: Object.values(ShopeeOrderSyncBatchStatus), type: String, default: ShopeeOrderSyncBatchStatus.COMPLETED })
+  status: ShopeeOrderSyncBatchStatus;
+  @Prop() errorMessage?: string;
+  /** Open API runs: the update_time window that was synced. */
+  @Prop() rangeFrom?: Date;
+  @Prop() rangeTo?: Date;
+  @Prop({ default: false }) automatic: boolean;
 
   @Prop({ required: true }) totalRows: number;
   @Prop({ required: true }) totalOrders: number;

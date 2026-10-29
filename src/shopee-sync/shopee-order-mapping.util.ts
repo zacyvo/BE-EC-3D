@@ -65,6 +65,23 @@ export const SHOPEE_ORDER_COLUMNS = {
   note: 'Ghi chú',
 } as const;
 
+/**
+ * Extra keys present ONLY on rows built from Shopee Open API (see
+ * open-api/shopee-open-api-order.mapper.ts). API orders are turned into the same row shape
+ * as an Excel export so the whole import/review-queue/resolve pipeline is shared — these
+ * keys carry what the API knows better than the Excel file. The `__` prefix can never
+ * collide with a Shopee Excel header. They also persist in `issue.rawRows`, so resolving
+ * a review-queue entry later gets the same status/revenue as the original import.
+ */
+export const SHOPEE_API_ROW_KEYS = {
+  /** Shopee Open API `order_status` enum (UNPAID, READY_TO_SHIP, ..., COMPLETED). */
+  orderStatus: '__apiOrderStatus',
+  /** payment/get_escrow_detail `order_income.escrow_amount` — exact seller payout. */
+  escrowAmount: '__escrowAmount',
+  /** Shopee item_id of the line — matched against marketplace_products before any name matching. */
+  itemId: '__itemId',
+} as const;
+
 const REQUIRED_COLUMNS: string[] = [
   SHOPEE_ORDER_COLUMNS.orderCode,
   SHOPEE_ORDER_COLUMNS.status,
@@ -197,6 +214,43 @@ export function mapShopeeOrderStatus(rawStatus: string, returnStatus?: string): 
   return OrderStatus.PROCESSING;
 }
 
+/**
+ * Open API `order_status` → OrderStatus. Same business rules as the Excel classifier above:
+ * returns/refunds → CANCELLED (no RETURNED status), and DELIVERED only once Shopee has
+ * COMPLETED the order — TO_CONFIRM_RECEIVE (parcel delivered, buyer hasn't confirmed, escrow
+ * not released) stays SHIPPED so paidAmount is never set before Shopee actually pays out.
+ * IN_CANCEL (buyer requested cancellation, seller hasn't answered) is still a live order.
+ */
+export function mapShopeeApiOrderStatus(apiStatus: string): OrderStatus {
+  switch ((apiStatus || '').toUpperCase()) {
+    case 'UNPAID':
+    case 'INVOICE_PENDING':
+      return OrderStatus.PENDING;
+    case 'READY_TO_SHIP':
+    case 'PROCESSED':
+    case 'RETRY_SHIP':
+    case 'IN_CANCEL':
+      return OrderStatus.PROCESSING;
+    case 'SHIPPED':
+    case 'TO_CONFIRM_RECEIVE':
+      return OrderStatus.SHIPPED;
+    case 'COMPLETED':
+      return OrderStatus.DELIVERED;
+    case 'CANCELLED':
+    case 'TO_RETURN':
+      return OrderStatus.CANCELLED;
+    default:
+      return OrderStatus.PROCESSING;
+  }
+}
+
+/** Status of an order group, whichever source the rows came from. */
+export function resolveOrderStatusFromRow(row: ShopeeOrderRawRow): OrderStatus {
+  const apiStatus = row[SHOPEE_API_ROW_KEYS.orderStatus];
+  if (apiStatus) return mapShopeeApiOrderStatus(apiStatus);
+  return mapShopeeOrderStatus(row[SHOPEE_ORDER_COLUMNS.status], row[SHOPEE_ORDER_COLUMNS.returnStatus]);
+}
+
 export function isMasked(value: string): boolean {
   return value.includes('*');
 }
@@ -313,8 +367,13 @@ export function computeOrderMoney(rows: ShopeeOrderRawRow[]): ShopeeOrderMoney {
   const pitWithheld = Math.round(subtotal * SHOPEE_PIT_WITHHOLDING_RATE);
   const displayServiceFee = Math.round(subtotal * SHOPEE_DISPLAY_SERVICE_FEE_RATE);
 
+  // Rows from Shopee Open API carry Shopee's own settlement figure — authoritative, so the
+  // reverse-engineered fee/tax formula below is only the fallback for Excel imports.
+  const escrowAmount = rows[0][SHOPEE_API_ROW_KEYS.escrowAmount];
   const sellerRevenue =
-    subtotal + netShippingImpact - fixedFee - serviceFee - transactionFee - vatWithheld - pitWithheld - displayServiceFee;
+    escrowAmount !== undefined && escrowAmount !== ''
+      ? parseVndAmount(escrowAmount)
+      : subtotal + netShippingImpact - fixedFee - serviceFee - transactionFee - vatWithheld - pitWithheld - displayServiceFee;
 
   return { subtotal, shippingFee, discountAmount, total, sellerRevenue };
 }

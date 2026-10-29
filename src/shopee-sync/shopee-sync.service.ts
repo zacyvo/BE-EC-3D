@@ -11,12 +11,18 @@ import {
 import { MarketplaceImageType, MarketplaceProductImage, MarketplaceProductImageDocument } from './schemas/marketplace-product-image.schema';
 import { MarketplaceVariant, MarketplaceVariantDocument } from './schemas/marketplace-variant.schema';
 import { ShopeeSyncItem, ShopeeSyncItemDocument, ShopeeSyncItemStatus } from './schemas/shopee-sync-item.schema';
-import { ShopeeSyncMode, ShopeeSyncSession, ShopeeSyncSessionDocument, ShopeeSyncSessionStatus } from './schemas/shopee-sync-session.schema';
+import {
+  ShopeeSyncMode,
+  ShopeeSyncSession,
+  ShopeeSyncSessionDocument,
+  ShopeeSyncSessionStatus,
+  ShopeeSyncSource,
+} from './schemas/shopee-sync-session.schema';
 import { CreateManualSyncSessionDto, CreateSyncSessionDto } from './dto/create-sync-session.dto';
 import { ListSnapshotDto } from './dto/list-snapshot.dto';
 import { MarketplaceProductUploadDto, UploadProductDetailDto } from './dto/marketplace-product-upload.dto';
 import { ShopeeSyncConfigService, ShopeeSyncConfigSnapshot } from './shopee-sync.config';
-import { ShopeeSyncErrorCode, SHOPEE_SYNC_AUDIT_MODULE } from './shopee-sync.constants';
+import { OPEN_API_ADAPTER_VERSION, ShopeeSyncErrorCode, SHOPEE_SYNC_AUDIT_MODULE } from './shopee-sync.constants';
 import { ShopeeSyncException } from './shopee-sync.exceptions';
 import { generateUploadToken } from './shopee-sync-token.util';
 import {
@@ -196,6 +202,86 @@ export class ShopeeSyncService {
     };
   }
 
+
+  /**
+   * Session collected by the backend itself via Shopee Open API (no extension, no upload
+   * token handed out — one is still generated only because the schema requires it).
+   * FULL starts at CREATED and goes through processListSnapshot(); MANUAL is staged exactly
+   * like createManualSession() above. Kill switch applies; extension version does not.
+   */
+  async createOpenApiSession(
+    opts: { mode: ShopeeSyncMode; forceFullSync: boolean; productIds?: string[]; ttlMinutes: number },
+    adminId: string,
+  ): Promise<ShopeeSyncSessionDocument> {
+    const cfg = this.configService.get();
+    if (!cfg.enabled) {
+      throw new ShopeeSyncException(
+        ShopeeSyncErrorCode.SHOPEE_SYNC_DISABLED,
+        'Đồng bộ Shopee đang tạm dừng (SHOPEE_SYNC_ENABLED=false). Dữ liệu hiện tại trong Luxe Glow không bị ảnh hưởng.',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    const { tokenHash } = generateUploadToken();
+    const now = new Date();
+    const base = {
+      shopId: cfg.shopId,
+      source: ShopeeSyncSource.OPEN_API,
+      adminId: new Types.ObjectId(adminId),
+      forceFullSync: opts.forceFullSync,
+      uploadTokenHash: tokenHash,
+      uploadTokenExpiresAt: new Date(now.getTime() + opts.ttlMinutes * 60_000),
+      extensionVersion: null,
+      adapterVersion: OPEN_API_ADAPTER_VERSION,
+      startedAt: now,
+    };
+
+    if (opts.mode === ShopeeSyncMode.FULL) {
+      return this.sessionModel.create({ ...base, status: ShopeeSyncSessionStatus.CREATED, syncMode: ShopeeSyncMode.FULL });
+    }
+
+    const productIds = Array.from(new Set(opts.productIds ?? []));
+    const existingIds = new Set(
+      (
+        await this.productModel
+          .find({ channel: MarketplaceChannel.SHOPEE, shopId: cfg.shopId, externalProductId: { $in: productIds } })
+          .select('externalProductId')
+          .lean()
+          .exec()
+      ).map((p) => p.externalProductId),
+    );
+    const session = await this.sessionModel.create({
+      ...base,
+      status: ShopeeSyncSessionStatus.LIST_SNAPSHOT_UPLOADED,
+      syncMode: ShopeeSyncMode.MANUAL,
+      forceFullSync: false,
+      expectedTotal: productIds.length,
+      collectedTotal: productIds.length,
+      newCount: productIds.filter((id) => !existingIds.has(id)).length,
+      changedCount: productIds.filter((id) => existingIds.has(id)).length,
+      pendingDetailProductIds: productIds,
+    });
+    await this.itemModel.insertMany(
+      productIds.map((externalProductId) => ({
+        syncSessionId: session._id,
+        externalProductId,
+        status: decideManualSyncStatus(existingIds.has(externalProductId)),
+        sourceModifiedAt: 0,
+        detailUploaded: false,
+      })),
+    );
+    return session;
+  }
+
+  /** Marks a backend-run session as failed (Open API job aborted). No-op once terminal. */
+  async failSession(id: Types.ObjectId, errorCode: string, errorMessage: string): Promise<void> {
+    await this.sessionModel
+      .updateOne(
+        { _id: id, status: { $in: [ShopeeSyncSessionStatus.CREATED, ShopeeSyncSessionStatus.LIST_SNAPSHOT_UPLOADED] } },
+        { $set: { status: ShopeeSyncSessionStatus.FAILED, errorCode, errorMessage: errorMessage.slice(0, 500), completedAt: new Date() } },
+      )
+      .exec();
+  }
 
   async getLatestSession(shopId?: string) {
     const filter = shopId ? { shopId } : {};

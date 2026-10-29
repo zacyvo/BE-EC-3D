@@ -24,6 +24,8 @@ type StaffPrincipal = { sub: string; role: StaffRole };
 
 const STAFF_READ_ROLES = [StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER];
 const STAFF_WRITE_ROLES = [StaffRole.SUPER_ADMIN, StaffRole.ADMIN];
+/** Read-only views shown to the Shopee app-review account (no customer data in these). */
+const SHOPEE_VIEW_ROLES = [...STAFF_READ_ROLES, StaffRole.SHOPEE_REVIEWER];
 
 @Controller('admin/integrations/shopee')
 export class AdminIntegrationsShopeeController {
@@ -31,21 +33,21 @@ export class AdminIntegrationsShopeeController {
 
   @Get('config')
   @UseGuards(JwtStaffGuard, RolesGuard)
-  @Roles(...STAFF_READ_ROLES)
+  @Roles(...SHOPEE_VIEW_ROLES)
   getConfig() {
     return this.service.getConfig();
   }
 
   @Get('sync-sessions/latest')
   @UseGuards(JwtStaffGuard, RolesGuard)
-  @Roles(...STAFF_READ_ROLES)
+  @Roles(...SHOPEE_VIEW_ROLES)
   getLatest(@Query('shopId') shopId?: string) {
     return this.service.getLatestSession(shopId);
   }
 
   @Get('sync-sessions/:id')
   @UseGuards(JwtStaffGuard, RolesGuard)
-  @Roles(...STAFF_READ_ROLES)
+  @Roles(...SHOPEE_VIEW_ROLES)
   getById(@Param('id') id: string) {
     return this.service.getSessionById(id);
   }

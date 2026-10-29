@@ -22,6 +22,7 @@ import {
 } from './dto/auth.dto';
 import { JwtAuthGuard, JwtRefreshGuard, JwtStaffGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
+import { AllowShopeeReviewer } from './decorators/roles.decorator';
 
 @Controller('auth')
 export class AuthController {
@@ -133,6 +134,7 @@ export class AuthController {
 
   @Post('staff/logout')
   @UseGuards(JwtStaffGuard)
+  @AllowShopeeReviewer()
   @HttpCode(HttpStatus.OK)
   async staffLogout(@CurrentUser() staff: { sub: string }) {
     await this.authService.logoutStaff(staff.sub);
