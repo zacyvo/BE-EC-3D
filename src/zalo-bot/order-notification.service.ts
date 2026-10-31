@@ -27,6 +27,7 @@ import {
   formatOrderCancelledByCustomerMessage,
   formatOrderCancelRequestedMessage,
   formatOrderCreatedMessage,
+  formatOrderReturnRequestedMessage,
   orderDisplayCode,
   OrderMessageInput,
   OrderMessageOptions,
@@ -47,6 +48,7 @@ const MESSAGE_FORMATTERS: Record<NotificationEventType, (o: OrderMessageInput, o
   [NotificationEventType.ORDER_CREATED]: formatOrderCreatedMessage,
   [NotificationEventType.ORDER_CANCEL_REQUESTED]: formatOrderCancelRequestedMessage,
   [NotificationEventType.ORDER_CANCELLED_BY_CUSTOMER]: formatOrderCancelledByCustomerMessage,
+  [NotificationEventType.ORDER_RETURN_REQUESTED]: formatOrderReturnRequestedMessage,
 };
 
 export function notificationDedupKey(eventType: NotificationEventType, orderId: string, recipientId: string): string {
@@ -156,6 +158,11 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
   /** Same as above for a customer's own cancellation of a PENDING order. */
   customerCancelledOutboxEvents(): string[] {
     return this.botOutboxEvents(NotificationEventType.ORDER_CANCELLED_BY_CUSTOMER);
+  }
+
+  /** Same as above for a customer's return/refund request on a delivered order. */
+  returnRequestedOutboxEvents(): string[] {
+    return this.botOutboxEvents(NotificationEventType.ORDER_RETURN_REQUESTED);
   }
 
   private botOutboxEvents(event: NotificationEventType): string[] {

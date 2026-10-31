@@ -32,6 +32,10 @@ export class UploadService {
     return results;
   }
 
+  async uploadReturnImages(files: Express.Multer.File[]): Promise<string[]> {
+    return Promise.all(files.map((file) => this.uploadOne(file, 'web-ec-3d/returns')));
+  }
+
   private async uploadOne(file: Express.Multer.File, folder = 'web-ec-3d/products'): Promise<string> {
     return new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(

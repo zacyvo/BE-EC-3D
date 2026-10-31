@@ -9,6 +9,9 @@ export enum NotificationEventType {
   ORDER_CANCEL_REQUESTED = 'ORDER_CANCEL_REQUESTED',
   /** Customer cancelled a PENDING order themselves — informational for the owner. */
   ORDER_CANCELLED_BY_CUSTOMER = 'ORDER_CANCELLED_BY_CUSTOMER',
+  /** Customer asked to return/refund a delivered order — the owner must review it in the
+   * admin dashboard ("Trả hàng / Hoàn tiền"). */
+  ORDER_RETURN_REQUESTED = 'ORDER_RETURN_REQUESTED',
 }
 
 /** Owner Bot events that travel through the Order outbox (`pendingNotificationEvents`). */
@@ -16,6 +19,7 @@ export const ZALO_BOT_OUTBOX_EVENTS: NotificationEventType[] = [
   NotificationEventType.ORDER_CREATED,
   NotificationEventType.ORDER_CANCEL_REQUESTED,
   NotificationEventType.ORDER_CANCELLED_BY_CUSTOMER,
+  NotificationEventType.ORDER_RETURN_REQUESTED,
 ];
 
 /**

@@ -14,6 +14,7 @@ import {
   USER_CANCEL_REQUESTABLE_STATUSES,
 } from './schemas/order.schema';
 import { OrderVersion, OrderVersionDocument } from './schemas/order-version.schema';
+import { NET_ORDER_TOTAL_EXPR } from './order-return-aggregation';
 import { CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto } from './dto/order.dto';
 import { ProductsService } from '../products/products.service';
 import { CartService } from '../cart/cart.service';
@@ -468,12 +469,13 @@ export class OrdersService {
 
   async findByUser(
     userId: string,
-    query: { page: number; limit: number; status?: OrderStatus },
+    query: { page: number; limit: number; status?: OrderStatus; hasReturn?: boolean },
   ) {
     const page = Math.max(1, query.page);
     const limit = Math.min(50, Math.max(1, query.limit));
     const filter: Record<string, unknown> = { userId: new Types.ObjectId(userId) };
     if (query.status) filter.status = query.status;
+    if (query.hasReturn) filter.returnRequest = { $exists: true };
     const [data, total] = await Promise.all([
       this.orderModel
         .find(filter)
@@ -605,7 +607,7 @@ export class OrdersService {
       this.orderModel.countDocuments({ userId: uid }),
       this.orderModel.aggregate([
         { $match: { userId: uid, status: OrderStatus.DELIVERED } },
-        { $group: { _id: null, count: { $sum: 1 }, totalSpent: { $sum: '$total' } } },
+        { $group: { _id: null, count: { $sum: 1 }, totalSpent: { $sum: NET_ORDER_TOTAL_EXPR } } },
       ]),
     ]);
     return {
@@ -696,6 +698,8 @@ export class OrdersService {
     }
 
     order.status = dto.status;
+    // Starts the customer's return window — kept from the first delivery only.
+    if (dto.status === OrderStatus.DELIVERED && !order.deliveredAt) order.deliveredAt = new Date();
     if (dto.csNote) order.csNote = dto.csNote;
     if (dto.cancelReason) order.cancelReason = dto.cancelReason;
     if (dto.delivery !== undefined) order.delivery = dto.delivery as any;

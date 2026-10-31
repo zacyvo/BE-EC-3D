@@ -140,6 +140,114 @@ export class OrderCustomerCancel {
 
 const OrderCustomerCancelSchema = SchemaFactory.createForClass(OrderCustomerCancel);
 
+/** Lifecycle of a return/refund request (Shopee-style "Trả hàng/Hoàn tiền"):
+ *  REQUESTED → APPROVED → SHIPPING_BACK → RECEIVED → (REFUNDING →) COMPLETED
+ *  with REJECTED (by the shop — at request time or after inspection) and CANCELLED
+ *  (withdrawn by the customer before the parcel is on its way) as the other ends.
+ *  Order.status stays DELIVERED throughout; see src/order-returns. */
+export enum ReturnStatus {
+  REQUESTED = 'REQUESTED',
+  APPROVED = 'APPROVED',
+  SHIPPING_BACK = 'SHIPPING_BACK',
+  RECEIVED = 'RECEIVED',
+  REFUNDING = 'REFUNDING',
+  COMPLETED = 'COMPLETED',
+  REJECTED = 'REJECTED',
+  CANCELLED = 'CANCELLED',
+}
+
+/** Return statuses in which the goods are back with the shop and the refund is decided —
+ * revenue/sold-quantity computations subtract the returned part of these orders. */
+export const RETURN_SETTLED_STATUSES = [ReturnStatus.REFUNDING, ReturnStatus.COMPLETED];
+
+export enum ReturnReason {
+  DAMAGED = 'DAMAGED',
+  DEFECTIVE = 'DEFECTIVE',
+  WRONG_ITEM = 'WRONG_ITEM',
+  MISSING_PARTS = 'MISSING_PARTS',
+  NOT_AS_DESCRIBED = 'NOT_AS_DESCRIBED',
+  CHANGED_MIND = 'CHANGED_MIND',
+}
+
+/** One returned line — `itemIndex` points into Order.items (items have no _id); name/price
+ * are snapshotted so the request reads correctly on its own. */
+@Schema({ _id: false })
+export class ReturnItem {
+  @Prop({ required: true, min: 0 }) itemIndex: number;
+  @Prop({ required: true }) productName: string;
+  @Prop() productImage?: string;
+  @Prop() color?: string;
+  @Prop() size?: string;
+  @Prop({ required: true, min: 1 }) quantity: number;
+  @Prop({ required: true, min: 0 }) unitPrice: number;
+}
+
+const ReturnItemSchema = SchemaFactory.createForClass(ReturnItem);
+
+/** Where the shop transfers the refund (storefront checkout is COD-only, so there is no
+ * original online payment to reverse). */
+@Schema({ _id: false })
+export class RefundAccount {
+  @Prop({ required: true }) bankName: string;
+  @Prop({ required: true }) accountNumber: string;
+  @Prop({ required: true }) accountHolder: string;
+}
+
+const RefundAccountSchema = SchemaFactory.createForClass(RefundAccount);
+
+@Schema({ _id: false })
+export class ReturnShipment {
+  @Prop() carrierName?: string;
+  @Prop({ required: true }) trackingCode: string;
+  @Prop({ required: true }) shippedAt: Date;
+}
+
+const ReturnShipmentSchema = SchemaFactory.createForClass(ReturnShipment);
+
+@Schema({ _id: false })
+export class ReturnHistoryEntry {
+  @Prop({ required: true, enum: Object.values(ReturnStatus) }) status: ReturnStatus;
+  @Prop({ required: true }) at: Date;
+  @Prop({ required: true, enum: ['user', 'staff'] }) byType: 'user' | 'staff';
+  @Prop() by?: string;
+  @Prop() note?: string;
+}
+
+const ReturnHistoryEntrySchema = SchemaFactory.createForClass(ReturnHistoryEntry);
+
+/** A customer's return/refund request — one per order (a withdrawn request can't be re-sent). */
+@Schema({ _id: false })
+export class OrderReturnRequest {
+  @Prop({ required: true, enum: Object.values(ReturnStatus) }) status: ReturnStatus;
+  @Prop({ type: [ReturnItemSchema], required: true }) items: ReturnItem[];
+  @Prop({ required: true, enum: Object.values(ReturnReason) }) reason: ReturnReason;
+  @Prop({ required: true }) description: string;
+  @Prop({ type: [String], default: [] }) images: string[];
+  @Prop({ type: RefundAccountSchema }) refundAccount?: RefundAccount;
+  @Prop({ required: true }) requestedAt: Date;
+  /** Account name at request time — what the owner's Zalo notification shows. */
+  @Prop() requestedByName?: string;
+  /** Suggested refund for the returned goods at request time (prorated discount, capped by paidAmount). */
+  @Prop({ required: true, min: 0 }) estimatedRefund: number;
+  /** Shop's note to the customer when approving (e.g. return instructions). */
+  @Prop() shopNote?: string;
+  @Prop() rejectReason?: string;
+  @Prop({ enum: ['REQUEST', 'INSPECTION'] }) rejectedAt?: 'REQUEST' | 'INSPECTION';
+  @Prop({ type: ReturnShipmentSchema }) shipment?: ReturnShipment;
+  @Prop() receivedAt?: Date;
+  @Prop() inspectionNote?: string;
+  /** Refund for the goods, decided after inspection. */
+  @Prop({ min: 0 }) refundAmount?: number;
+  /** Return shipping cost reimbursed to the customer (shop-fault returns). */
+  @Prop({ min: 0 }) returnShippingRefund?: number;
+  @Prop() refundedAt?: Date;
+  /** Bank transfer reference of the refund. */
+  @Prop() refundTransferRef?: string;
+  @Prop({ type: [ReturnHistoryEntrySchema], default: [] }) history: ReturnHistoryEntry[];
+}
+
+const OrderReturnRequestSchema = SchemaFactory.createForClass(OrderReturnRequest);
+
 @Schema({ timestamps: true })
 export class Order {
   _id: Types.ObjectId;
@@ -172,6 +280,9 @@ export class Order {
   @Prop() cancelReason?: string;
   @Prop({ type: OrderCancelRequestSchema }) cancelRequest?: OrderCancelRequest;
   @Prop({ type: OrderCustomerCancelSchema }) customerCancel?: OrderCustomerCancel;
+  /** First time the order reached DELIVERED — starts the return window. */
+  @Prop() deliveredAt?: Date;
+  @Prop({ type: OrderReturnRequestSchema }) returnRequest?: OrderReturnRequest;
   @Prop() adminNote?: string;
   @Prop({ default: false }) createdByAdmin: boolean;
   @Prop() createdByStaffId?: string;
@@ -197,8 +308,9 @@ export class Order {
   /** Transactional outbox for notifications (see zalo-bot/order-notification.service.ts):
    * written in the SAME insert as the order, so the intent exists iff the order does; the
    * worker of each channel pulls its own marker once the notification jobs exist —
-   * 'ORDER_CREATED' / 'ORDER_CANCEL_REQUESTED' / 'ORDER_CANCELLED_BY_CUSTOMER' (owner Zalo Bot,
-   * the cancel events are added by the same update that records them), 'ORDER_CREATED:ZALO_ZBS'
+   * 'ORDER_CREATED' / 'ORDER_CANCEL_REQUESTED' / 'ORDER_CANCELLED_BY_CUSTOMER' /
+   * 'ORDER_RETURN_REQUESTED' (owner Zalo Bot, the cancel/return events are added by the same
+   * update that records them), 'ORDER_CREATED:ZALO_ZBS'
    * (customer ZBS). Absent on most
    * orders; hidden from API responses by the toJSON transform below. */
   @Prop({ type: [String], default: undefined }) pendingNotificationEvents?: string[];
@@ -214,6 +326,8 @@ OrderSchema.index({ isDeleted: 1 });
 // Sparse: only orders imported from a marketplace carry externalRef, so this never
 // collides with plain orders (which omit the field entirely).
 OrderSchema.index({ 'externalRef.channel': 1, 'externalRef.code': 1 }, { unique: true, sparse: true });
+// Sparse: only orders with a return request carry the field (admin "Trả hàng" list).
+OrderSchema.index({ 'returnRequest.status': 1, 'returnRequest.requestedAt': -1 }, { sparse: true });
 // Sparse: only orders with a not-yet-dispatched notification carry the field.
 OrderSchema.index({ pendingNotificationEvents: 1 }, { sparse: true });
 // Internal worker state — keep it out of checkout/admin API responses.
