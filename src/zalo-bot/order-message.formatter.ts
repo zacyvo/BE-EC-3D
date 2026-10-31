@@ -34,6 +34,18 @@ export interface OrderMessageInput {
     estimatedRefund?: number;
     items?: Array<{ productName?: string; quantity?: number; color?: string; size?: string }>;
   };
+  vatAmount?: number;
+  einvoiceRequest?: {
+    requestedAt?: Date | string;
+    requestedByName?: string;
+    buyerType?: string;
+    buyerName?: string;
+    companyName?: string;
+    taxCode?: string;
+    email?: string;
+    vatRate?: number;
+    vatAmount?: number;
+  };
 }
 
 export interface OrderMessageOptions {
@@ -156,6 +168,7 @@ export function formatOrderCreatedMessage(order: OrderMessageInput, options: Ord
   if (order.subtotal !== undefined && order.subtotal !== total) footer.push(`Tạm tính: ${formatVnd(order.subtotal)}`);
   if (Number(order.discountAmount) > 0) footer.push(`Giảm giá: -${formatVnd(order.discountAmount)}`);
   if (Number(order.shippingFee) > 0) footer.push(`Phí vận chuyển: ${formatVnd(order.shippingFee)}`);
+  if (Number(order.vatAmount) > 0) footer.push(`VAT (xuất hoá đơn điện tử): ${formatVnd(order.vatAmount)}`);
   footer.push(`Tổng tiền: ${formatVnd(total)}`);
   footer.push(`Thanh toán: ${PAYMENT_METHOD_LABELS[paymentMethod] ?? paymentMethod}`);
   footer.push(`Trạng thái thanh toán: ${describePaymentStatus(total, Number(order.paidAmount) || 0)}`);
@@ -276,6 +289,51 @@ export function formatOrderReturnRequestedMessage(order: OrderMessageInput, opti
   if (!items.length) lines.push(MISSING);
   lines.push('', `Hoàn tiền dự kiến: ${formatVnd(request.estimatedRefund)}`);
   if (adminLink) lines.push('', 'Xem yêu cầu:', adminLink);
+
+  const message = lines.join('\n');
+  return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;
+}
+
+/** "nguyenvana@gmail.com" → "ng******@gmail.com" — same idea as maskPhone. */
+export function maskEmail(email: string | undefined | null): string {
+  const [local, domain] = String(email ?? '').trim().split('@');
+  if (!local || !domain) return MISSING;
+  return `${local.slice(0, 2)}${'*'.repeat(Math.max(1, local.length - 2))}@${domain}`;
+}
+
+/**
+ * Plain-text EINVOICE_REQUESTED message: who asks for a VAT invoice on which order, the buyer
+ * the invoice would be made out to, the VAT now included in the total and the admin link where
+ * the owner accepts or rejects it.
+ */
+export function formatEInvoiceRequestedMessage(order: OrderMessageInput, options: OrderMessageOptions = {}): string {
+  const maxLength = options.maxLength ?? ZALO_MESSAGE_MAX_LENGTH;
+  const orderId = order._id ? order._id.toString() : '';
+  const code = orderId ? orderDisplayCode(orderId) : MISSING;
+  const request = order.einvoiceRequest ?? {};
+  const name = request.requestedByName?.trim() || order.shippingInfo?.recipientName?.trim() || 'Khách hàng';
+  const adminLink = buildAdminOrderUrl(options.adminUrl, orderId);
+  const isCompany = request.buyerType === 'COMPANY';
+  const vatAmount = Number(request.vatAmount) || 0;
+  const total = Number(order.total) || 0;
+
+  const lines: string[] = ['🧾 LUXE GLOW — YÊU CẦU XUẤT HOÁ ĐƠN ĐIỆN TỬ', ''];
+  lines.push(`${truncate(name, 80)} yêu cầu xuất hoá đơn VAT cho đơn ${code}`);
+  const requestedAt = formatDateTime(request.requestedAt);
+  if (requestedAt) lines.push(`Thời gian yêu cầu: ${requestedAt}`);
+  lines.push(`Trạng thái đơn: ${order.status ? ORDER_STATUS_LABELS[order.status] ?? order.status : MISSING}`);
+  lines.push('');
+  lines.push(`Người mua: ${isCompany ? 'Công ty/đơn vị' : 'Cá nhân'}`);
+  if (isCompany) lines.push(`Đơn vị: ${request.companyName ? truncate(request.companyName, 120) : MISSING}`);
+  if (request.taxCode) lines.push(`MST: ${request.taxCode}`);
+  lines.push(`Họ tên người mua: ${request.buyerName ? truncate(request.buyerName, 80) : MISSING}`);
+  lines.push(`Email nhận hoá đơn: ${maskEmail(request.email)}`);
+  lines.push('');
+  lines.push(`Tiền hàng (chưa VAT): ${formatVnd(total - vatAmount)}`);
+  lines.push(`VAT ${request.vatRate ?? 10}%: ${formatVnd(vatAmount)}`);
+  lines.push(`Tổng thanh toán: ${formatVnd(total)}`);
+  lines.push('', 'Vui lòng CHẤP NHẬN hoặc TỪ CHỐI trước khi giao hàng.');
+  if (adminLink) lines.push('Xử lý yêu cầu:', adminLink);
 
   const message = lines.join('\n');
   return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;

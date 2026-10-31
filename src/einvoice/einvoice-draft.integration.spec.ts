@@ -83,6 +83,7 @@ beforeAll(async () => {
     new JwtService(),
     config,
     {} as never,
+    {} as never,
   );
 });
 

@@ -14,9 +14,12 @@ import {
   Matches,
   ArrayUnique,
   MaxLength,
+  IsEmail,
+  IsNotEmpty,
+  ValidateBy,
 } from 'class-validator';
-import { Type } from 'class-transformer';
-import { OrderStatus } from '../schemas/order.schema';
+import { Transform, Type } from 'class-transformer';
+import { EInvoiceBuyerType, OrderStatus } from '../schemas/order.schema';
 import { OldAddressInputDto } from '../../locations/dto/old-address-input.dto';
 
 /** Shared with shopee-order-mapping.util.ts (masked/invalid Shopee phone detection) —
@@ -49,6 +52,56 @@ export class ShippingInfoDto {
   @IsOptional() @ValidateNested() @Type(() => OldAddressInputDto) oldAddress?: OldAddressInputDto;
 }
 
+/** Mã số thuế doanh nghiệp: 10 số, hoặc 10 số + "-" + 3 số (chi nhánh). */
+export const COMPANY_TAX_CODE_REGEX = /^\d{10}(-\d{3})?$/;
+/** Cá nhân: MST 10 số hoặc số định danh (CCCD) 12 số. */
+export const PERSONAL_TAX_CODE_REGEX = /^(\d{10}|\d{12})$/;
+
+const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
+
+/** Required + company format for COMPANY; optional + personal format for INDIVIDUAL. */
+function IsTaxCodeForBuyerType() {
+  const isCompany = (o: object) => (o as EInvoiceRequestDto).buyerType === EInvoiceBuyerType.COMPANY;
+  return ValidateBy({
+    name: 'isTaxCodeForBuyerType',
+    validator: {
+      validate: (value, args) => {
+        if (isCompany(args!.object)) return typeof value === 'string' && COMPANY_TAX_CODE_REGEX.test(value);
+        return value === undefined || value === '' || (typeof value === 'string' && PERSONAL_TAX_CODE_REGEX.test(value));
+      },
+      defaultMessage: (args) =>
+        isCompany(args!.object)
+          ? 'Mã số thuế công ty không hợp lệ (10 số, chi nhánh: 10 số-3 số)'
+          : 'Mã số thuế/CCCD không hợp lệ (10 hoặc 12 số)',
+    },
+  });
+}
+
+/** Buyer details for a VAT e-invoice — at checkout or later from the order page. */
+export class EInvoiceRequestDto {
+  @IsEnum(EInvoiceBuyerType, { message: 'Vui lòng chọn loại người mua (cá nhân/công ty)' })
+  buyerType: EInvoiceBuyerType;
+
+  @Transform(trim) @IsString() @IsNotEmpty({ message: 'Vui lòng nhập họ tên người mua hàng' }) @MaxLength(200)
+  buyerName: string;
+
+  @ValidateIf((o) => o.buyerType === EInvoiceBuyerType.COMPANY)
+  @Transform(trim) @IsString() @IsNotEmpty({ message: 'Vui lòng nhập tên công ty/đơn vị' }) @MaxLength(200)
+  companyName?: string;
+
+  @Transform(trim) @IsTaxCodeForBuyerType()
+  taxCode?: string;
+
+  @Transform(trim) @IsString() @IsNotEmpty({ message: 'Vui lòng nhập địa chỉ xuất hoá đơn' }) @MaxLength(300)
+  address: string;
+
+  @Transform(trim) @IsEmail({}, { message: 'Email nhận hoá đơn không hợp lệ' }) @MaxLength(200)
+  email: string;
+
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(20)
+  phone?: string;
+}
+
 export class CreateOrderDto {
   @IsArray()
   @ArrayMinSize(1)
@@ -65,6 +118,15 @@ export class CreateOrderDto {
   /** Coupon codes to apply to this order */
   @IsOptional() @IsArray() @ArrayUnique() @IsString({ each: true })
   couponCodes?: string[];
+
+  /** Customer asks for a VAT e-invoice — adds EINVOICE_VAT_RATE % to the total, shop approves. */
+  @IsOptional() @ValidateNested() @Type(() => EInvoiceRequestDto)
+  einvoiceRequest?: EInvoiceRequestDto;
+}
+
+export class RejectEInvoiceRequestDto {
+  @Transform(trim) @IsString() @IsNotEmpty({ message: 'Vui lòng nhập lý do từ chối' }) @MaxLength(500)
+  reason: string;
 }
 
 export class DeliveryDto {

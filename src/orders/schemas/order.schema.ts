@@ -248,6 +248,57 @@ export class OrderReturnRequest {
 
 const OrderReturnRequestSchema = SchemaFactory.createForClass(OrderReturnRequest);
 
+/** Lifecycle of a customer's request for a VAT e-invoice (hoá đơn điện tử):
+ *  PENDING (VAT already added to the total) → APPROVED → ISSUED (invoice emailed),
+ *  or PENDING → REJECTED (VAT removed from the total again). See orders/einvoice-request.util.ts. */
+export enum EInvoiceRequestStatus {
+  PENDING = 'PENDING',
+  APPROVED = 'APPROVED',
+  REJECTED = 'REJECTED',
+  ISSUED = 'ISSUED',
+}
+
+export enum EInvoiceBuyerType {
+  INDIVIDUAL = 'INDIVIDUAL',
+  COMPANY = 'COMPANY',
+}
+
+/** Buyer details the customer gave for the invoice, plus the shop's decision. One per order —
+ * a rejected request can't be re-sent (the shop can still fix details when issuing). */
+@Schema({ _id: false })
+export class OrderEInvoiceRequest {
+  @Prop({ required: true, enum: Object.values(EInvoiceRequestStatus) }) status: EInvoiceRequestStatus;
+  @Prop({ required: true, enum: Object.values(EInvoiceBuyerType) }) buyerType: EInvoiceBuyerType;
+  /** Người mua hàng — the person's full name (also the invoice customer name for INDIVIDUAL). */
+  @Prop({ required: true, trim: true }) buyerName: string;
+  /** Tên đơn vị — required for COMPANY. */
+  @Prop({ trim: true }) companyName?: string;
+  /** Mã số thuế — required for COMPANY, optional (MST/CCCD) for INDIVIDUAL. */
+  @Prop({ trim: true }) taxCode?: string;
+  @Prop({ required: true, trim: true }) address: string;
+  /** Where the issued invoice is sent. */
+  @Prop({ required: true, trim: true, lowercase: true }) email: string;
+  @Prop({ trim: true }) phone?: string;
+  @Prop({ required: true, min: 0 }) vatRate: number;
+  /** VAT added to Order.total by this request — mirrors Order.vatAmount while not REJECTED. */
+  @Prop({ required: true, min: 0 }) vatAmount: number;
+  @Prop({ required: true }) requestedAt: Date;
+  /** Account name at request time — what the owner's Zalo notification shows. */
+  @Prop() requestedByName?: string;
+  @Prop() decidedAt?: Date;
+  @Prop() decidedBy?: string;
+  @Prop() rejectReason?: string;
+  @Prop({ type: Types.ObjectId, ref: 'EInvoice' }) einvoiceId?: Types.ObjectId;
+  @Prop() issuedAt?: Date;
+  /** Public invoice page (opened with the key sent in the email). */
+  @Prop() invoiceUrl?: string;
+  @Prop() emailSentAt?: Date;
+  /** Last email failure — cleared by a successful (re)send. */
+  @Prop() emailError?: string;
+}
+
+const OrderEInvoiceRequestSchema = SchemaFactory.createForClass(OrderEInvoiceRequest);
+
 @Schema({ timestamps: true })
 export class Order {
   _id: Types.ObjectId;
@@ -269,7 +320,10 @@ export class Order {
   /** Shipping fee added on top of product subtotal */
   @Prop({ default: 0, min: 0 }) shippingFee: number;
 
-  /** Final payable amount = subtotal - discountAmount + shippingFee */
+  /** VAT added on top because the customer asked for a VAT e-invoice (0 otherwise). */
+  @Prop({ default: 0, min: 0 }) vatAmount: number;
+
+  /** Final payable amount = subtotal - discountAmount + shippingFee + vatAmount */
   @Prop({ required: true, min: 0 }) total: number;
 
   @Prop({ default: OrderStatus.PENDING, enum: Object.values(OrderStatus) })
@@ -283,6 +337,7 @@ export class Order {
   /** First time the order reached DELIVERED — starts the return window. */
   @Prop() deliveredAt?: Date;
   @Prop({ type: OrderReturnRequestSchema }) returnRequest?: OrderReturnRequest;
+  @Prop({ type: OrderEInvoiceRequestSchema }) einvoiceRequest?: OrderEInvoiceRequest;
   @Prop() adminNote?: string;
   @Prop({ default: false }) createdByAdmin: boolean;
   @Prop() createdByStaffId?: string;
@@ -309,8 +364,8 @@ export class Order {
    * written in the SAME insert as the order, so the intent exists iff the order does; the
    * worker of each channel pulls its own marker once the notification jobs exist —
    * 'ORDER_CREATED' / 'ORDER_CANCEL_REQUESTED' / 'ORDER_CANCELLED_BY_CUSTOMER' /
-   * 'ORDER_RETURN_REQUESTED' (owner Zalo Bot, the cancel/return events are added by the same
-   * update that records them), 'ORDER_CREATED:ZALO_ZBS'
+   * 'ORDER_RETURN_REQUESTED' / 'EINVOICE_REQUESTED' (owner Zalo Bot, the cancel/return/e-invoice
+   * events are added by the same write that records them), 'ORDER_CREATED:ZALO_ZBS'
    * (customer ZBS). Absent on most
    * orders; hidden from API responses by the toJSON transform below. */
   @Prop({ type: [String], default: undefined }) pendingNotificationEvents?: string[];
@@ -328,6 +383,8 @@ OrderSchema.index({ isDeleted: 1 });
 OrderSchema.index({ 'externalRef.channel': 1, 'externalRef.code': 1 }, { unique: true, sparse: true });
 // Sparse: only orders with a return request carry the field (admin "Trả hàng" list).
 OrderSchema.index({ 'returnRequest.status': 1, 'returnRequest.requestedAt': -1 }, { sparse: true });
+// Sparse: only orders with an e-invoice request carry the field (admin "Yêu cầu HĐĐT" filter).
+OrderSchema.index({ 'einvoiceRequest.status': 1 }, { sparse: true });
 // Sparse: only orders with a not-yet-dispatched notification carry the field.
 OrderSchema.index({ pendingNotificationEvents: 1 }, { sparse: true });
 // Internal worker state — keep it out of checkout/admin API responses.

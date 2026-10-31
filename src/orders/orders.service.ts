@@ -12,10 +12,22 @@ import {
   OrderStatus,
   USER_CANCELLABLE_STATUSES,
   USER_CANCEL_REQUESTABLE_STATUSES,
+  EInvoiceBuyerType,
+  EInvoiceRequestStatus,
+  OrderEInvoiceRequest,
 } from './schemas/order.schema';
 import { OrderVersion, OrderVersionDocument } from './schemas/order-version.schema';
 import { NET_ORDER_TOTAL_EXPR } from './order-return-aggregation';
-import { CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto } from './dto/order.dto';
+import {
+  CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto, EInvoiceRequestDto,
+} from './dto/order.dto';
+import {
+  computeOrderVat,
+  EINVOICE_PENDING_BLOCKED_STATUSES,
+  EINVOICE_REQUESTABLE_STATUSES,
+  EINVOICE_VAT_RATE,
+  OrderVatInput,
+} from './einvoice-request.util';
 import { ProductsService } from '../products/products.service';
 import { CartService } from '../cart/cart.service';
 import { AuditService } from '../audit/audit.service';
@@ -142,6 +154,30 @@ export class OrdersService {
     };
   }
 
+  /** New PENDING e-invoice request + the VAT it adds to the order (see einvoice-request.util). */
+  private buildEInvoiceRequest(
+    order: OrderVatInput,
+    dto: EInvoiceRequestDto,
+    requestedByName?: string,
+  ): OrderEInvoiceRequest {
+    const { vatAmount } = computeOrderVat(order);
+    const isCompany = dto.buyerType === EInvoiceBuyerType.COMPANY;
+    return {
+      status: EInvoiceRequestStatus.PENDING,
+      buyerType: dto.buyerType,
+      buyerName: dto.buyerName,
+      ...(isCompany && dto.companyName ? { companyName: dto.companyName } : {}),
+      ...(dto.taxCode ? { taxCode: dto.taxCode } : {}),
+      address: dto.address,
+      email: dto.email.toLowerCase(),
+      ...(dto.phone ? { phone: dto.phone } : {}),
+      vatRate: EINVOICE_VAT_RATE,
+      vatAmount,
+      requestedAt: new Date(),
+      ...(requestedByName ? { requestedByName } : {}),
+    };
+  }
+
   async create(userId: string, dto: CreateOrderDto): Promise<OrderDocument> {
     // Validate and compute items
     const items = await Promise.all(
@@ -179,7 +215,22 @@ export class OrdersService {
       appliedCoupons = validation.appliedCoupons;
     }
 
-    const total = subtotal - discountAmount;
+    // VAT e-invoice requested at checkout: VAT is added now, the shop accepts/rejects later.
+    const einvoiceRequest = dto.einvoiceRequest
+      ? this.buildEInvoiceRequest(
+          { items, discountAmount },
+          dto.einvoiceRequest,
+          (await this.usersService.findById(userId))?.name || dto.shippingInfo.recipientName,
+        )
+      : undefined;
+    const vatAmount = einvoiceRequest?.vatAmount ?? 0;
+    const total = subtotal - discountAmount + vatAmount;
+
+    // ORDER_CREATED (+ EINVOICE_REQUESTED) owner notification intent, persisted atomically with the order.
+    const outboxEvents = [
+      ...(this.orderNotifications.orderCreatedOutboxFields().pendingNotificationEvents ?? []),
+      ...(einvoiceRequest ? this.orderNotifications.einvoiceRequestedOutboxEvents() : []),
+    ];
 
     const order = await this.orderModel.create({
       userId: new Types.ObjectId(userId),
@@ -188,12 +239,13 @@ export class OrdersService {
       subtotal,
       discountAmount,
       appliedCoupons,
+      vatAmount,
       total,
       status: OrderStatus.PENDING,
       currentVersion: 1,
       ...(dto.customerNote ? { customerNote: dto.customerNote } : {}),
-      // ORDER_CREATED owner notification intent, persisted atomically with the order.
-      ...this.orderNotifications.orderCreatedOutboxFields(),
+      ...(einvoiceRequest ? { einvoiceRequest } : {}),
+      ...(outboxEvents.length ? { pendingNotificationEvents: outboxEvents } : {}),
     });
 
     // Mark coupons as used
@@ -601,6 +653,152 @@ export class OrdersService {
     return updated;
   }
 
+  /** Customer asks for a VAT e-invoice on an order that wasn't placed with one (one request per
+   * order, only before the parcel ships). The VAT is added to the total and the owner's Zalo Bot
+   * notification is queued in the same atomic update. */
+  async requestEInvoiceByUser(orderId: string, userId: string, dto: EInvoiceRequestDto): Promise<OrderDocument> {
+    if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
+    const before = await this.findByIdForUser(orderId, userId);
+    if (before.externalRef) {
+      throw new BadRequestException('Đơn hàng đặt qua sàn — vui lòng yêu cầu hoá đơn trên sàn thương mại điện tử');
+    }
+    const user = await this.usersService.findById(userId);
+    const request = this.buildEInvoiceRequest(before, dto, user?.name || before.shippingInfo?.recipientName);
+
+    const outboxEvents = this.orderNotifications.einvoiceRequestedOutboxEvents();
+    const updated = await this.orderModel
+      .findOneAndUpdate(
+        {
+          _id: before._id,
+          userId: before.userId,
+          status: { $in: EINVOICE_REQUESTABLE_STATUSES },
+          einvoiceRequest: { $exists: false },
+          externalRef: { $exists: false },
+          // The VAT was computed from this snapshot — refuse if the order changed meanwhile.
+          total: before.total,
+        },
+        {
+          $set: { einvoiceRequest: request, vatAmount: request.vatAmount },
+          $inc: { total: request.vatAmount, currentVersion: 1 },
+          ...(outboxEvents.length ? { $addToSet: { pendingNotificationEvents: { $each: outboxEvents } } } : {}),
+        },
+        { new: true },
+      )
+      .exec();
+    if (!updated) {
+      const current = await this.findByIdForUser(orderId, userId);
+      if (current.einvoiceRequest) throw new BadRequestException('Bạn đã gửi yêu cầu xuất hoá đơn cho đơn hàng này');
+      if (!EINVOICE_REQUESTABLE_STATUSES.includes(current.status)) {
+        throw new BadRequestException('Chỉ có thể yêu cầu xuất hoá đơn trước khi đơn hàng được giao cho đơn vị vận chuyển');
+      }
+      throw new BadRequestException('Đơn hàng vừa được cập nhật, vui lòng thử lại');
+    }
+
+    await this.saveVersion(updated, userId, 'user', 'Khách hàng yêu cầu xuất hoá đơn điện tử');
+    await this.auditService.log({
+      actorId: userId,
+      actorType: 'user',
+      action: 'USER_REQUEST_EINVOICE',
+      module: 'orders',
+      targetId: orderId,
+      beforeData: { total: before.total },
+      afterData: { total: updated.total, vatAmount: updated.vatAmount, buyerType: request.buyerType },
+    });
+
+    // Non-blocking, same as checkout: a Zalo failure can't affect the request.
+    this.orderNotifications.kick();
+    return updated;
+  }
+
+  /** Shop accepts the customer's e-invoice request — the VAT stays in the total and the invoice
+   * is issued (and emailed) once the order is paid. */
+  async approveEInvoiceRequest(orderId: string, staffId: string): Promise<OrderDocument> {
+    if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
+    const updated = await this.orderModel
+      .findOneAndUpdate(
+        {
+          _id: new Types.ObjectId(orderId),
+          'einvoiceRequest.status': EInvoiceRequestStatus.PENDING,
+          status: { $ne: OrderStatus.CANCELLED },
+        },
+        {
+          $set: {
+            'einvoiceRequest.status': EInvoiceRequestStatus.APPROVED,
+            'einvoiceRequest.decidedAt': new Date(),
+            'einvoiceRequest.decidedBy': staffId,
+          },
+          $inc: { currentVersion: 1 },
+        },
+        { new: true },
+      )
+      .exec();
+    if (!updated) return this.explainEInvoiceDecisionMiss(orderId);
+
+    await this.saveVersion(updated, staffId, 'staff', 'Chấp nhận yêu cầu xuất hoá đơn điện tử');
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'APPROVE_EINVOICE_REQUEST',
+      module: 'orders',
+      targetId: orderId,
+      afterData: { vatAmount: updated.vatAmount, total: updated.total },
+    });
+    return updated;
+  }
+
+  /** Shop declines the request — the VAT it added is taken back out of the total. */
+  async rejectEInvoiceRequest(orderId: string, staffId: string, reason: string): Promise<OrderDocument> {
+    if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
+    const before = await this.orderModel.findById(orderId).exec();
+    if (!before) throw new NotFoundException('Order not found');
+    const vatAmount = before.einvoiceRequest?.vatAmount ?? 0;
+
+    const updated = await this.orderModel
+      .findOneAndUpdate(
+        {
+          _id: before._id,
+          'einvoiceRequest.status': EInvoiceRequestStatus.PENDING,
+          'einvoiceRequest.vatAmount': vatAmount,
+        },
+        {
+          $set: {
+            'einvoiceRequest.status': EInvoiceRequestStatus.REJECTED,
+            'einvoiceRequest.decidedAt': new Date(),
+            'einvoiceRequest.decidedBy': staffId,
+            'einvoiceRequest.rejectReason': reason,
+            vatAmount: 0,
+          },
+          $inc: { total: -vatAmount, currentVersion: 1 },
+        },
+        { new: true },
+      )
+      .exec();
+    if (!updated) return this.explainEInvoiceDecisionMiss(orderId);
+
+    await this.saveVersion(updated, staffId, 'staff', `Từ chối yêu cầu xuất hoá đơn điện tử: ${reason}`);
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'REJECT_EINVOICE_REQUEST',
+      module: 'orders',
+      targetId: orderId,
+      beforeData: { total: before.total, vatAmount },
+      afterData: { total: updated.total, vatAmount: 0, reason },
+    });
+    return updated;
+  }
+
+  private async explainEInvoiceDecisionMiss(orderId: string): Promise<never> {
+    const order = await this.orderModel.findById(orderId).exec();
+    if (!order) throw new NotFoundException('Order not found');
+    if (!order.einvoiceRequest) throw new BadRequestException('Đơn hàng không có yêu cầu xuất hoá đơn');
+    if (order.einvoiceRequest.status !== EInvoiceRequestStatus.PENDING) {
+      throw new BadRequestException('Yêu cầu xuất hoá đơn đã được xử lý');
+    }
+    if (order.status === OrderStatus.CANCELLED) throw new BadRequestException('Đơn hàng đã bị hủy');
+    throw new BadRequestException('Đơn hàng vừa được cập nhật, vui lòng thử lại');
+  }
+
   async getUserStats(userId: string): Promise<{ totalOrders: number; deliveredOrders: number; totalSpent: number }> {
     const uid = new Types.ObjectId(userId);
     const [allResult, deliveredResult] = await Promise.all([
@@ -623,8 +821,9 @@ export class OrdersService {
     status?: OrderStatus;
     userId?: string;
     search?: string;
+    einvoiceRequestStatus?: EInvoiceRequestStatus;
   }) {
-    const { page, limit, status, userId, search } = query;
+    const { page, limit, status, userId, search, einvoiceRequestStatus } = query;
 
     if (search) {
       // Escape special regex chars to prevent ReDoS
@@ -633,6 +832,7 @@ export class OrdersService {
       const baseMatch: Record<string, unknown> = {};
       if (status) baseMatch.status = status;
       if (userId) baseMatch.userId = new Types.ObjectId(userId);
+      if (einvoiceRequestStatus) baseMatch['einvoiceRequest.status'] = einvoiceRequestStatus;
 
       const pipeline: PipelineStage[] = [
         ...(Object.keys(baseMatch).length ? [{ $match: baseMatch }] : []),
@@ -667,6 +867,7 @@ export class OrdersService {
     const filter: Record<string, unknown> = {};
     if (status) filter.status = status;
     if (userId) filter.userId = new Types.ObjectId(userId);
+    if (einvoiceRequestStatus) filter['einvoiceRequest.status'] = einvoiceRequestStatus;
 
     const [data, total] = await Promise.all([
       this.orderModel
@@ -695,6 +896,17 @@ export class OrdersService {
     // CS can only update status (not cancel)
     if (staffRole === StaffRole.CS && dto.status === OrderStatus.CANCELLED) {
       throw new ForbiddenException('CS cannot cancel orders');
+    }
+
+    // The amount to collect depends on the VAT — decide the e-invoice request before shipping.
+    if (
+      order.einvoiceRequest?.status === EInvoiceRequestStatus.PENDING &&
+      EINVOICE_PENDING_BLOCKED_STATUSES.includes(dto.status) &&
+      order.status !== dto.status
+    ) {
+      throw new BadRequestException(
+        'Đơn có yêu cầu xuất hoá đơn điện tử chưa xử lý — vui lòng chấp nhận hoặc từ chối trước khi giao hàng',
+      );
     }
 
     order.status = dto.status;

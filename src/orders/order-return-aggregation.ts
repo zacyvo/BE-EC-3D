@@ -6,10 +6,14 @@ const isReturnSettled = {
   $in: [{ $ifNull: ['$returnRequest.status', null] }, RETURN_SETTLED_STATUSES],
 };
 
-/** `$total` minus the goods refund of a settled return — use instead of `'$total'` wherever
- * revenue is summed from orders. */
+/** `$total` minus the VAT collected for an e-invoice (owed to the tax office, not revenue) and
+ * minus the goods refund of a settled return — use instead of `'$total'` wherever revenue is
+ * summed from orders. */
 export const NET_ORDER_TOTAL_EXPR = {
-  $subtract: ['$total', { $cond: [isReturnSettled, { $ifNull: ['$returnRequest.refundAmount', 0] }, 0] }],
+  $subtract: [
+    { $subtract: ['$total', { $ifNull: ['$vatAmount', 0] }] },
+    { $cond: [isReturnSettled, { $ifNull: ['$returnRequest.refundAmount', 0] }, 0] },
+  ],
 };
 
 /** Drop-in replacement for `{ $unwind: '$items' }` that also sets `_returnedQty` — how many

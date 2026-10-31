@@ -12,6 +12,9 @@ export enum NotificationEventType {
   /** Customer asked to return/refund a delivered order — the owner must review it in the
    * admin dashboard ("Trả hàng / Hoàn tiền"). */
   ORDER_RETURN_REQUESTED = 'ORDER_RETURN_REQUESTED',
+  /** Customer asked for a VAT e-invoice (at checkout or later) — the owner must accept or
+   * reject it in the admin dashboard before the order ships. */
+  EINVOICE_REQUESTED = 'EINVOICE_REQUESTED',
 }
 
 /** Owner Bot events that travel through the Order outbox (`pendingNotificationEvents`). */
@@ -20,6 +23,7 @@ export const ZALO_BOT_OUTBOX_EVENTS: NotificationEventType[] = [
   NotificationEventType.ORDER_CANCEL_REQUESTED,
   NotificationEventType.ORDER_CANCELLED_BY_CUSTOMER,
   NotificationEventType.ORDER_RETURN_REQUESTED,
+  NotificationEventType.EINVOICE_REQUESTED,
 ];
 
 /**

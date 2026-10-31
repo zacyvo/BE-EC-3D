@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -20,7 +21,14 @@ import {
   EasyInvoiceStatus,
 } from './schemas/einvoice.schema';
 import { Contract, ContractDocument } from '../contracts/schemas/contract.schema';
-import { Order, OrderDocument } from '../orders/schemas/order.schema';
+import {
+  EInvoiceBuyerType,
+  EInvoiceRequestStatus,
+  Order,
+  OrderDocument,
+} from '../orders/schemas/order.schema';
+import { computeOrderVat } from '../orders/einvoice-request.util';
+import { MailService } from '../mail/mail.service';
 import { StaffService } from '../staff/staff.service';
 import { ContractsService } from '../contracts/contracts.service';
 import { AuditService } from '../audit/audit.service';
@@ -56,6 +64,8 @@ const FORMAT_TO_OPTION: Record<DownloadFormat, EasyInvoiceDownloadOption> = {
 
 @Injectable()
 export class EInvoiceService {
+  private readonly logger = new Logger(EInvoiceService.name);
+
   constructor(
     @InjectModel(EInvoice.name) private readonly model: Model<EInvoiceDocument>,
     @InjectModel(Contract.name) private readonly contractModel: Model<ContractDocument>,
@@ -66,6 +76,7 @@ export class EInvoiceService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly contractsService: ContractsService,
+    private readonly mailService: MailService,
   ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -404,6 +415,7 @@ export class EInvoiceService {
       afterData: { ikey, invoiceKind: kind, invoiceNo: invoice.invoiceNo, totalAmount, contractId: dto.contractId, orderId: dto.orderId },
     });
 
+    await this.onInvoiceIssued(invoice);
     return this.toAdminResponse(invoice);
   }
 
@@ -553,6 +565,7 @@ export class EInvoiceService {
       afterData: { localStatus: EInvoiceLocalStatus.ISSUED, invoiceNo: invoice.invoiceNo },
     });
 
+    await this.onInvoiceIssued(invoice);
     return this.toAdminResponse(invoice);
   }
 
@@ -740,6 +753,7 @@ export class EInvoiceService {
 
     const result = await this.easyInvoiceClient.getInvoicesByIkeys([invoice.ikey]);
     const found = result.Invoices?.[0];
+    const wasDraft = invoice.localStatus === EInvoiceLocalStatus.DRAFT;
     if (found && invoice.localStatus === EInvoiceLocalStatus.DRAFT) {
       // Bản nháp có thể đã được ký trực tiếp trên cổng EasyInvoice -> chuyển sang chính thức.
       if (this.isIssuedOnEasyInvoice(found)) this.applyIssued(invoice, found);
@@ -762,6 +776,7 @@ export class EInvoiceService {
       targetId: id,
     });
 
+    if (wasDraft) await this.onInvoiceIssued(invoice);
     return this.toAdminResponse(invoice);
   }
 
@@ -787,6 +802,143 @@ export class EInvoiceService {
     const prefix = invoice.localStatus === EInvoiceLocalStatus.DRAFT ? 'ban-nhap-hoa-don' : 'hoa-don';
     const filename = `${prefix}-${invoice.invoiceNo || invoice.ikey}.${ext}`;
     return { buffer, contentType, filename };
+  }
+
+  // ─── Yêu cầu xuất hoá đơn của khách (Order.einvoiceRequest) ──────────────────
+
+  /** Dữ liệu điền sẵn form "Tạo hoá đơn" từ yêu cầu xuất hoá đơn của khách — cùng cách chia dòng
+   * và làm tròn VAT như lúc cộng VAT vào đơn, nên tổng hoá đơn khớp số tiền khách thanh toán. */
+  async prefillFromOrderRequest(orderId: string) {
+    if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Không tìm thấy đơn hàng');
+    const order = await this.orderModel.findById(orderId).exec();
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+    const request = order.einvoiceRequest;
+    if (!request) throw new BadRequestException('Đơn hàng không có yêu cầu xuất hoá đơn');
+
+    const { lines, totalBeforeTax, vatAmount } = computeOrderVat(order, request.vatRate);
+    return {
+      orderId: order._id.toString(),
+      requestStatus: request.status,
+      buyerName: request.buyerName,
+      customerName:
+        request.buyerType === EInvoiceBuyerType.COMPANY ? request.companyName || request.buyerName : request.buyerName,
+      customerTaxCode: request.taxCode ?? '',
+      customerAddress: request.address,
+      customerPhone: request.phone || order.shippingInfo?.phone || '',
+      customerEmail: request.email,
+      paymentMethod: 'Tiền mặt/Chuyển khoản',
+      items: lines.map((l) => ({
+        name: l.name,
+        unit: l.unit,
+        quantity: l.quantity,
+        unitPrice: l.unitPrice,
+        discountAmount: l.discountAmount,
+        vatRate: request.vatRate,
+        feature: 1,
+      })),
+      totalBeforeTax,
+      vatAmount,
+      totalAmount: totalBeforeTax + vatAmount,
+      orderTotal: order.total,
+      paidAmount: order.paidAmount ?? 0,
+    };
+  }
+
+  /** Hoá đơn CQT vừa phát hành cho đơn có yêu cầu xuất hoá đơn ĐÃ DUYỆT -> chuyển yêu cầu sang
+   * ISSUED và gửi hoá đơn tới email khách. Không bao giờ ném lỗi: hoá đơn đã phát hành rồi. */
+  private async onInvoiceIssued(invoice: EInvoiceDocument): Promise<void> {
+    if (
+      invoice.invoiceKind !== EInvoiceKind.TAX_AUTHORITY ||
+      invoice.localStatus !== EInvoiceLocalStatus.ISSUED ||
+      !invoice.orderId
+    ) {
+      return;
+    }
+    try {
+      const order = await this.orderModel
+        .findOneAndUpdate(
+          { _id: invoice.orderId, 'einvoiceRequest.status': EInvoiceRequestStatus.APPROVED },
+          {
+            $set: {
+              'einvoiceRequest.status': EInvoiceRequestStatus.ISSUED,
+              'einvoiceRequest.einvoiceId': invoice._id,
+              'einvoiceRequest.issuedAt': invoice.issueDate ?? new Date(),
+              'einvoiceRequest.invoiceUrl': this.publicUrl(invoice.accessToken),
+            },
+          },
+          { new: true },
+        )
+        .exec();
+      if (order) await this.emailIssuedInvoice(order, invoice._id);
+    } catch (err) {
+      this.logger.error(`Liên kết hoá đơn ${invoice._id} với yêu cầu của khách thất bại: ${(err as Error).message}`);
+    }
+  }
+
+  /** Gửi hoá đơn cho khách và ghi kết quả vào yêu cầu (emailSentAt / emailError). */
+  private async emailIssuedInvoice(order: OrderDocument, invoiceId: Types.ObjectId): Promise<boolean> {
+    const request = order.einvoiceRequest!;
+    const invoice = await this.model.findById(invoiceId).select('+securityCode').exec();
+    if (!invoice) throw new NotFoundException('Hoá đơn liên kết không còn tồn tại');
+
+    let pdf: { filename: string; content: Buffer } | undefined;
+    try {
+      const file = await this.downloadFile(invoice, 'pdf');
+      pdf = { filename: file.filename, content: file.buffer };
+    } catch (err) {
+      // Vẫn gửi email (link + khoá mở hoá đơn), chỉ thiếu file đính kèm.
+      this.logger.warn(`Không tải được PDF hoá đơn ${invoice._id}: ${(err as Error).message}`);
+    }
+
+    try {
+      await this.mailService.sendEInvoiceIssued(request.email, {
+        customerName: invoice.customerName,
+        orderCode: `#${order._id.toString().slice(-8).toUpperCase()}`,
+        invoiceNo: invoice.invoiceNo,
+        totalAmount: invoice.totalAmount,
+        viewUrl: this.publicUrl(invoice.accessToken),
+        securityCode: invoice.securityCode,
+        sellerName: this.easyInvoiceClient.sellerName,
+        pdf,
+      });
+      await this.orderModel
+        .updateOne(
+          { _id: order._id },
+          { $set: { 'einvoiceRequest.emailSentAt': new Date() }, $unset: { 'einvoiceRequest.emailError': '' } },
+        )
+        .exec();
+      return true;
+    } catch (err) {
+      const message = (err as Error).message || 'Gửi email thất bại';
+      this.logger.error(`Gửi email hoá đơn ${invoice._id} tới khách thất bại: ${message}`);
+      await this.orderModel
+        .updateOne({ _id: order._id }, { $set: { 'einvoiceRequest.emailError': message.slice(0, 500) } })
+        .exec();
+      return false;
+    }
+  }
+
+  /** Admin gửi lại email hoá đơn cho khách (VD: lần đầu lỗi SMTP, khách báo chưa nhận được). */
+  async resendRequestEmail(orderId: string, staffId: string) {
+    if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Không tìm thấy đơn hàng');
+    const order = await this.orderModel.findById(orderId).exec();
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+    const request = order.einvoiceRequest;
+    if (request?.status !== EInvoiceRequestStatus.ISSUED || !request.einvoiceId) {
+      throw new BadRequestException('Đơn hàng chưa có hoá đơn điện tử đã phát hành theo yêu cầu của khách');
+    }
+
+    const sent = await this.emailIssuedInvoice(order, request.einvoiceId);
+    await this.auditService.log({
+      actorId: staffId,
+      actorType: 'staff',
+      action: 'EINVOICE_REQUEST_RESEND_EMAIL',
+      module: 'einvoice',
+      targetId: request.einvoiceId.toString(),
+      afterData: { orderId, sent },
+    });
+    if (!sent) throw new BadRequestException('Gửi email thất bại — kiểm tra cấu hình email (MAIL_USER/MAIL_PASS)');
+    return { sent };
   }
 
   // ─── Public (khách truy cập qua link + khoá mở hoá đơn) ─────────────────────

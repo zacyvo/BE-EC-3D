@@ -69,6 +69,20 @@ export class AdminEInvoiceController {
     return this.service.findAll({ page, limit, localStatus, search, orderId, contractId, invoiceKind });
   }
 
+  /** Điền sẵn form tạo hoá đơn từ yêu cầu xuất hoá đơn của khách trên đơn hàng */
+  @Get('order-requests/:orderId/prefill')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  prefillFromOrderRequest(@Param('orderId') orderId: string) {
+    return this.service.prefillFromOrderRequest(orderId);
+  }
+
+  /** Gửi lại email hoá đơn đã phát hành cho khách đã yêu cầu */
+  @Post('order-requests/:orderId/resend-email')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  resendRequestEmail(@Param('orderId') orderId: string, @CurrentUser() staff: { sub: string }) {
+    return this.service.resendRequestEmail(orderId, staff.sub);
+  }
+
   @Get(':id')
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
   findOne(@Param('id') id: string) {

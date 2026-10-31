@@ -79,6 +79,7 @@ beforeAll(async () => {
     {} as never,
     config,
     contractsService as unknown as ContractsService,
+    {} as never,
   );
 });
 

@@ -5,8 +5,9 @@ import {
 import { OrdersService } from './orders.service';
 import {
   CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto, UserCancelOrderDto,
+  EInvoiceRequestDto, RejectEInvoiceRequestDto,
 } from './dto/order.dto';
-import { OrderStatus } from './schemas/order.schema';
+import { EInvoiceRequestStatus, OrderStatus } from './schemas/order.schema';
 import { JwtAuthGuard, JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
@@ -50,6 +51,12 @@ export class OrdersController {
   requestCancel(@Param('id') id: string, @CurrentUser() user: { sub: string }, @Body() dto: UserCancelOrderDto) {
     return this.ordersService.requestCancelByUser(id, user.sub, dto.reason);
   }
+
+  /** Customer asks for a VAT e-invoice (+VAT on the total) — notifies the owner to accept/reject. */
+  @Post(':id/einvoice-request')
+  requestEInvoice(@Param('id') id: string, @CurrentUser() user: { sub: string }, @Body() dto: EInvoiceRequestDto) {
+    return this.ordersService.requestEInvoiceByUser(id, user.sub, dto);
+  }
 }
 
 @Controller('admin/orders')
@@ -80,8 +87,26 @@ export class AdminOrdersController {
     @Query('status') status?: OrderStatus,
     @Query('userId') userId?: string,
     @Query('search') search?: string,
+    @Query('einvoiceRequestStatus', new ParseEnumPipe(EInvoiceRequestStatus, { optional: true }))
+    einvoiceRequestStatus?: EInvoiceRequestStatus,
   ) {
-    return this.ordersService.findAllAdmin({ page, limit, status, userId, search });
+    return this.ordersService.findAllAdmin({ page, limit, status, userId, search, einvoiceRequestStatus });
+  }
+
+  @Patch(':id/einvoice-request/approve')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  approveEInvoiceRequest(@Param('id') id: string, @CurrentUser() staff: { sub: string }) {
+    return this.ordersService.approveEInvoiceRequest(id, staff.sub);
+  }
+
+  @Patch(':id/einvoice-request/reject')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  rejectEInvoiceRequest(
+    @Param('id') id: string,
+    @Body() dto: RejectEInvoiceRequestDto,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    return this.ordersService.rejectEInvoiceRequest(id, staff.sub, dto.reason);
   }
 
   @Patch(':id/status')
