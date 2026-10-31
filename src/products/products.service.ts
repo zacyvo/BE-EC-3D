@@ -10,6 +10,7 @@ import { CreateProductDto, UpdateProductDto } from './dto/product.dto';
 import { AuditService } from '../audit/audit.service';
 import { Category, CategoryDocument } from '../categories/schemas/category.schema';
 import { Order, SOLD_ORDER_STATUSES } from '../orders/schemas/order.schema';
+import { NET_ITEM_QTY_EXPR, UNWIND_ITEMS_WITH_RETURNS } from '../orders/order-return-aggregation';
 
 const CACHE_KEY_LIST = 'products:list';
 const CACHE_KEY_DETAIL = (slug: string) => `products:detail:${slug}`;
@@ -72,9 +73,9 @@ export class ProductsService {
     const ids = products.map((p) => p._id);
     const sold = await this.orderModel.aggregate([
       { $match: { status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
-      { $unwind: '$items' },
+      ...UNWIND_ITEMS_WITH_RETURNS,
       { $match: { 'items.productId': { $in: ids } } },
-      { $group: { _id: '$items.productId', qty: { $sum: '$items.quantity' } } },
+      { $group: { _id: '$items.productId', qty: { $sum: NET_ITEM_QTY_EXPR } } },
     ]);
     const soldMap = new Map<string, number>(sold.map((r: any) => [String(r._id), r.qty]));
     products.forEach((p) => {

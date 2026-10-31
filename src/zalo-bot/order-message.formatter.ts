@@ -26,6 +26,14 @@ export interface OrderMessageInput {
   cancelRequest?: { requestedAt?: Date | string; reason?: string; requestedByName?: string };
   cancelReason?: string;
   customerCancel?: { cancelledAt?: Date | string; cancelledByName?: string };
+  returnRequest?: {
+    requestedAt?: Date | string;
+    requestedByName?: string;
+    reason?: string;
+    description?: string;
+    estimatedRefund?: number;
+    items?: Array<{ productName?: string; quantity?: number; color?: string; size?: string }>;
+  };
 }
 
 export interface OrderMessageOptions {
@@ -222,6 +230,52 @@ export function formatOrderCancelledByCustomerMessage(order: OrderMessageInput, 
   lines.push(`Tổng tiền: ${formatVnd(order.total)}`);
   if (order.cancelReason?.trim()) lines.push(`Lý do: ${truncate(order.cancelReason, MAX_NOTE_LENGTH)}`);
   if (adminLink) lines.push('', 'Xem đơn hàng:', adminLink);
+
+  const message = lines.join('\n');
+  return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;
+}
+
+/** Same labels as the storefront / admin "Trả hàng" pages. */
+const RETURN_REASON_LABELS: Record<string, string> = {
+  DAMAGED: 'Hàng bị vỡ/hư hỏng khi vận chuyển',
+  DEFECTIVE: 'Sản phẩm lỗi (không sáng, chập chờn...)',
+  WRONG_ITEM: 'Giao sai sản phẩm/màu/size',
+  MISSING_PARTS: 'Thiếu phụ kiện/sản phẩm',
+  NOT_AS_DESCRIBED: 'Khác với mô tả',
+  CHANGED_MIND: 'Đổi ý (không còn nhu cầu)',
+};
+
+export function buildAdminReturnUrl(adminUrl: string | undefined, orderId: string): string | null {
+  if (!adminUrl || !orderId) return null;
+  return `${adminUrl.replace(/\/+$/, '')}/returns?search=${encodeURIComponent(orderId)}`;
+}
+
+/**
+ * Plain-text ORDER_RETURN_REQUESTED message: "<khách> yêu cầu trả hàng/hoàn tiền đơn <mã>",
+ * the returned lines, reason and the admin link to review it.
+ */
+export function formatOrderReturnRequestedMessage(order: OrderMessageInput, options: OrderMessageOptions = {}): string {
+  const maxLength = options.maxLength ?? ZALO_MESSAGE_MAX_LENGTH;
+  const orderId = order._id ? order._id.toString() : '';
+  const code = orderId ? orderDisplayCode(orderId) : MISSING;
+  const request = order.returnRequest ?? {};
+  const name = request.requestedByName?.trim() || order.shippingInfo?.recipientName?.trim() || 'Khách hàng';
+  const adminLink = buildAdminReturnUrl(options.adminUrl, orderId);
+
+  const lines: string[] = ['↩️ LUXE GLOW — YÊU CẦU TRẢ HÀNG/HOÀN TIỀN', ''];
+  lines.push(`${truncate(name, 80)} yêu cầu trả hàng đơn ${code}`);
+  const requestedAt = formatDateTime(request.requestedAt);
+  if (requestedAt) lines.push(`Thời gian yêu cầu: ${requestedAt}`);
+  const reason = request.reason ? RETURN_REASON_LABELS[request.reason] ?? request.reason : MISSING;
+  lines.push(`Lý do: ${reason}`);
+  if (request.description?.trim()) lines.push(`Mô tả: ${truncate(request.description, MAX_NOTE_LENGTH)}`);
+  lines.push('', 'Sản phẩm trả:');
+  const items = request.items ?? [];
+  items.slice(0, 10).forEach((i) => lines.push(itemLine({ ...i, subtotal: undefined })));
+  if (items.length > 10) lines.push(`… và ${items.length - 10} sản phẩm khác`);
+  if (!items.length) lines.push(MISSING);
+  lines.push('', `Hoàn tiền dự kiến: ${formatVnd(request.estimatedRefund)}`);
+  if (adminLink) lines.push('', 'Xem yêu cầu:', adminLink);
 
   const message = lines.join('\n');
   return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;

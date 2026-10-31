@@ -5,6 +5,7 @@ import { JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
 import { Order, SOLD_ORDER_STATUSES } from '../orders/schemas/order.schema';
+import { NET_ITEM_QTY_EXPR, NET_ORDER_TOTAL_EXPR, UNWIND_ITEMS_WITH_RETURNS } from '../orders/order-return-aggregation';
 import { Product } from '../products/schemas/product.schema';
 import { User } from '../users/schemas/user.schema';
 import { ExternalRevenue, ExternalSource } from '../external-revenue/schemas/external-revenue.schema';
@@ -69,11 +70,11 @@ export class AnalyticsController {
       // when real orders are placed, so it no longer reflects real sales).
       this.orderModel.aggregate([
         { $match: { status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
-        { $unwind: '$items' },
+        ...UNWIND_ITEMS_WITH_RETURNS,
         {
           $group: {
             _id: '$items.productId',
-            orderCount: { $sum: '$items.quantity' },
+            orderCount: { $sum: NET_ITEM_QTY_EXPR },
           },
         },
         {
@@ -104,7 +105,7 @@ export class AnalyticsController {
       // All-time revenue (DELIVERED + CONFIRMED)
       this.orderModel.aggregate([
         { $match: { status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
-        { $group: { _id: null, total: { $sum: '$total' } } },
+        { $group: { _id: null, total: { $sum: NET_ORDER_TOTAL_EXPR } } },
       ]),
 
       // Monthly orders for current year (all statuses)
@@ -117,7 +118,7 @@ export class AnalyticsController {
       // Monthly revenue for current year (completed orders)
       this.orderModel.aggregate([
         { $match: { createdAt: { $gte: startOfYear }, status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
-        { $group: { _id: { $month: '$createdAt' }, revenue: { $sum: '$total' } } },
+        { $group: { _id: { $month: '$createdAt' }, revenue: { $sum: NET_ORDER_TOTAL_EXPR } } },
         { $sort: { '_id': 1 } },
       ]),
 
@@ -137,7 +138,7 @@ export class AnalyticsController {
       // Current month revenue
       this.orderModel.aggregate([
         { $match: { createdAt: { $gte: startOfMonth, $lt: startOfNextMonth }, status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
-        { $group: { _id: null, total: { $sum: '$total' } } },
+        { $group: { _id: null, total: { $sum: NET_ORDER_TOTAL_EXPR } } },
       ]),
 
       // Current month new users
@@ -201,8 +202,8 @@ export class AnalyticsController {
       // stale field that is never incremented by the real order flow).
       this.orderModel.aggregate([
         { $match: { status: { $in: SOLD_ORDER_STATUSES }, isDeleted: { $ne: true } } },
-        { $unwind: '$items' },
-        { $group: { _id: null, total: { $sum: '$items.quantity' } } },
+        ...UNWIND_ITEMS_WITH_RETURNS,
+        { $group: { _id: null, total: { $sum: NET_ITEM_QTY_EXPR } } },
       ]),
       this.orderModel.countDocuments(),
     ]);
@@ -224,7 +225,8 @@ export class AnalyticsController {
 
     // Shared stages: unwind items, lookup product for costPrice
     const lookupCost = [
-      { $unwind: '$items' },
+      // Units returned through a settled return don't count as sold.
+      ...UNWIND_ITEMS_WITH_RETURNS,
       {
         $lookup: {
           from: 'products',
@@ -237,10 +239,10 @@ export class AnalyticsController {
       {
         $addFields: {
           _cost: {
-            $multiply: ['$items.quantity', { $ifNull: ['$_p.costPrice', 0] }],
+            $multiply: [NET_ITEM_QTY_EXPR, { $ifNull: ['$_p.costPrice', 0] }],
           },
-          _revenue: '$items.subtotal',
-          _qty: '$items.quantity',
+          _revenue: { $subtract: ['$items.subtotal', { $multiply: ['$items.unitPrice', '$_returnedQty'] }] },
+          _qty: NET_ITEM_QTY_EXPR,
         },
       },
       {

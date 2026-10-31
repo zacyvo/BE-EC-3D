@@ -9,6 +9,7 @@ import { ProductsModule } from './products/products.module';
 import { CategoriesModule } from './categories/categories.module';
 import { CartModule } from './cart/cart.module';
 import { OrdersModule } from './orders/orders.module';
+import { OrderReturnsModule } from './order-returns/order-returns.module';
 import { AuditModule } from './audit/audit.module';
 import { UploadModule } from './upload/upload.module';
 import { AnalyticsModule } from './analytics/analytics.module';
@@ -75,6 +76,7 @@ import { HealthController } from './health.controller';
     CategoriesModule,
     CartModule,
     OrdersModule,
+    OrderReturnsModule,
     AuditModule,
     UploadModule,
     AnalyticsModule,

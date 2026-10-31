@@ -28,8 +28,10 @@ export class OrdersController {
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
     @Query('status', new ParseEnumPipe(OrderStatus, { optional: true })) status?: OrderStatus,
+    /** 'true' → only orders with a return/refund request ("Trả hàng/Hoàn tiền" tab). */
+    @Query('hasReturn') hasReturn?: string,
   ) {
-    return this.ordersService.findByUser(user.sub, { page, limit, status });
+    return this.ordersService.findByUser(user.sub, { page, limit, status, hasReturn: hasReturn === 'true' });
   }
 
   @Get(':id')
