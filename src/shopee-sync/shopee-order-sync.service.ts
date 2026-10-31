@@ -43,6 +43,9 @@ import {
 } from './shopee-order-mapping.util';
 
 const CHANNEL = 'SHOPEE';
+/** A RUNNING batch whose job stopped heartbeating (touchBatch) this long ago died with its
+ * process (Render restart/deploy) — nothing else would ever move it out of RUNNING. */
+const STALE_RUNNING_BATCH_MS = 10 * 60 * 1000;
 
 interface ProductForMatching {
   _id: Types.ObjectId;
@@ -94,6 +97,22 @@ export class ShopeeOrderSyncService {
     batch.status = ShopeeOrderSyncBatchStatus.FAILED;
     batch.errorMessage = message.slice(0, 500);
     await batch.save();
+  }
+
+  /** Heartbeat from a background job — keeps its batch from being reaped as stale. */
+  async touchBatch(batchId: Types.ObjectId): Promise<void> {
+    await this.batchModel
+      .updateOne({ _id: batchId, status: ShopeeOrderSyncBatchStatus.RUNNING }, { $set: { updatedAt: new Date() } })
+      .exec();
+  }
+
+  private async failStaleRunningBatches(): Promise<void> {
+    await this.batchModel
+      .updateMany(
+        { status: ShopeeOrderSyncBatchStatus.RUNNING, updatedAt: { $lt: new Date(Date.now() - STALE_RUNNING_BATCH_MS) } },
+        { $set: { status: ShopeeOrderSyncBatchStatus.FAILED, errorMessage: 'Lượt đồng bộ bị gián đoạn (máy chủ khởi động lại giữa chừng) — vui lòng chạy lại' } },
+      )
+      .exec();
   }
 
   /**
@@ -207,6 +226,7 @@ export class ShopeeOrderSyncService {
   }
 
   async listBatches(page: number, limit: number) {
+    await this.failStaleRunningBatches();
     const [data, total] = await Promise.all([
       this.batchModel
         .find()
@@ -221,6 +241,7 @@ export class ShopeeOrderSyncService {
   }
 
   async getBatch(id: string): Promise<ShopeeOrderSyncBatchDocument> {
+    await this.failStaleRunningBatches();
     const batch = await this.batchModel.findById(id).populate('uploadedBy', 'name email').exec();
     if (!batch) {
       throw new ShopeeSyncException(ShopeeSyncErrorCode.ORDER_SYNC_BATCH_NOT_FOUND, 'Không tìm thấy lượt đồng bộ', HttpStatus.NOT_FOUND);

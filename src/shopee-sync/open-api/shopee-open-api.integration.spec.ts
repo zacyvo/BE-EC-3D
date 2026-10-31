@@ -8,7 +8,7 @@ import { MarketplaceVariant, MarketplaceVariantDocument, MarketplaceVariantSchem
 import { MarketplaceProductImage, MarketplaceProductImageDocument, MarketplaceProductImageSchema } from '../schemas/marketplace-product-image.schema';
 import { ShopeeSyncItem, ShopeeSyncItemDocument, ShopeeSyncItemSchema } from '../schemas/shopee-sync-item.schema';
 import { ShopeeSyncSession, ShopeeSyncSessionDocument, ShopeeSyncSessionSchema } from '../schemas/shopee-sync-session.schema';
-import { ShopeeOrderSyncBatch, ShopeeOrderSyncBatchDocument, ShopeeOrderSyncBatchSchema } from '../schemas/shopee-order-sync-batch.schema';
+import { ShopeeOrderSyncBatch, ShopeeOrderSyncBatchDocument, ShopeeOrderSyncBatchSchema, ShopeeOrderSyncSource } from '../schemas/shopee-order-sync-batch.schema';
 import { ShopeeOrderSyncIssue, ShopeeOrderSyncIssueDocument, ShopeeOrderSyncIssueSchema } from '../schemas/shopee-order-sync-issue.schema';
 import { ShopeeOpenApiCredential, ShopeeOpenApiCredentialDocument, ShopeeOpenApiCredentialSchema } from '../schemas/shopee-open-api-credential.schema';
 import { ShopeeOpenApiAuthState, ShopeeOpenApiAuthStateDocument, ShopeeOpenApiAuthStateSchema } from '../schemas/shopee-open-api-auth-state.schema';
@@ -87,7 +87,7 @@ function build() {
   };
   const orderSync = new ShopeeOrderSyncService(models.batch, models.issue, models.product, orders as never, products as never, audit, syncConfig);
   const orderApiSync = new ShopeeOpenApiOrderSyncService(models.batch, models.cred, orderSync, syncConfig, apiConfig, auth, api);
-  return { auth, sync, productSync, orderApiSync, publish, createdOrders, catalogProductId, audit };
+  return { auth, sync, productSync, orderSync, orderApiSync, publish, createdOrders, catalogProductId, audit };
 }
 
 async function waitFor<T>(fn: () => Promise<T | null | undefined | false>, ms = 20_000): Promise<T> {
@@ -121,6 +121,8 @@ beforeAll(async () => {
     state: conn.model(ShopeeOpenApiAuthState.name, ShopeeOpenApiAuthStateSchema) as unknown as Model<ShopeeOpenApiAuthStateDocument>,
   };
   await Promise.all((Object.values(models) as Model<unknown>[]).map((m) => m.createCollection()));
+  // Batch listing populates uploadedBy.
+  conn.model('Staff', new mongoose.Schema({ name: String, email: String }));
 });
 
 afterAll(async () => {
@@ -447,5 +449,18 @@ describe('order sync via Open API', () => {
     const cred = await models.cred.findOne({ key: SHOPEE_CREDENTIAL_KEY }).lean();
     expect(cred!.orderSyncLockUntil).toBeUndefined();
     expect(cred!.lastOrderSyncAt).toBeInstanceOf(Date);
+  });
+
+  it('marks a RUNNING batch whose job died (no heartbeat for 10 min) as FAILED when batches are read', async () => {
+    const svc = build();
+    const old = new Date(Date.now() - 11 * 60_000);
+    const base = { fileName: 'x', uploadedBy: new Types.ObjectId(ADMIN_ID), source: 'OPEN_API', status: 'RUNNING', totalRows: 0, totalOrders: 0, rows: [] };
+    const { insertedId: deadId } = await models.batch.collection.insertOne({ ...base, createdAt: old, updatedAt: old });
+    const alive = await svc.orderSync.createBatch({ fileName: 'y', staffId: ADMIN_ID, source: ShopeeOrderSyncSource.OPEN_API });
+
+    await svc.orderSync.listBatches(1, 20);
+
+    expect(await models.batch.findById(deadId).lean()).toMatchObject({ status: 'FAILED', errorMessage: expect.stringContaining('gián đoạn') });
+    expect(await models.batch.findById(alive._id).lean()).toMatchObject({ status: 'RUNNING' });
   });
 });

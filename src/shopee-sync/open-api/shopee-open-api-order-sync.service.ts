@@ -115,12 +115,12 @@ export class ShopeeOpenApiOrderSyncService implements OnModuleInit, OnModuleDest
   private async run(batch: ShopeeOrderSyncBatchDocument, from: Date, to: Date, staffId: string): Promise<void> {
     let completed = false;
     try {
-      const orderSns = await this.listOrderSns(from, to);
+      const orderSns = await this.listOrderSns(batch, from, to);
       const groups = new Map<string, ShopeeOrderRawRow[]>();
       const preFailed: { orderCode: string; message: string }[] = [];
 
       for (let i = 0; i < orderSns.length; i += ORDER_SN_BATCH_SIZE) {
-        await this.auth.extendOrderSyncLock(LOCK_LEASE_MS);
+        await this.heartbeat(batch);
         const chunk = orderSns.slice(i, i + ORDER_SN_BATCH_SIZE);
         const detail = await this.api.getOrderDetail(chunk);
         const returned = new Set<string>();
@@ -160,13 +160,14 @@ export class ShopeeOpenApiOrderSyncService implements OnModuleInit, OnModuleDest
   }
 
   /** All order_sn updated within [from, to] (except UNPAID), walking 15-day windows (API limit) by cursor. */
-  private async listOrderSns(from: Date, to: Date): Promise<string[]> {
+  private async listOrderSns(batch: ShopeeOrderSyncBatchDocument, from: Date, to: Date): Promise<string[]> {
     const seen = new Set<string>();
     const toS = Math.floor(to.getTime() / 1000);
     for (let start = Math.floor(from.getTime() / 1000); start < toS; start += ORDER_LIST_MAX_RANGE_S) {
       const end = Math.min(start + ORDER_LIST_MAX_RANGE_S, toS);
       let cursor = '';
       for (;;) {
+        await this.heartbeat(batch);
         const page = await this.api.getOrderList({ timeFrom: start, timeTo: end, cursor });
         for (const o of page.order_list ?? []) {
           if (o.order_sn && !(o.order_status && SKIPPED_STATUSES.includes(o.order_status))) seen.add(o.order_sn);
@@ -176,6 +177,12 @@ export class ShopeeOpenApiOrderSyncService implements OnModuleInit, OnModuleDest
       }
     }
     return Array.from(seen);
+  }
+
+  /** Keeps both the order-sync lease and the batch's staleness clock alive. */
+  private async heartbeat(batch: ShopeeOrderSyncBatchDocument): Promise<void> {
+    await this.auth.extendOrderSyncLock(LOCK_LEASE_MS);
+    await this.orderSync.touchBatch(batch._id);
   }
 
   private async tryTracking(orderSn: string, packageNumber?: string): Promise<string | null> {
