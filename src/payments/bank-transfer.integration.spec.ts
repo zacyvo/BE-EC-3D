@@ -201,7 +201,7 @@ describe('VietQR checkout + payment instructions', () => {
     const { orders } = build();
     const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER, couponCodes: ['GIAM50'] }));
 
-    expect(order.total).toBe(259000 * 2 - 50000); // discounted final payable amount
+    expect(order.total).toBe(259000 * 2 - 50000 + 22000); // discounted goods + HCM shipping fee
     expect(order.paymentMethod).toBe(PaymentMethod.BANK_TRANSFER);
     expect(order.status).toBe(OrderStatus.PENDING);
     expect(order.paidAmount).toBe(0);
@@ -209,7 +209,7 @@ describe('VietQR checkout + payment instructions', () => {
       status: PaymentStatus.PENDING_PAYMENT,
       verificationStatus: PaymentVerificationStatus.NOT_REPORTED,
       reference: `LG${order._id.toString().slice(-8).toUpperCase()}`,
-      amount: 468000,
+      amount: 490000,
       currency: 'VND',
       bankAccount: {
         bankBin: '970436', bankName: 'Vietcombank', accountNumber: '0011001932418', accountName: 'CONG TY TNHH LUXE GLOW',
@@ -243,7 +243,7 @@ describe('VietQR checkout + payment instructions', () => {
     expect(first.payable).toBe(true);
     expect(again).toEqual(first);
     expect(decodeVietQrPayload(first.qrPayload!)).toMatchObject({
-      bankBin: '970436', accountNumber: '0011001932418', amount: 518000, description: first.reference,
+      bankBin: '970436', accountNumber: '0011001932418', amount: 540000, description: first.reference,
     });
     expect(await OrderModel.countDocuments()).toBe(1); // reloading never creates an order
   });
@@ -583,7 +583,7 @@ describe('Zalo Bot payment command', () => {
           '✅ XÁC NHẬN THANH TOÁN THÀNH CÔNG',
           '',
           `🛍 Đơn hàng: ${ref}`,
-          '💰 Số tiền: 518.000đ',
+          '💰 Số tiền: 540.000đ',
           '💳 Phương thức: Chuyển khoản ngân hàng',
           '✅ Trạng thái: Đã thanh toán',
           '📦 Đơn hàng: Đang chuẩn bị hàng',
@@ -598,7 +598,7 @@ describe('Zalo Bot payment command', () => {
       senderZaloId: ADMIN,
       previousStatus: PaymentStatus.PENDING_PAYMENT,
       newStatus: PaymentStatus.PAID,
-      amount: 518000,
+      amount: 540000,
       replyStatus: 'ACCEPTED',
     });
     expect(event.providerMessageId).toMatch(/^msg-/);
@@ -735,7 +735,7 @@ describe('Zalo Bot payment command', () => {
     const text = sent()[0].text;
     expect(text).toContain('📋 ĐƠN CHỜ XÁC NHẬN THANH TOÁN (2)');
     expect(text.indexOf(reported.payment!.reference)).toBeLessThan(text.indexOf(ref));
-    expect(text).toContain(`1) ${reported.payment!.reference} · 518.000đ · Người nhận · báo CK`);
+    expect(text).toContain(`1) ${reported.payment!.reference} · 540.000đ · Người nhận · báo CK`);
     expect(text).toContain('🔔 Khách đã báo chuyển khoản (1):');
     expect(text).toContain('⏳ Khách chưa báo chuyển khoản (1):');
     expect(text).not.toContain(paid.payment!.reference);

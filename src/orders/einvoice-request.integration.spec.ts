@@ -231,7 +231,7 @@ describe('EInvoiceRequestDto validation', () => {
 });
 
 describe('Request at checkout', () => {
-  it('adds VAT on the discounted amount, stores the request, owner gets ORDER_CREATED + EINVOICE_REQUESTED', async () => {
+  it('adds VAT on the discounted amount + shipping, stores the request, owner gets ORDER_CREATED + EINVOICE_REQUESTED', async () => {
     const svc = build();
     const dto = {
       items: [{ productId, quantity: 2 }],
@@ -241,14 +241,15 @@ describe('Request at checkout', () => {
     } as CreateOrderDto;
     const order = await svc.orders.create(userId, dto);
     expect(order.subtotal).toBe(518000);
-    expect(order.vatAmount).toBe(46800); // (518000 − 50000) × 10%
-    expect(order.total).toBe(518000 - 50000 + 46800);
+    expect(order.shippingFee).toBe(22000); // TP.HCM
+    expect(order.vatAmount).toBe(49000); // (518000 − 50000 + 22000) × 10%
+    expect(order.total).toBe(518000 - 50000 + 22000 + 49000);
     expect(order.einvoiceRequest).toMatchObject({
       status: EInvoiceRequestStatus.PENDING,
       companyName: 'Công ty TNHH Ánh Sáng',
       email: 'ketoan@anhsang.vn',
       vatRate: 10,
-      vatAmount: 46800,
+      vatAmount: 49000,
       requestedByName: 'Trần Thị B',
     });
 
@@ -258,14 +259,14 @@ describe('Request at checkout', () => {
     expect(jobs.every((j) => j.status === NotificationStatus.ACCEPTED)).toBe(true);
     const texts = zaloTexts();
     const created = texts.find((t) => t.includes('ĐƠN HÀNG MỚI'))!;
-    expect(created).toContain('VAT (xuất hoá đơn điện tử): 46.800đ');
+    expect(created).toContain('VAT (xuất hoá đơn điện tử): 49.000đ');
     const request = texts.find((t) => t.includes('YÊU CẦU XUẤT HOÁ ĐƠN'))!;
     const id = order._id.toString();
     expect(request).toContain(`Trần Thị B yêu cầu xuất hoá đơn VAT cho đơn #${id.slice(-8).toUpperCase()}`);
     expect(request).toContain('MST: 0312345678');
     expect(request).toContain('Email nhận hoá đơn: ke****@anhsang.vn');
-    expect(request).toContain('VAT 10%: 46.800đ');
-    expect(request).toContain('Tổng thanh toán: 514.800đ');
+    expect(request).toContain('VAT 10%: 49.000đ');
+    expect(request).toContain('Tổng thanh toán: 539.000đ');
     expect(request).toContain(`https://admin.luxe-glow.vn/orders?search=${id}`);
   });
 
@@ -276,7 +277,7 @@ describe('Request at checkout', () => {
       shippingInfo: { recipientName: 'N', phone: '0912345689', street: '1 Lê Lợi', ward: 'Bến Thành', city: 'TP.HCM' },
     } as CreateOrderDto);
     expect(order.vatAmount).toBe(0);
-    expect(order.total).toBe(259000);
+    expect(order.total).toBe(259000 + 22000);
     expect(order.einvoiceRequest).toBeUndefined();
     expect((await OrderModel.findById(order._id).lean())?.pendingNotificationEvents).toEqual([NotificationEventType.ORDER_CREATED]);
   });

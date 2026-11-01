@@ -224,7 +224,7 @@ describe('Zalo OA welcome reward — integration', () => {
       items: [{ productId: String(productId), quantity: 1 }],
       shippingInfo: { recipientName: 'A', phone: '0901111222', street: '1 Lê Lợi', ward: 'Bến Thành', city: 'TP.HCM' },
     } as CreateOrderDto);
-    expect(order.total).toBe(200000);
+    expect(order.total).toBe(200000 + 22000);
 
     const view = await svc.rewards.openForOrder(String(user._id), String(order._id));
     expect(view).toMatchObject({

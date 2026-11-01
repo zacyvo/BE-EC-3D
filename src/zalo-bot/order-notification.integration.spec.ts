@@ -240,7 +240,8 @@ describe('ORDER_CREATED → Zalo Bot (integration)', () => {
     expect(body.chat_id).toBe(OWNER_A);
     expect(body.text).toContain(`#${order._id.toString().slice(-8).toUpperCase()}`);
     expect(body.text).toContain('Đèn ngủ 3D x 2 — 259.000đ');
-    expect(body.text).toContain('Tổng tiền: 259.000đ');
+    expect(body.text).toContain('Phí vận chuyển: 22.000đ');
+    expect(body.text).toContain('Tổng tiền: 281.000đ');
     expect(body.text).toContain('SĐT: 0912345689');
     expect(body.text).toContain('Chưa thanh toán');
     expect(body.text).toContain(`https://admin.luxe-glow.vn/orders?search=${order._id}`);

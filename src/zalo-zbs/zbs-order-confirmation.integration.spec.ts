@@ -247,7 +247,7 @@ describe('ORDER_CREATED → ZBS ORDER_CONFIRMATION (integration)', () => {
         template_data: {
           customer_name: 'Nguyễn Văn A',
           order_code: `#${order._id.toString().slice(-8).toUpperCase()}`,
-          order_total: '259.000đ',
+          order_total: '281.000đ',
           order_status: 'Đã tiếp nhận',
         },
         tracking_id: `LGOC${order._id}`,

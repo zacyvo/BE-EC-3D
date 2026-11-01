@@ -32,6 +32,7 @@ import {
   EINVOICE_VAT_RATE,
   OrderVatInput,
 } from './einvoice-request.util';
+import { computeShippingFee } from './shipping-fee.util';
 import { ProductsService } from '../products/products.service';
 import { CartService } from '../cart/cart.service';
 import { AuditService } from '../audit/audit.service';
@@ -222,16 +223,20 @@ export class OrdersService {
       appliedCoupons = validation.appliedCoupons;
     }
 
+    // Resolved first: the fee depends on the authoritative city (old addresses are converted).
+    const shippingInfo = this.resolveShippingInfo(dto.shippingInfo);
+    const shippingFee = computeShippingFee(shippingInfo.city);
+
     // VAT e-invoice requested at checkout: VAT is added now, the shop accepts/rejects later.
     const einvoiceRequest = dto.einvoiceRequest
       ? this.buildEInvoiceRequest(
-          { items, discountAmount },
+          { items, discountAmount, shippingFee },
           dto.einvoiceRequest,
           (await this.usersService.findById(userId))?.name || dto.shippingInfo.recipientName,
         )
       : undefined;
     const vatAmount = einvoiceRequest?.vatAmount ?? 0;
-    const total = subtotal - discountAmount + vatAmount;
+    const total = subtotal - discountAmount + shippingFee + vatAmount;
 
     // ORDER_CREATED (+ EINVOICE_REQUESTED) owner notification intent, persisted atomically with the order.
     const outboxEvents = [
@@ -243,10 +248,11 @@ export class OrdersService {
     const fields = {
       userId: new Types.ObjectId(userId),
       items,
-      shippingInfo: this.resolveShippingInfo(dto.shippingInfo),
+      shippingInfo,
       subtotal,
       discountAmount,
       appliedCoupons,
+      shippingFee,
       vatAmount,
       total,
       status: OrderStatus.PENDING,
