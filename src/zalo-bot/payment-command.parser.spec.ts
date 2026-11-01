@@ -1,4 +1,4 @@
-import { parsePaymentCommand } from './payment-command.parser';
+import { parseInfoCommand, parsePaymentCommand } from './payment-command.parser';
 
 describe('parsePaymentCommand', () => {
   it.each([
@@ -62,6 +62,26 @@ describe('parsePaymentCommand', () => {
     'rejects an order code that is not in the project format %p',
     (text) => {
       expect(parsePaymentCommand(text)).toEqual({ kind: 'INVALID', reason: 'BAD_ORDER_CODE' });
+    },
+  );
+});
+
+describe('parseInfoCommand', () => {
+  it.each([
+    'Danh sách', 'danh sach', 'DS', 'ds', '/ds', '/list', 'Danh sách đơn chờ xác nhận thanh toán',
+    'Đơn chờ thanh toán', 'chờ xác nhận', 'Danh sách chờ thanh toán.',
+  ])('recognizes the pending list %p', (text) => {
+    expect(parseInfoCommand(text)).toBe('LIST_PENDING');
+  });
+
+  it.each(['Hướng dẫn', 'help', '/help', '/start', 'Lệnh', 'menu', '?'])('recognizes help %p', (text) => {
+    expect(parseInfoCommand(text)).toBe('HELP');
+  });
+
+  it.each(['Xin chào', 'danh sách sản phẩm', 'Đơn hàng: LG6A1B2C3D\nĐã thanh toán', '', 'x'.repeat(150)])(
+    'ignores %p',
+    (text) => {
+      expect(parseInfoCommand(text)).toBeNull();
     },
   );
 });

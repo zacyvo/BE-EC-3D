@@ -59,6 +59,20 @@ export type ResolveOutcome =
   | { order: OrderDocument }
   | { result: PaymentEventResult.NOT_FOUND | PaymentEventResult.AMBIGUOUS; code: string };
 
+/** Order statuses that move to PROCESSING ("Đang chuẩn bị hàng") once the payment is confirmed —
+ * an order already further along (shipped / delivered) keeps its status. */
+export const AUTO_PREPARE_ON_PAYMENT_STATUSES = [OrderStatus.PENDING, OrderStatus.CONFIRMED];
+
+/** One row of the Zalo "Danh sách" answer. */
+export interface PendingBankTransfer {
+  orderId: string;
+  reference: string;
+  amount: number;
+  customerName?: string;
+  reportedAt?: Date;
+  createdAt: Date;
+}
+
 /** The code to show back to an admin: the payment reference, else the display code. */
 export function orderCodeOf(order: Pick<Order, '_id' | 'payment'>): string {
   return order.payment?.reference ?? `#${order._id.toString().slice(-8).toUpperCase()}`;
@@ -95,7 +109,8 @@ export function describeConfirmOutcome(outcome: ConfirmOutcome): string {
  * Both the Zalo Bot command and the Admin CMS button call `confirm()`; callers authorize the
  * actor first. The transition PENDING_PAYMENT → PAID is a single conditional findOneAndUpdate,
  * so duplicates / concurrent confirmations produce exactly one success (and one history entry,
- * one version, one audit row). Order fulfilment status is never touched.
+ * one version, one audit row). The same update moves a PENDING / CONFIRMED order to PROCESSING
+ * ("Đang chuẩn bị hàng") — shop decision 2026-11-01; shipping / invoicing are never touched.
  */
 @Injectable()
 export class PaymentConfirmationService {
@@ -172,10 +187,14 @@ export class PaymentConfirmationService {
    * Bot idempotency: claims a webhook message before anything else happens. Returns null when the
    * same message was already claimed (Zalo re-delivery / replay) — the caller then does nothing.
    */
-  async claimBotMessage(dedupKey: string, actor: ConfirmActor): Promise<PaymentEventDocument | null> {
+  async claimBotMessage(
+    dedupKey: string,
+    actor: ConfirmActor,
+    action: PaymentEventAction = PaymentEventAction.CONFIRM_PAYMENT,
+  ): Promise<PaymentEventDocument | null> {
     try {
       return await this.eventModel.create({
-        action: PaymentEventAction.CONFIRM_PAYMENT,
+        action,
         source: actor.source,
         result: PaymentEventResult.PROCESSING,
         actorId: actor.actorId,
@@ -194,6 +213,43 @@ export class PaymentConfirmationService {
     await this.eventModel.updateOne({ _id: eventId }, { $set: fields }).exec();
   }
 
+  /** Unpaid, not-cancelled bank-transfer orders: customer-reported ones first (oldest report
+   * first — they have waited longest), then the rest, newest first. */
+  async listPendingBankTransfers(limit: number): Promise<{ items: PendingBankTransfer[]; total: number }> {
+    const filter = {
+      paymentMethod: PaymentMethod.BANK_TRANSFER,
+      'payment.status': PaymentStatus.PENDING_PAYMENT,
+      status: { $ne: OrderStatus.CANCELLED },
+    };
+    const select = { payment: 1, total: 1, shippingInfo: 1, createdAt: 1 };
+    const [reported, others, total] = await Promise.all([
+      this.orderModel
+        .find({ ...filter, 'payment.verificationStatus': PaymentVerificationStatus.AWAITING_CONFIRMATION })
+        .select(select)
+        .sort({ 'payment.customerReportedAt': 1 })
+        .limit(limit)
+        .lean()
+        .exec(),
+      this.orderModel
+        .find({ ...filter, 'payment.verificationStatus': { $ne: PaymentVerificationStatus.AWAITING_CONFIRMATION } })
+        .select(select)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .lean()
+        .exec(),
+      this.orderModel.countDocuments(filter).exec(),
+    ]);
+    const items = [...reported, ...others].slice(0, limit).map((o) => ({
+      orderId: o._id.toString(),
+      reference: o.payment!.reference,
+      amount: o.total,
+      ...(o.shippingInfo?.recipientName ? { customerName: o.shippingInfo.recipientName } : {}),
+      ...(o.payment!.customerReportedAt ? { reportedAt: o.payment!.customerReportedAt } : {}),
+      createdAt: (o as unknown as { createdAt: Date }).createdAt,
+    }));
+    return { items, total };
+  }
+
   async eventsForOrder(orderId: string) {
     if (!Types.ObjectId.isValid(orderId)) return [];
     return this.eventModel.find({ orderId: new Types.ObjectId(orderId) }).sort({ createdAt: -1 }).limit(100).lean().exec();
@@ -208,18 +264,22 @@ export class PaymentConfirmationService {
 
     const now = new Date();
     const amount = order.total;
+    const nextStatus = AUTO_PREPARE_ON_PAYMENT_STATUSES.includes(order.status) ? OrderStatus.PROCESSING : order.status;
     const updated = await this.orderModel
       .findOneAndUpdate(
         {
           _id: order._id,
           paymentMethod: PaymentMethod.BANK_TRANSFER,
           'payment.status': PaymentStatus.PENDING_PAYMENT,
-          status: { $ne: OrderStatus.CANCELLED },
+          // Guarded on the status we decided from (also excludes CANCELLED, checked above) —
+          // a concurrent status change makes this a CONFLICT instead of overwriting it.
+          status: order.status,
           // The admin verified THIS amount — refuse if the total changed in between.
           total: amount,
         },
         {
           $set: {
+            status: nextStatus,
             'payment.status': PaymentStatus.PAID,
             'payment.verificationStatus': PaymentVerificationStatus.CONFIRMED,
             'payment.amount': amount,
@@ -238,6 +298,7 @@ export class PaymentConfirmationService {
               ...(actor.actorName ? { byName: actor.actorName } : {}),
               source: actor.source,
               amount,
+              ...(nextStatus !== order.status ? { note: 'Đơn chuyển sang Đang chuẩn bị hàng' } : {}),
             },
           },
           $inc: { currentVersion: 1 },
@@ -264,7 +325,9 @@ export class PaymentConfirmationService {
         snapshot: updated.toObject(),
         changedBy: actor.actorId,
         changedByType: 'staff',
-        changeNote: `Xác nhận đã thanh toán chuyển khoản (${sourceLabel})`,
+        changeNote:
+          `Xác nhận đã thanh toán chuyển khoản (${sourceLabel})` +
+          (nextStatus !== order.status ? ` — chuyển sang ${nextStatus}` : ''),
       });
     } catch (err) {
       // The payment IS confirmed at this point — a missing snapshot must not report a failure.
@@ -276,9 +339,14 @@ export class PaymentConfirmationService {
       action: 'PAYMENT_CONFIRMED',
       module: 'payments',
       targetId: updated._id.toString(),
-      beforeData: { paymentStatus: PaymentStatus.PENDING_PAYMENT, verificationStatus: order.payment?.verificationStatus },
+      beforeData: {
+        paymentStatus: PaymentStatus.PENDING_PAYMENT,
+        verificationStatus: order.payment?.verificationStatus,
+        orderStatus: order.status,
+      },
       afterData: {
         paymentStatus: PaymentStatus.PAID,
+        orderStatus: nextStatus,
         amount,
         reference: updated.payment?.reference,
         source: actor.source,

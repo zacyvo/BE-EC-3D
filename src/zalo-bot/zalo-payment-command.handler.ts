@@ -7,13 +7,15 @@ import {
   describeConfirmOutcome,
   orderCodeOf,
   PaymentConfirmationService,
+  PendingBankTransfer,
 } from '../payments/payment-confirmation.service';
-import { PaymentEventResult } from '../payments/schemas/payment-event.schema';
+import { PaymentEventAction, PaymentEventResult } from '../payments/schemas/payment-event.schema';
 import { ZaloBotConfigService } from './zalo-bot.config';
 import { ZaloBotClient } from './zalo-bot.client';
-import { formatVnd } from './order-message.formatter';
+import { formatVnd, ORDER_STATUS_LABELS } from './order-message.formatter';
 import { maskChatId } from './zalo-owner-recipient.service';
-import { PAYMENT_COMMAND_HELP, parsePaymentCommand } from './payment-command.parser';
+import { InfoCommand, PAYMENT_COMMAND_HELP, parseInfoCommand, parsePaymentCommand } from './payment-command.parser';
+import { ZALO_MESSAGE_MAX_LENGTH } from './zalo-bot.constants';
 
 /** A text message from the webhook, already shape-checked by the controller. */
 export interface InboundTextMessage {
@@ -35,7 +37,12 @@ export type PaymentCommandOutcome =
   | 'not_private'
   | 'expired'
   | 'invalid'
+  | 'listed'
+  | 'help'
   | PaymentEventResult;
+
+/** At most this many orders in one "Danh sách" answer (Zalo text limit 2000 chars). */
+export const PENDING_LIST_LIMIT = 15;
 
 /** A command older than this is refused (re-sent / replayed stale message). */
 export const PAYMENT_COMMAND_MAX_AGE_MS = 30 * 60 * 1000;
@@ -51,8 +58,57 @@ export function formatPaymentConfirmedReply(outcome: Extract<ConfirmOutcome, { r
     `💰 Số tiền: ${formatVnd(order.payment?.amount ?? order.total)}`,
     '💳 Phương thức: Chuyển khoản ngân hàng',
     '✅ Trạng thái: Đã thanh toán',
+    `📦 Đơn hàng: ${ORDER_STATUS_LABELS[order.status] ?? order.status}`,
     `👤 Xác nhận bởi: ${confirmedBy}`,
   ].join('\n');
+}
+
+export const ADMIN_COMMANDS_HELP = [
+  '🤖 LỆNH QUẢN TRỊ LUXE GLOW',
+  '',
+  '📋 Danh sách',
+  '→ Các đơn chuyển khoản đang chờ xác nhận thanh toán',
+  '',
+  '✅ Đơn hàng: LGxxxxxxxx',
+  'Đã thanh toán',
+  '→ Xác nhận đã nhận tiền (đơn chuyển sang Đang chuẩn bị hàng)',
+  '',
+  '❓ Hướng dẫn',
+  '→ Xem lại danh sách lệnh',
+].join('\n');
+
+function shortDateTime(d: Date | string | undefined): string {
+  if (!d) return '';
+  return new Intl.DateTimeFormat('vi-VN', {
+    hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', timeZone: 'Asia/Ho_Chi_Minh',
+  }).format(new Date(d));
+}
+
+/** "Danh sách" answer: customer-reported transfers first, each with the reference to confirm. */
+export function formatPendingList(items: PendingBankTransfer[], total: number, adminUrl?: string): string {
+  if (!items.length) return '✅ Không có đơn chuyển khoản nào đang chờ xác nhận thanh toán.';
+  const reported = items.filter((i) => i.reportedAt);
+  const others = items.filter((i) => !i.reportedAt);
+  const line = (i: PendingBankTransfer, n: number) =>
+    `${n}) ${i.reference} · ${formatVnd(i.amount)}${i.customerName ? ` · ${i.customerName.slice(0, 40)}` : ''}` +
+    ` · ${i.reportedAt ? `báo CK ${shortDateTime(i.reportedAt)}` : `đặt ${shortDateTime(i.createdAt)}`}`;
+
+  const lines = [`📋 ĐƠN CHỜ XÁC NHẬN THANH TOÁN (${total})`];
+  let n = 0;
+  if (reported.length) {
+    lines.push('', `🔔 Khách đã báo chuyển khoản (${reported.length}):`);
+    reported.forEach((i) => lines.push(line(i, ++n)));
+  }
+  if (others.length) {
+    lines.push('', `⏳ Khách chưa báo chuyển khoản (${others.length}):`);
+    others.forEach((i) => lines.push(line(i, ++n)));
+  }
+  if (total > items.length) {
+    lines.push('', `… và ${total - items.length} đơn khác${adminUrl ? ` — xem tại ${adminUrl.replace(/\/+$/, '')}/orders` : ''}`);
+  }
+  lines.push('', 'Kiểm tra tài khoản rồi gửi:', 'Đơn hàng: LGxxxxxxxx', 'Đã thanh toán');
+  const message = lines.join('\n');
+  return message.length > ZALO_MESSAGE_MAX_LENGTH ? `${message.slice(0, ZALO_MESSAGE_MAX_LENGTH - 1)}…` : message;
 }
 
 /**
@@ -80,7 +136,10 @@ export class ZaloPaymentCommandHandler {
 
   async handle(msg: InboundTextMessage, now: Date = new Date()): Promise<PaymentCommandOutcome> {
     const command = parsePaymentCommand(msg.text);
-    if (command.kind === 'NOT_COMMAND') return 'not_command';
+    if (command.kind === 'NOT_COMMAND') {
+      const info = parseInfoCommand(msg.text);
+      return info ? this.handleInfo(info, msg) : 'not_command';
+    }
 
     // 1. Authorization first — nothing about any order is read for an unknown sender.
     const admin = this.configService.get().paymentAdmins.find((a) => a.zaloId === msg.fromId);
@@ -158,12 +217,61 @@ export class ZaloPaymentCommandHandler {
     return result;
   }
 
-  private async claim(msg: InboundTextMessage, actor: ConfirmActor) {
+  /** "Danh sách" / "Hướng dẫn": admins only (strangers get silence — nothing reveals the
+   * commands exist), private chat only. The list exposes customer names, so it is deduped and
+   * recorded like a confirmation. */
+  private async handleInfo(info: InfoCommand, msg: InboundTextMessage): Promise<PaymentCommandOutcome> {
+    const cfg = this.configService.get();
+    const admin = cfg.paymentAdmins.find((a) => a.zaloId === msg.fromId);
+    if (!admin) {
+      this.logger.warn(`Lệnh ${info} từ người gửi không có quyền ${maskChatId(msg.fromId)} — bỏ qua`);
+      return 'unauthorized';
+    }
+    if (msg.chatType && msg.chatType.toUpperCase() !== 'PRIVATE') {
+      await this.reply(msg, 'Vui lòng gửi lệnh quản trị trong cuộc trò chuyện riêng với bot.');
+      return 'not_private';
+    }
+    if (info === 'HELP') {
+      await this.reply(msg, ADMIN_COMMANDS_HELP);
+      return 'help';
+    }
+
+    const actor: ConfirmActor = {
+      source: PaymentConfirmationSource.ZALO_ADMIN_BOT,
+      actorId: `zalo:${msg.fromId}`,
+      actorName: admin.label || 'Admin',
+      senderZaloId: msg.fromId,
+      ...(msg.messageId ? { providerMessageId: msg.messageId } : {}),
+    };
+    const event = await this.claim(msg, actor, PaymentEventAction.LIST_PENDING);
+    if (!event) return 'duplicate';
+    if (event === 'error') {
+      await this.reply(msg, 'Hệ thống đang gặp sự cố, chưa lấy được danh sách. Vui lòng thử lại sau ít phút.');
+      return PaymentEventResult.ERROR;
+    }
+    try {
+      const { items, total } = await this.payments.listPendingBankTransfers(PENDING_LIST_LIMIT);
+      const replyStatus = await this.reply(msg, formatPendingList(items, total, cfg.adminUrl));
+      await this.payments
+        .finishBotEvent(event._id, { result: PaymentEventResult.LISTED, amount: total, replyStatus })
+        .catch(() => undefined);
+      return 'listed';
+    } catch (err) {
+      this.logger.error(`Lỗi lấy danh sách đơn chờ thanh toán: ${(err as Error).message}`);
+      await this.payments
+        .finishBotEvent(event._id, { result: PaymentEventResult.ERROR, errorReason: 'INTERNAL_ERROR' })
+        .catch(() => undefined);
+      await this.reply(msg, 'Hệ thống đang gặp sự cố, chưa lấy được danh sách. Vui lòng thử lại sau ít phút.');
+      return PaymentEventResult.ERROR;
+    }
+  }
+
+  private async claim(msg: InboundTextMessage, actor: ConfirmActor, action?: PaymentEventAction) {
     const dedupKey = msg.messageId
       ? `zalo-msg:${msg.messageId}`
       : `zalo-hash:${createHash('sha256').update(`${msg.fromId}|${msg.date ?? ''}|${msg.text}`).digest('hex')}`;
     try {
-      return await this.payments.claimBotMessage(dedupKey, actor);
+      return await this.payments.claimBotMessage(dedupKey, actor, action);
     } catch (err) {
       this.logger.error(`Không ghi nhận được lệnh thanh toán: ${(err as Error).message}`);
       return 'error' as const;

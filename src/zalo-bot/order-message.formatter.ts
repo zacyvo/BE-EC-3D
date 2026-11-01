@@ -63,10 +63,10 @@ export interface OrderMessageOptions {
 }
 
 /** Same labels as the admin dashboard (frontend-admin/src/lib/utils.ts ORDER_STATUS_MAP). */
-const ORDER_STATUS_LABELS: Record<string, string> = {
+export const ORDER_STATUS_LABELS: Record<string, string> = {
   PENDING: 'Chờ xác nhận',
   CONFIRMED: 'Đã xác nhận',
-  PROCESSING: 'Đang xử lý',
+  PROCESSING: 'Đang chuẩn bị hàng',
   SHIPPED: 'Đang giao',
   DELIVERED: 'Đã giao',
   CANCELLED: 'Đã hủy',

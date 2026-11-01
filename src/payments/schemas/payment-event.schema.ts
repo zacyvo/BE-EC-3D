@@ -6,6 +6,8 @@ export type PaymentEventDocument = PaymentEvent & Document;
 
 export enum PaymentEventAction {
   CONFIRM_PAYMENT = 'CONFIRM_PAYMENT',
+  /** Zalo "Danh sách" — an admin read the pending bank-transfer orders (customer names). */
+  LIST_PENDING = 'LIST_PENDING',
 }
 
 export enum PaymentEventResult {
@@ -23,6 +25,8 @@ export enum PaymentEventResult {
   EXPIRED_COMMAND = 'EXPIRED_COMMAND',
   NOT_PRIVATE_CHAT = 'NOT_PRIVATE_CHAT',
   ERROR = 'ERROR',
+  /** LIST_PENDING answered. */
+  LISTED = 'LISTED',
 }
 
 /**

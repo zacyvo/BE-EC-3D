@@ -385,7 +385,8 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
       }
 
       const format = MESSAGE_FORMATTERS[job.eventType] ?? formatOrderCreatedMessage;
-      const text = format(order as unknown as OrderMessageInput, { adminUrl: cfg.adminUrl });
+      // Only approved shop owners receive these messages — they call the customer, so no masking.
+      const text = format(order as unknown as OrderMessageInput, { adminUrl: cfg.adminUrl, showFullPhone: true });
       sendStarted = true;
       const res = await this.client.sendMessage(job.recipientId, text);
       return this.applySendResult(job, res, cfg.retryBaseDelayMs);

@@ -370,12 +370,13 @@ describe('Admin CMS confirmation', () => {
     ]);
   });
 
-  it('marks the order PAID with an audit trail, without touching fulfilment — even if the customer never reported', async () => {
+  it('marks the order PAID with an audit trail and moves it to "Đang chuẩn bị hàng" — even if the customer never reported', async () => {
     const { orders, confirmation, audit } = build();
     const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
     const paid = await confirmation.confirmByStaff(order._id.toString(), { staffId, staffName: 'admin@luxe-glow.vn' }, order.total);
 
-    expect(paid.status).toBe(OrderStatus.PENDING); // fulfilment untouched
+    expect(paid.status).toBe(OrderStatus.PROCESSING); // PENDING → Đang chuẩn bị hàng
+    expect(paid.delivery).toBeUndefined(); // shipping untouched
     expect(paid.paidAmount).toBe(order.total);
     expect(paid.payment).toMatchObject({
       status: PaymentStatus.PAID,
@@ -390,6 +391,26 @@ describe('Admin CMS confirmation', () => {
     expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'PAYMENT_CONFIRMED', module: 'payments', actorId: staffId }));
     const events = await confirmation.eventsForOrder(order._id.toString());
     expect(events).toEqual([expect.objectContaining({ result: PaymentEventResult.SUCCESS, source: 'ADMIN_CMS', amount: order.total })]);
+  });
+
+  it('moves a CONFIRMED order to PROCESSING too, but leaves a shipped order where it is', async () => {
+    const { orders, confirmation } = build();
+    const confirmed = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    await orders.updateStatus(confirmed._id.toString(), { status: OrderStatus.CONFIRMED }, staffId, StaffRole.ADMIN);
+    expect((await confirmation.confirmByStaff(confirmed._id.toString(), { staffId })).status).toBe(OrderStatus.PROCESSING);
+
+    const shipped = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    await orders.updateStatus(shipped._id.toString(), { status: OrderStatus.SHIPPED }, staffId, StaffRole.ADMIN);
+    const paid = await confirmation.confirmByStaff(shipped._id.toString(), { staffId });
+    expect(paid.status).toBe(OrderStatus.SHIPPED);
+    expect(paid.payment!.status).toBe(PaymentStatus.PAID);
+  });
+
+  it('a paid order can no longer be cancelled directly by the customer (only a cancel request)', async () => {
+    const { orders, confirmation } = build();
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    await confirmation.confirmByStaff(order._id.toString(), { staffId });
+    await expect(orders.cancelByUser(order._id.toString(), userId)).rejects.toThrow('vui lòng gửi yêu cầu hủy');
   });
 
   it('refuses a second confirmation without a second success', async () => {
@@ -455,7 +476,7 @@ describe('Zalo Bot payment command', () => {
       confirmedBy: `zalo:${ADMIN}`,
       confirmedByName: 'Chủ shop',
     });
-    expect(stored!.status).toBe(OrderStatus.PENDING);
+    expect(stored!.status).toBe(OrderStatus.PROCESSING);
     expect(sent()).toEqual([
       {
         chatId: ADMIN,
@@ -466,6 +487,7 @@ describe('Zalo Bot payment command', () => {
           '💰 Số tiền: 518.000đ',
           '💳 Phương thức: Chuyển khoản ngân hàng',
           '✅ Trạng thái: Đã thanh toán',
+          '📦 Đơn hàng: Đang chuẩn bị hàng',
           '👤 Xác nhận bởi: Chủ shop',
         ].join('\n'),
       },
@@ -594,6 +616,41 @@ describe('Zalo Bot payment command', () => {
     expect((list.data[0] as OrderDocument).payment!.status).toBe(PaymentStatus.PAID);
     const found = await orders.findAllAdmin({ page: 1, limit: 20, search: ref.toLowerCase() });
     expect(found.total).toBe(1);
+  });
+
+  it('"Danh sách" lists unpaid bank-transfer orders, customer-reported first, for admins only', async () => {
+    const { webhook, orders, ref } = await bankOrder();
+    const reported = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    await orders.reportPaymentByUser(reported._id.toString(), userId);
+    const paid = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    await webhook.receive(SECRET, zaloText(`Đơn hàng: ${paid.payment!.reference}\nĐã thanh toán`));
+    await orders.create(userId, checkoutDto()); // COD — never listed
+    fetchMock.mockClear();
+
+    await webhook.receive(SECRET, zaloText('Danh sách', { from: STRANGER }));
+    expect(sent()).toHaveLength(0); // strangers get silence
+
+    await webhook.receive(SECRET, zaloText('danh sach don cho xac nhan thanh toan', { messageId: 'list-1' }));
+    await webhook.receive(SECRET, zaloText('danh sach don cho xac nhan thanh toan', { messageId: 'list-1' })); // redelivery
+    expect(sent()).toHaveLength(1);
+    const text = sent()[0].text;
+    expect(text).toContain('📋 ĐƠN CHỜ XÁC NHẬN THANH TOÁN (2)');
+    expect(text.indexOf(reported.payment!.reference)).toBeLessThan(text.indexOf(ref));
+    expect(text).toContain(`1) ${reported.payment!.reference} · 518.000đ · Người nhận · báo CK`);
+    expect(text).toContain('🔔 Khách đã báo chuyển khoản (1):');
+    expect(text).toContain('⏳ Khách chưa báo chuyển khoản (1):');
+    expect(text).not.toContain(paid.payment!.reference);
+    expect(await EventModel.countDocuments({ action: 'LIST_PENDING', result: PaymentEventResult.LISTED })).toBe(1);
+  });
+
+  it('answers "Hướng dẫn" with the command list and an empty list when nothing is pending', async () => {
+    const { webhook, ref } = await bankOrder();
+    await webhook.receive(SECRET, zaloText(`Đơn hàng: ${ref}\nĐã thanh toán`));
+    fetchMock.mockClear();
+    await webhook.receive(SECRET, zaloText('Hướng dẫn'));
+    await webhook.receive(SECRET, zaloText('/ds'));
+    expect(sent()[0].text).toContain('🤖 LỆNH QUẢN TRỊ LUXE GLOW');
+    expect(sent()[1].text).toBe('✅ Không có đơn chuyển khoản nào đang chờ xác nhận thanh toán.');
   });
 
   it('keeps the existing chat enrollment and stays silent for normal messages', async () => {

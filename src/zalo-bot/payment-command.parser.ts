@@ -69,3 +69,24 @@ export function parsePaymentCommand(raw: string | undefined | null): PaymentComm
   if (!orderRef) return { kind: 'INVALID', reason: 'BAD_ORDER_CODE' };
   return { kind: 'CONFIRM_PAYMENT', orderRef };
 }
+
+/** Read-only admin commands (same allowlist as the payment command). */
+export type InfoCommand = 'LIST_PENDING' | 'HELP';
+
+const LIST_PENDING_PATTERN =
+  /^(ds|list|danh sach( don)?( cho)?( xac nhan)?( thanh toan)?|(don )?cho (xac nhan )?thanh toan|(don )?cho xac nhan( thanh toan)?)$/;
+const HELP_PATTERN = /^(help|start|tro giup|huong dan|lenh|menu|\?)$/;
+
+/** "Danh sách", "DS", "Đơn chờ thanh toán", "/list" … → LIST_PENDING; "Hướng dẫn", "/help" … → HELP. */
+export function parseInfoCommand(raw: string | undefined | null): InfoCommand | null {
+  if (typeof raw !== 'string' || raw.length > 100) return null;
+  const text = normalizeVietnamese(raw)
+    .replace(/^\//, '')
+    .replace(/[.!:]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (text === '?') return 'HELP';
+  if (LIST_PENDING_PATTERN.test(text)) return 'LIST_PENDING';
+  if (HELP_PATTERN.test(text)) return 'HELP';
+  return null;
+}

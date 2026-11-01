@@ -135,7 +135,7 @@ export interface ZbsOrderInput {
 export const ZBS_ORDER_STATUS_LABELS: Record<string, string> = {
   PENDING: 'Đã tiếp nhận',
   CONFIRMED: 'Đã xác nhận',
-  PROCESSING: 'Đang xử lý',
+  PROCESSING: 'Đang chuẩn bị hàng',
   SHIPPED: 'Đang giao',
   DELIVERED: 'Đã giao',
 };

@@ -629,7 +629,7 @@ export class OrdersService {
     }
     if (USER_CANCEL_REQUESTABLE_STATUSES.includes(order.status)) {
       if (order.cancelRequest) throw new BadRequestException('Bạn đã gửi yêu cầu hủy cho đơn hàng này');
-      throw new BadRequestException('Đơn hàng đang được xử lý — vui lòng gửi yêu cầu hủy');
+      throw new BadRequestException('Đơn hàng đang được chuẩn bị — vui lòng gửi yêu cầu hủy');
     }
     throw new BadRequestException('Đơn hàng không thể hủy ở trạng thái hiện tại');
   }
