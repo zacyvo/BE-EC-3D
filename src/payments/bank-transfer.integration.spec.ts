@@ -455,6 +455,97 @@ describe('Admin CMS confirmation', () => {
   });
 });
 
+// ─── Refund (Admin CMS) ─────────────────────────────────────────────────────
+
+describe('Admin CMS refund of a cancelled bank-transfer order', () => {
+  async function paidOrder() {
+    const ctx = build();
+    const order = await ctx.orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    await ctx.confirmation.confirmByStaff(order._id.toString(), { staffId });
+    return { ...ctx, id: order._id.toString(), total: order.total };
+  }
+
+  it('is restricted to SUPER_ADMIN and ADMIN', () => {
+    expect(Reflect.getMetadata(ROLES_KEY, AdminOrdersController.prototype.refundPayment)).toEqual([
+      StaffRole.SUPER_ADMIN,
+      StaffRole.ADMIN,
+    ]);
+  });
+
+  it('requires the order to be cancelled first', async () => {
+    const { confirmation, id, total } = await paidOrder();
+    await expect(confirmation.refundByStaff(id, { staffId }, { amount: total })).rejects.toThrow('chưa bị hủy');
+    expect((await OrderModel.findById(id).lean())!.payment!.status).toBe(PaymentStatus.PAID);
+  });
+
+  it('records a full refund once: REFUNDED, paidAmount 0, history, audit — and the customer sees it', async () => {
+    const { orders, confirmation, audit, id, total } = await paidOrder();
+    await orders.updateStatus(id, { status: OrderStatus.CANCELLED, cancelReason: 'Khách đổi ý' }, staffId, StaffRole.ADMIN);
+    await expect(confirmation.refundByStaff(id, { staffId }, { amount: total + 1 })).rejects.toThrow('Số tiền hoàn');
+
+    const refunded = await confirmation.refundByStaff(
+      id,
+      { staffId, staffName: 'admin@luxe-glow.vn' },
+      { amount: total, transferRef: 'FT2611019999', refundAccount: { bankName: 'ACB', accountNumber: '123456789', accountHolder: 'NGUYEN VAN A' } },
+    );
+    expect(refunded.paidAmount).toBe(0);
+    expect(refunded.payment).toMatchObject({
+      status: PaymentStatus.REFUNDED,
+      refundAmount: total,
+      refundTransferRef: 'FT2611019999',
+      refundedBy: staffId,
+      refundedByName: 'admin@luxe-glow.vn',
+      refundAccount: { bankName: 'ACB', accountNumber: '123456789', accountHolder: 'NGUYEN VAN A' },
+    });
+    expect(refunded.payment!.history.at(-1)).toMatchObject({ action: PaymentHistoryAction.REFUNDED, amount: total });
+    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'PAYMENT_REFUNDED', module: 'payments' }));
+
+    await expect(confirmation.refundByStaff(id, { staffId }, { amount: total })).rejects.toThrow(ConflictException);
+    expect(await EventModel.countDocuments({ orderId: refunded._id, action: 'REFUND_PAYMENT', result: PaymentEventResult.SUCCESS })).toBe(1);
+
+    const info = await orders.getPaymentForUser(id, userId);
+    expect(info).toMatchObject({ paymentStatus: PaymentStatus.REFUNDED, payable: false, qrPayload: null, refundAmount: total });
+  });
+
+  it('allows a partial refund (the rest stays as paidAmount)', async () => {
+    const { orders, confirmation, id, total } = await paidOrder();
+    await orders.updateStatus(id, { status: OrderStatus.CANCELLED }, staffId, StaffRole.ADMIN);
+    const refunded = await confirmation.refundByStaff(id, { staffId }, { amount: total - 30000, note: 'Trừ phí in 3D' });
+    expect(refunded.paidAmount).toBe(30000);
+    expect(refunded.payment!.refundNote).toBe('Trừ phí in 3D');
+  });
+
+  it('covers a transfer the customer reported before cancelling, but not an unpaid order', async () => {
+    const { orders, confirmation } = build();
+    const reported = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    await orders.reportPaymentByUser(reported._id.toString(), userId);
+    await orders.cancelByUser(reported._id.toString(), userId);
+    const r = await confirmation.refundByStaff(reported._id.toString(), { staffId }, { amount: reported.total });
+    expect(r.payment!.status).toBe(PaymentStatus.REFUNDED);
+    expect(r.paidAmount).toBe(0);
+
+    const unpaid = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    await orders.cancelByUser(unpaid._id.toString(), userId);
+    await expect(confirmation.refundByStaff(unpaid._id.toString(), { staffId }, { amount: 1000 })).rejects.toThrow(
+      'chưa ghi nhận khoản thanh toán',
+    );
+    const cod = await orders.create(userId, checkoutDto());
+    await expect(confirmation.refundByStaff(cod._id.toString(), { staffId }, { amount: 1000 })).rejects.toThrow(
+      'không sử dụng phương thức chuyển khoản',
+    );
+  });
+
+  it('the Zalo command refuses a refunded order', async () => {
+    const { orders, confirmation, webhook, id, total } = await paidOrder();
+    await orders.updateStatus(id, { status: OrderStatus.CANCELLED }, staffId, StaffRole.ADMIN);
+    await confirmation.refundByStaff(id, { staffId }, { amount: total });
+    const ref = (await OrderModel.findById(id).lean())!.payment!.reference;
+    fetchMock.mockClear();
+    await webhook.receive(SECRET, zaloText(`Đơn hàng: ${ref}\nĐã thanh toán`));
+    expect(sent()[0].text).toBe(`Đơn hàng ${ref} đã được hoàn tiền nên không thể xác nhận thanh toán.`);
+  });
+});
+
 // ─── Zalo Bot command ──────────────────────────────────────────────────────
 
 describe('Zalo Bot payment command', () => {

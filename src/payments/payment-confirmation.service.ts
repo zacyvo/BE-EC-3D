@@ -174,6 +174,146 @@ export class PaymentConfirmationService {
     throw new BadRequestException(describeConfirmOutcome(outcome));
   }
 
+  /**
+   * Admin CMS "Xác nhận đã hoàn tiền": records a refund the shop has ALREADY transferred by hand
+   * (no money moves here). Only for a cancelled bank-transfer order whose payment is PAID — or still
+   * PENDING_PAYMENT when the customer had reported a transfer before cancelling (money may have
+   * arrived without ever being confirmed). One atomic, guarded update; one success per order.
+   */
+  async refundByStaff(
+    orderId: string,
+    staff: { staffId: string; staffName?: string },
+    input: {
+      amount: number;
+      transferRef?: string;
+      note?: string;
+      refundAccount?: { bankName: string; accountNumber: string; accountHolder: string };
+    },
+  ): Promise<OrderDocument> {
+    if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Không tìm thấy đơn hàng');
+    const order = await this.orderModel.findById(orderId).exec();
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+    const code = orderCodeOf(order);
+    const payment = order.payment;
+    const record = (result: PaymentEventResult, errorReason?: string, amount?: number) =>
+      this.eventModel
+        .create({
+          action: PaymentEventAction.REFUND_PAYMENT,
+          source: PaymentConfirmationSource.ADMIN_CMS,
+          result,
+          orderId: order._id,
+          orderCode: code,
+          actorId: staff.staffId,
+          ...(staff.staffName ? { actorName: staff.staffName } : {}),
+          ...(payment ? { previousStatus: payment.status } : {}),
+          ...(amount !== undefined ? { amount } : {}),
+          ...(result === PaymentEventResult.SUCCESS ? { newStatus: PaymentStatus.REFUNDED } : {}),
+          ...(errorReason ? { errorReason } : {}),
+        })
+        .catch((err) => this.logger.error(`Không ghi được payment event hoàn tiền: ${(err as Error).message}`));
+    const refuse = async (message: string, result = PaymentEventResult.INELIGIBLE, Ex = BadRequestException): Promise<never> => {
+      await record(result, message, input.amount);
+      throw new Ex(message);
+    };
+
+    if (order.paymentMethod !== PaymentMethod.BANK_TRANSFER || !payment) {
+      return refuse('Đơn hàng này không sử dụng phương thức chuyển khoản ngân hàng.', PaymentEventResult.NOT_BANK_TRANSFER);
+    }
+    if (payment.status === PaymentStatus.REFUNDED) {
+      return refuse(`Đơn hàng ${code} đã được ghi nhận hoàn tiền trước đó.`, PaymentEventResult.CONFLICT, ConflictException);
+    }
+    if (order.status !== OrderStatus.CANCELLED) {
+      return refuse(`Đơn hàng ${code} chưa bị hủy — vui lòng hủy đơn trước khi ghi nhận hoàn tiền.`);
+    }
+    const reportedButUnconfirmed =
+      payment.status === PaymentStatus.PENDING_PAYMENT &&
+      payment.verificationStatus === PaymentVerificationStatus.AWAITING_CONFIRMATION;
+    if (payment.status !== PaymentStatus.PAID && !reportedButUnconfirmed) {
+      return refuse(`Đơn hàng ${code} chưa ghi nhận khoản thanh toán nào để hoàn.`);
+    }
+    // Paid: at most what was received. Reported-only: at most what the customer was asked to pay.
+    const maxRefund = payment.status === PaymentStatus.PAID ? order.paidAmount : payment.amount;
+    if (!Number.isSafeInteger(input.amount) || input.amount <= 0 || input.amount > maxRefund) {
+      return refuse(`Số tiền hoàn phải là số nguyên từ 1 đến ${formatVnd(maxRefund)}.`);
+    }
+
+    const now = new Date();
+    const updated = await this.orderModel
+      .findOneAndUpdate(
+        {
+          _id: order._id,
+          paymentMethod: PaymentMethod.BANK_TRANSFER,
+          status: OrderStatus.CANCELLED,
+          'payment.status': payment.status,
+          paidAmount: order.paidAmount,
+        },
+        {
+          $set: {
+            'payment.status': PaymentStatus.REFUNDED,
+            'payment.refundedAt': now,
+            'payment.refundedBy': staff.staffId,
+            ...(staff.staffName ? { 'payment.refundedByName': staff.staffName } : {}),
+            'payment.refundAmount': input.amount,
+            ...(input.transferRef ? { 'payment.refundTransferRef': input.transferRef } : {}),
+            ...(input.note ? { 'payment.refundNote': input.note } : {}),
+            ...(input.refundAccount ? { 'payment.refundAccount': input.refundAccount } : {}),
+            // paidAmount = what the shop still holds (0 after a full refund).
+            paidAmount: Math.max(0, order.paidAmount - (payment.status === PaymentStatus.PAID ? input.amount : 0)),
+          },
+          $push: {
+            'payment.history': {
+              action: PaymentHistoryAction.REFUNDED,
+              at: now,
+              byType: 'staff',
+              by: staff.staffId,
+              ...(staff.staffName ? { byName: staff.staffName } : {}),
+              source: PaymentConfirmationSource.ADMIN_CMS,
+              amount: input.amount,
+              ...(input.transferRef || input.note
+                ? { note: [input.transferRef && `Mã GD: ${input.transferRef}`, input.note].filter(Boolean).join(' · ') }
+                : {}),
+            },
+          },
+          $inc: { currentVersion: 1 },
+        },
+        { new: true },
+      )
+      .exec();
+    if (!updated) {
+      return refuse(`Đơn hàng ${code} vừa được cập nhật, vui lòng tải lại và thử lại.`, PaymentEventResult.CONFLICT, ConflictException);
+    }
+
+    try {
+      await this.versionModel.create({
+        orderId: updated._id,
+        versionNumber: updated.currentVersion,
+        snapshot: updated.toObject(),
+        changedBy: staff.staffId,
+        changedByType: 'staff',
+        changeNote: `Ghi nhận đã hoàn tiền ${formatVnd(input.amount)} (chuyển khoản)`,
+      });
+    } catch (err) {
+      this.logger.error(`Không lưu được phiên bản đơn ${updated._id}: ${(err as Error).message}`);
+    }
+    await this.auditService.log({
+      actorId: staff.staffId,
+      actorType: 'staff',
+      action: 'PAYMENT_REFUNDED',
+      module: 'payments',
+      targetId: updated._id.toString(),
+      beforeData: { paymentStatus: payment.status, paidAmount: order.paidAmount },
+      afterData: {
+        paymentStatus: PaymentStatus.REFUNDED,
+        paidAmount: updated.paidAmount,
+        refundAmount: input.amount,
+        ...(input.transferRef ? { transferRef: input.transferRef } : {}),
+      },
+    });
+    await record(PaymentEventResult.SUCCESS, undefined, input.amount);
+    this.logger.log(`Đơn ${code}: ghi nhận hoàn tiền ${input.amount} (${staff.staffId})`);
+    return updated;
+  }
+
   /** Records a Bot command that never reached an order (not found, ambiguous, …). */
   async recordUnresolved(
     outcome: Extract<ConfirmOutcome, { code: string }>,
@@ -365,6 +505,13 @@ export class PaymentConfirmationService {
       return { result: PaymentEventResult.NOT_BANK_TRANSFER, order };
     }
     if (order.payment.status === PaymentStatus.PAID) return { result: PaymentEventResult.ALREADY_PAID, order };
+    if (order.payment.status === PaymentStatus.REFUNDED) {
+      return {
+        result: PaymentEventResult.INELIGIBLE,
+        order,
+        reason: `Đơn hàng ${code} đã được hoàn tiền nên không thể xác nhận thanh toán.`,
+      };
+    }
     if (order.status === OrderStatus.CANCELLED) {
       return {
         result: PaymentEventResult.INELIGIBLE,

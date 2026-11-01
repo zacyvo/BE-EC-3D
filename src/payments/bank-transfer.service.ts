@@ -45,6 +45,8 @@ export interface PaymentInstructions {
   qrError?: string;
   customerReportedAt?: Date;
   confirmedAt?: Date;
+  refundAmount?: number;
+  refundedAt?: Date;
 }
 
 /** Order statuses in which a bank-transfer order can still be paid / confirmed. */
@@ -213,6 +215,8 @@ export class BankTransferService {
       ...(qrError ? { qrError } : {}),
       ...(payment.customerReportedAt ? { customerReportedAt: payment.customerReportedAt } : {}),
       ...(payment.confirmedAt ? { confirmedAt: payment.confirmedAt } : {}),
+      ...(payment.refundAmount !== undefined ? { refundAmount: payment.refundAmount } : {}),
+      ...(payment.refundedAt ? { refundedAt: payment.refundedAt } : {}),
     };
   }
 

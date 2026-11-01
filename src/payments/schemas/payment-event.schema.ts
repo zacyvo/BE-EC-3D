@@ -8,6 +8,8 @@ export enum PaymentEventAction {
   CONFIRM_PAYMENT = 'CONFIRM_PAYMENT',
   /** Zalo "Danh sách" — an admin read the pending bank-transfer orders (customer names). */
   LIST_PENDING = 'LIST_PENDING',
+  /** Admin CMS "Xác nhận đã hoàn tiền" on a cancelled bank-transfer order. */
+  REFUND_PAYMENT = 'REFUND_PAYMENT',
 }
 
 export enum PaymentEventResult {

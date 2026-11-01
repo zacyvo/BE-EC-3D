@@ -306,10 +306,12 @@ export enum PaymentMethod {
   BANK_TRANSFER = 'BANK_TRANSFER',
 }
 
-/** Whether the money of a bank-transfer order has been received (decided by an admin only). */
+/** Whether the money of a bank-transfer order has been received (decided by an admin only).
+ * REFUNDED: the order was cancelled and an admin recorded sending the money back. */
 export enum PaymentStatus {
   PENDING_PAYMENT = 'PENDING_PAYMENT',
   PAID = 'PAID',
+  REFUNDED = 'REFUNDED',
 }
 
 /** The customer's own claim ("Tôi đã chuyển khoản") — never proof of payment. */
@@ -329,6 +331,7 @@ export enum PaymentHistoryAction {
   AMOUNT_UPDATED = 'AMOUNT_UPDATED',
   CUSTOMER_REPORTED = 'CUSTOMER_REPORTED',
   CONFIRMED = 'CONFIRMED',
+  REFUNDED = 'REFUNDED',
 }
 
 /** The receiving account as it was when the instructions were created — a later change of the
@@ -376,6 +379,16 @@ export class OrderPayment {
   @Prop() confirmedBy?: string;
   @Prop() confirmedByName?: string;
   @Prop({ enum: Object.values(PaymentConfirmationSource) }) confirmationSource?: PaymentConfirmationSource;
+  /** Refund of a cancelled order (Admin CMS "Xác nhận đã hoàn tiền"). */
+  @Prop() refundedAt?: Date;
+  @Prop() refundedBy?: string;
+  @Prop() refundedByName?: string;
+  @Prop({ min: 0 }) refundAmount?: number;
+  /** Bank transaction reference of the refund transfer. */
+  @Prop() refundTransferRef?: string;
+  @Prop() refundNote?: string;
+  /** Where the money was sent back to. */
+  @Prop({ type: RefundAccountSchema }) refundAccount?: RefundAccount;
   @Prop({ type: [PaymentHistoryEntrySchema], default: [] }) history: PaymentHistoryEntry[];
 }
 

@@ -134,6 +134,24 @@ export class ConfirmPaymentDto {
   @IsOptional() @IsNumber() @Min(0) expectedAmount?: number;
 }
 
+export class RefundAccountDto {
+  @Transform(trim) @IsString() @IsNotEmpty({ message: 'Vui lòng nhập ngân hàng nhận hoàn tiền' }) @MaxLength(100)
+  bankName: string;
+  @Transform(trim) @IsString() @Matches(/^[0-9A-Za-z]{4,19}$/, { message: 'Số tài khoản không hợp lệ' })
+  accountNumber: string;
+  @Transform(trim) @IsString() @IsNotEmpty({ message: 'Vui lòng nhập chủ tài khoản' }) @MaxLength(100)
+  accountHolder: string;
+}
+
+/** Admin CMS "Xác nhận đã hoàn tiền" — records a refund the shop already transferred by hand. */
+export class RefundPaymentDto {
+  @IsNumber({}, { message: 'Số tiền hoàn không hợp lệ' }) @Min(1, { message: 'Số tiền hoàn phải lớn hơn 0' })
+  amount: number;
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(100) transferRef?: string;
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(500) note?: string;
+  @IsOptional() @ValidateNested() @Type(() => RefundAccountDto) refundAccount?: RefundAccountDto;
+}
+
 export class RejectEInvoiceRequestDto {
   @Transform(trim) @IsString() @IsNotEmpty({ message: 'Vui lòng nhập lý do từ chối' }) @MaxLength(500)
   reason: string;

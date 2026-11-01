@@ -5,7 +5,7 @@ import {
 import { OrdersService } from './orders.service';
 import {
   CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto, UserCancelOrderDto,
-  EInvoiceRequestDto, RejectEInvoiceRequestDto, ConfirmPaymentDto,
+  EInvoiceRequestDto, RejectEInvoiceRequestDto, ConfirmPaymentDto, RefundPaymentDto,
 } from './dto/order.dto';
 import { EInvoiceRequestStatus, OrderStatus } from './schemas/order.schema';
 import { JwtAuthGuard, JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
@@ -136,7 +136,18 @@ export class AdminOrdersController {
     return this.paymentConfirmation.confirmByStaff(id, { staffId: staff.sub, staffName: staff.email }, dto.expectedAmount);
   }
 
-  /** Payment confirmation attempts for one order (audit trail). */
+  /** "Xác nhận đã hoàn tiền" — records a manual refund of a cancelled bank-transfer order. */
+  @Patch(':id/payment/refund')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  refundPayment(
+    @Param('id') id: string,
+    @Body() dto: RefundPaymentDto,
+    @CurrentUser() staff: { sub: string; email?: string },
+  ) {
+    return this.paymentConfirmation.refundByStaff(id, { staffId: staff.sub, staffName: staff.email }, dto);
+  }
+
+  /** Payment confirmation / refund attempts for one order (audit trail). */
   @Get(':id/payment/events')
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
   getPaymentEvents(@Param('id') id: string) {
