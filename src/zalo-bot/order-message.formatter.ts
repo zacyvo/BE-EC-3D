@@ -309,8 +309,8 @@ export function maskEmail(email: string | undefined | null): string {
 
 /**
  * Plain-text EINVOICE_REQUESTED message: who asks for a VAT invoice on which order, the buyer
- * the invoice would be made out to, the VAT now included in the total and the admin link where
- * the owner accepts or rejects it.
+ * the invoice would be made out to, the VAT included in the total (prices include VAT — the
+ * customer pays nothing extra) and the admin link where the owner accepts or rejects it.
  */
 export function formatEInvoiceRequestedMessage(order: OrderMessageInput, options: OrderMessageOptions = {}): string {
   const maxLength = options.maxLength ?? ZALO_MESSAGE_MAX_LENGTH;
@@ -335,10 +335,10 @@ export function formatEInvoiceRequestedMessage(order: OrderMessageInput, options
   lines.push(`Họ tên người mua: ${request.buyerName ? truncate(request.buyerName, 80) : MISSING}`);
   lines.push(`Email nhận hoá đơn: ${maskEmail(request.email)}`);
   lines.push('');
-  lines.push(`Tiền hàng (chưa VAT): ${formatVnd(total - vatAmount)}`);
-  lines.push(`VAT ${request.vatRate ?? 10}%: ${formatVnd(vatAmount)}`);
-  lines.push(`Tổng thanh toán: ${formatVnd(total)}`);
-  lines.push('', 'Vui lòng CHẤP NHẬN hoặc TỪ CHỐI trước khi giao hàng.');
+  lines.push(`Tổng thanh toán: ${formatVnd(total)} (đã gồm VAT, khách không trả thêm)`);
+  lines.push(`Tiền trước thuế: ${formatVnd(total - vatAmount)}`);
+  lines.push(`Thuế GTGT ${request.vatRate ?? 10}%: ${formatVnd(vatAmount)}`);
+  lines.push('', 'Vui lòng CHẤP NHẬN hoặc TỪ CHỐI, sau đó lập hoá đơn và gửi cho khách.');
   if (adminLink) lines.push('Xử lý yêu cầu:', adminLink);
 
   const message = lines.join('\n');

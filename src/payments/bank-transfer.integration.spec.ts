@@ -297,15 +297,27 @@ describe('VietQR checkout + payment instructions', () => {
     expect(decodeVietQrPayload(info.qrPayload!).accountNumber).toBe('0011001932418');
   });
 
-  it('follows the order total while unpaid (VAT e-invoice request adds 10%)', async () => {
+  it('an e-invoice request leaves the amount as is (prices include VAT)', async () => {
     const { orders } = build();
     const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
     const updated = await orders.requestEInvoiceByUser(order._id.toString(), userId, {
       buyerType: 'INDIVIDUAL', buyerName: 'Nguyễn Văn A', address: '1 Lê Lợi', email: 'a@b.vn',
     } as never);
+    expect(updated.total).toBe(order.total);
     const info = await orders.getPaymentForUser(order._id.toString(), userId);
-    expect(info.amount).toBe(updated.total);
-    expect(decodeVietQrPayload(info.qrPayload!).amount).toBe(updated.total);
+    expect(info.amount).toBe(order.total);
+    const stored = await OrderModel.findById(order._id).lean();
+    expect(stored!.payment!.history.map((h) => h.action)).not.toContain(PaymentHistoryAction.AMOUNT_UPDATED);
+  });
+
+  it('follows the order total while unpaid', async () => {
+    const { orders } = build();
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    // e.g. the shop rejects an older e-invoice request that had added VAT on top
+    await OrderModel.updateOne({ _id: order._id }, { $inc: { total: -10000 } });
+    const info = await orders.getPaymentForUser(order._id.toString(), userId);
+    expect(info.amount).toBe(order.total - 10000);
+    expect(decodeVietQrPayload(info.qrPayload!).amount).toBe(order.total - 10000);
     const stored = await OrderModel.findById(order._id).lean();
     expect(stored!.payment!.history.map((h) => h.action)).toContain(PaymentHistoryAction.AMOUNT_UPDATED);
   });

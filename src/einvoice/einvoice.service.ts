@@ -806,8 +806,9 @@ export class EInvoiceService {
 
   // ─── Yêu cầu xuất hoá đơn của khách (Order.einvoiceRequest) ──────────────────
 
-  /** Dữ liệu điền sẵn form "Tạo hoá đơn" từ yêu cầu xuất hoá đơn của khách — cùng cách chia dòng
-   * và làm tròn VAT như lúc cộng VAT vào đơn, nên tổng hoá đơn khớp số tiền khách thanh toán. */
+  /** Dữ liệu điền sẵn form "Tạo hoá đơn" từ yêu cầu xuất hoá đơn của khách. Giá bán đã gồm VAT nên
+   * đơn giá/chiết khấu được quy về giá chưa thuế, tổng hoá đơn khớp số tiền khách thanh toán (đơn
+   * yêu cầu trước 2026-11-02 có VAT cộng thêm — Order.vatAmount > 0 — giữ nguyên giá đơn). */
   async prefillFromOrderRequest(orderId: string) {
     if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Không tìm thấy đơn hàng');
     const order = await this.orderModel.findById(orderId).exec();
@@ -815,7 +816,9 @@ export class EInvoiceService {
     const request = order.einvoiceRequest;
     if (!request) throw new BadRequestException('Đơn hàng không có yêu cầu xuất hoá đơn');
 
-    const { lines, totalBeforeTax, vatAmount } = computeOrderVat(order, request.vatRate);
+    const { lines, totalBeforeTax, vatAmount } = computeOrderVat(order, request.vatRate, {
+      pricesIncludeVat: !((order.vatAmount ?? 0) > 0),
+    });
     return {
       orderId: order._id.toString(),
       requestStatus: request.status,

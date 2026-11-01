@@ -120,7 +120,7 @@ export class CreateOrderDto {
   @IsOptional() @IsArray() @ArrayUnique() @IsString({ each: true })
   couponCodes?: string[];
 
-  /** Customer asks for a VAT e-invoice — adds EINVOICE_VAT_RATE % to the total, shop approves. */
+  /** Customer asks for a VAT e-invoice — prices include VAT (total unchanged), shop approves. */
   @IsOptional() @ValidateNested() @Type(() => EInvoiceRequestDto)
   einvoiceRequest?: EInvoiceRequestDto;
 

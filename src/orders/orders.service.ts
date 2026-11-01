@@ -162,7 +162,8 @@ export class OrdersService {
     };
   }
 
-  /** New PENDING e-invoice request + the VAT it adds to the order (see einvoice-request.util). */
+  /** New PENDING e-invoice request + the VAT included in the order's price (informational — the
+   * total doesn't change, see einvoice-request.util). */
   private buildEInvoiceRequest(
     order: OrderVatInput,
     dto: EInvoiceRequestDto,
@@ -227,7 +228,7 @@ export class OrdersService {
     const shippingInfo = this.resolveShippingInfo(dto.shippingInfo);
     const shippingFee = computeShippingFee(shippingInfo.city);
 
-    // VAT e-invoice requested at checkout: VAT is added now, the shop accepts/rejects later.
+    // VAT e-invoice requested at checkout: prices include VAT, the shop handles the request later.
     const einvoiceRequest = dto.einvoiceRequest
       ? this.buildEInvoiceRequest(
           { items, discountAmount, shippingFee },
@@ -235,8 +236,7 @@ export class OrdersService {
           (await this.usersService.findById(userId))?.name || dto.shippingInfo.recipientName,
         )
       : undefined;
-    const vatAmount = einvoiceRequest?.vatAmount ?? 0;
-    const total = subtotal - discountAmount + shippingFee + vatAmount;
+    const total = subtotal - discountAmount + shippingFee;
 
     // ORDER_CREATED (+ EINVOICE_REQUESTED) owner notification intent, persisted atomically with the order.
     const outboxEvents = [
@@ -253,7 +253,6 @@ export class OrdersService {
       discountAmount,
       appliedCoupons,
       shippingFee,
-      vatAmount,
       total,
       status: OrderStatus.PENDING,
       currentVersion: 1,
@@ -734,7 +733,7 @@ export class OrdersService {
   }
 
   /** Customer asks for a VAT e-invoice on an order that wasn't placed with one (one request per
-   * order, only before the parcel ships). The VAT is added to the total and the owner's Zalo Bot
+   * order, any order that isn't cancelled). The total doesn't change; the owner's Zalo Bot
    * notification is queued in the same atomic update. */
   async requestEInvoiceByUser(orderId: string, userId: string, dto: EInvoiceRequestDto): Promise<OrderDocument> {
     if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
@@ -758,8 +757,8 @@ export class OrdersService {
           total: before.total,
         },
         {
-          $set: { einvoiceRequest: request, vatAmount: request.vatAmount },
-          $inc: { total: request.vatAmount, currentVersion: 1 },
+          $set: { einvoiceRequest: request },
+          $inc: { currentVersion: 1 },
           ...(outboxEvents.length ? { $addToSet: { pendingNotificationEvents: { $each: outboxEvents } } } : {}),
         },
         { new: true },
@@ -769,7 +768,7 @@ export class OrdersService {
       const current = await this.findByIdForUser(orderId, userId);
       if (current.einvoiceRequest) throw new BadRequestException('Bạn đã gửi yêu cầu xuất hoá đơn cho đơn hàng này');
       if (!EINVOICE_REQUESTABLE_STATUSES.includes(current.status)) {
-        throw new BadRequestException('Chỉ có thể yêu cầu xuất hoá đơn trước khi đơn hàng được giao cho đơn vị vận chuyển');
+        throw new BadRequestException('Không thể yêu cầu xuất hoá đơn cho đơn hàng đã hủy');
       }
       throw new BadRequestException('Đơn hàng vừa được cập nhật, vui lòng thử lại');
     }
@@ -781,8 +780,7 @@ export class OrdersService {
       action: 'USER_REQUEST_EINVOICE',
       module: 'orders',
       targetId: orderId,
-      beforeData: { total: before.total },
-      afterData: { total: updated.total, vatAmount: updated.vatAmount, buyerType: request.buyerType },
+      afterData: { total: updated.total, vatIncluded: request.vatAmount, buyerType: request.buyerType },
     });
 
     // Non-blocking, same as checkout: a Zalo failure can't affect the request.
@@ -790,8 +788,8 @@ export class OrdersService {
     return updated;
   }
 
-  /** Shop accepts the customer's e-invoice request — the VAT stays in the total and the invoice
-   * is issued (and emailed) once the order is paid. */
+  /** Shop accepts the customer's e-invoice request — the invoice is issued (and emailed) once the
+   * order is paid. */
   async approveEInvoiceRequest(orderId: string, staffId: string): Promise<OrderDocument> {
     if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
     const updated = await this.orderModel
@@ -826,19 +824,20 @@ export class OrdersService {
     return updated;
   }
 
-  /** Shop declines the request — the VAT it added is taken back out of the total. */
+  /** Shop declines the request. Older requests added the VAT on top (Order.vatAmount) — that is
+   * taken back out of the total; current ones leave the total as is. */
   async rejectEInvoiceRequest(orderId: string, staffId: string, reason: string): Promise<OrderDocument> {
     if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
     const before = await this.orderModel.findById(orderId).exec();
     if (!before) throw new NotFoundException('Order not found');
-    const vatAmount = before.einvoiceRequest?.vatAmount ?? 0;
+    const vatAmount = before.vatAmount ?? 0;
 
     const updated = await this.orderModel
       .findOneAndUpdate(
         {
           _id: before._id,
           'einvoiceRequest.status': EInvoiceRequestStatus.PENDING,
-          'einvoiceRequest.vatAmount': vatAmount,
+          vatAmount,
         },
         {
           $set: {
@@ -979,8 +978,9 @@ export class OrdersService {
       throw new ForbiddenException('CS cannot cancel orders');
     }
 
-    // The amount to collect depends on the VAT — decide the e-invoice request before shipping.
+    // Older requests added the VAT on top, so the amount to collect depends on the decision.
     if (
+      (order.vatAmount ?? 0) > 0 &&
       order.einvoiceRequest?.status === EInvoiceRequestStatus.PENDING &&
       EINVOICE_PENDING_BLOCKED_STATUSES.includes(dto.status) &&
       order.status !== dto.status

@@ -117,11 +117,22 @@ async function seedOrder(status: OrderStatus, extra: Record<string, unknown> = {
     ],
     shippingInfo: { recipientName: 'Người nhận', phone: '0912345689', street: '1 Lê Lợi', ward: 'Bến Thành', city: 'TP.HCM' },
     subtotal: 259000,
-    total: 259000,
+    shippingFee: 22000,
+    total: 281000,
     status,
     ...extra,
   });
 }
+
+/** Request made before 2026-11-02: the VAT was added on top of the total. */
+const LEGACY = {
+  vatAmount: 25900,
+  total: 281000 + 25900,
+  einvoiceRequest: {
+    status: EInvoiceRequestStatus.PENDING, buyerType: 'COMPANY', buyerName: 'Nguyễn Văn A', companyName: 'Công ty TNHH Ánh Sáng',
+    taxCode: '0312345678', address: '1 Lê Lợi', email: 'ketoan@anhsang.vn', vatRate: 10, vatAmount: 25900, requestedAt: new Date(),
+  },
+};
 
 function zaloTexts(): string[] {
   return fetchMock.mock.calls
@@ -191,15 +202,42 @@ beforeEach(async () => {
 afterEach(() => jest.restoreAllMocks());
 
 describe('computeOrderVat', () => {
-  it('prorates the discount over lines, adds shipping as a line, VAT 10% per line', () => {
+  const ORDER = {
+    items: [
+      { productName: 'A', quantity: 2, unitPrice: 100000, subtotal: 200000, color: 'Trắng' },
+      { productName: 'B', quantity: 1, unitPrice: 100000, subtotal: 100000 },
+    ],
+    discountAmount: 30001,
+    shippingFee: 25000,
+  };
+  /** What EInvoiceService.computeItems makes of a line. */
+  const invoiced = (l: { quantity: number; unitPrice: number; discountAmount: number }) => {
+    const total = Math.round(l.quantity * l.unitPrice - l.discountAmount);
+    return total + Math.round(total / 10);
+  };
+
+  it('prices include VAT: before-VAT lines whose invoice total is exactly what the customer pays', () => {
+    const res = computeOrderVat(ORDER);
+    const paid = 300000 - 30001 + 25000;
+    expect(res.lines.map((l) => l.name)).toEqual(['A (Trắng)', 'B', 'Phí vận chuyển']);
+    expect(res.lines.reduce((s, l) => s + invoiced(l), 0)).toBe(paid);
+    expect(res.totalBeforeTax + res.vatAmount).toBe(paid);
+    expect(res.lines[1]).toMatchObject({ unitPrice: 90909, discountAmount: 9091, total: 81818, vatAmount: 8182 });
+  });
+
+  it('a 1đ VAT rounding gap moves on to the next line (468 000đ has no exact before-VAT amount)', () => {
     const res = computeOrderVat({
-      items: [
-        { productName: 'A', quantity: 2, unitPrice: 100000, subtotal: 200000, color: 'Trắng' },
-        { productName: 'B', quantity: 1, unitPrice: 100000, subtotal: 100000 },
-      ],
-      discountAmount: 30001,
-      shippingFee: 25000,
+      items: [{ productName: 'Đèn', quantity: 2, unitPrice: 259000, subtotal: 518000 }],
+      discountAmount: 50000,
+      shippingFee: 22000,
     });
+    expect(res.lines[0]).toMatchObject({ unitPrice: 235454.5, discountAmount: 45455, total: 425454, vatAmount: 42545 });
+    expect(res.lines[1]).toMatchObject({ unitPrice: 20001, total: 20001, vatAmount: 2000 });
+    expect(res.lines.reduce((s, l) => s + invoiced(l), 0)).toBe(490000);
+  });
+
+  it('older requests (VAT on top): order amounts are before VAT, VAT 10% per line', () => {
+    const res = computeOrderVat(ORDER, 10, { pricesIncludeVat: false });
     expect(res.lines.map((l) => l.discountAmount)).toEqual([20001, 10000, 0]);
     expect(res.lines[0].name).toBe('A (Trắng)');
     expect(res.lines[2]).toMatchObject({ name: 'Phí vận chuyển', total: 25000, vatAmount: 2500 });
@@ -231,7 +269,7 @@ describe('EInvoiceRequestDto validation', () => {
 });
 
 describe('Request at checkout', () => {
-  it('adds VAT on the discounted amount + shipping, stores the request, owner gets ORDER_CREATED + EINVOICE_REQUESTED', async () => {
+  it('total unchanged (prices include VAT), stores the request, owner gets ORDER_CREATED + EINVOICE_REQUESTED', async () => {
     const svc = build();
     const dto = {
       items: [{ productId, quantity: 2 }],
@@ -242,14 +280,14 @@ describe('Request at checkout', () => {
     const order = await svc.orders.create(userId, dto);
     expect(order.subtotal).toBe(518000);
     expect(order.shippingFee).toBe(22000); // TP.HCM
-    expect(order.vatAmount).toBe(49000); // (518000 − 50000 + 22000) × 10%
-    expect(order.total).toBe(518000 - 50000 + 22000 + 49000);
+    expect(order.vatAmount).toBe(0);
+    expect(order.total).toBe(518000 - 50000 + 22000);
     expect(order.einvoiceRequest).toMatchObject({
       status: EInvoiceRequestStatus.PENDING,
       companyName: 'Công ty TNHH Ánh Sáng',
       email: 'ketoan@anhsang.vn',
       vatRate: 10,
-      vatAmount: 49000,
+      vatAmount: 44545, // included in the 490 000đ (see computeOrderVat)
       requestedByName: 'Trần Thị B',
     });
 
@@ -259,14 +297,16 @@ describe('Request at checkout', () => {
     expect(jobs.every((j) => j.status === NotificationStatus.ACCEPTED)).toBe(true);
     const texts = zaloTexts();
     const created = texts.find((t) => t.includes('ĐƠN HÀNG MỚI'))!;
-    expect(created).toContain('VAT (xuất hoá đơn điện tử): 49.000đ');
+    expect(created).not.toContain('VAT');
     const request = texts.find((t) => t.includes('YÊU CẦU XUẤT HOÁ ĐƠN'))!;
     const id = order._id.toString();
     expect(request).toContain(`Trần Thị B yêu cầu xuất hoá đơn VAT cho đơn #${id.slice(-8).toUpperCase()}`);
     expect(request).toContain('MST: 0312345678');
     expect(request).toContain('Email nhận hoá đơn: ke****@anhsang.vn');
-    expect(request).toContain('VAT 10%: 49.000đ');
-    expect(request).toContain('Tổng thanh toán: 539.000đ');
+    expect(request).toContain('Tổng thanh toán: 490.000đ (đã gồm VAT, khách không trả thêm)');
+    expect(request).toContain('Tiền trước thuế: 445.455đ');
+    expect(request).toContain('Thuế GTGT 10%: 44.545đ');
+    expect(request).not.toContain('trước khi giao hàng');
     expect(request).toContain(`https://admin.luxe-glow.vn/orders?search=${id}`);
   });
 
@@ -284,12 +324,13 @@ describe('Request at checkout', () => {
 });
 
 describe('Request after the order was placed', () => {
-  it('PROCESSING order: VAT added, version saved, owner notified once', async () => {
+  it('PROCESSING order: total unchanged, version saved, owner notified once', async () => {
     const svc = build();
     const order = await seedOrder(OrderStatus.PROCESSING);
     const res = await svc.orders.requestEInvoiceByUser(order._id.toString(), userId, COMPANY);
-    expect(res.vatAmount).toBe(25900);
-    expect(res.total).toBe(284900);
+    expect(res.vatAmount).toBe(0);
+    expect(res.total).toBe(281000);
+    expect(res.einvoiceRequest?.vatAmount).toBe(25545);
     expect(res.einvoiceRequest?.status).toBe(EInvoiceRequestStatus.PENDING);
     expect(await VersionModel.countDocuments({ orderId: order._id })).toBe(1);
 
@@ -304,13 +345,20 @@ describe('Request after the order was placed', () => {
     const order = await seedOrder(OrderStatus.PENDING);
     await svc.orders.requestEInvoiceByUser(order._id.toString(), userId, COMPANY);
     await expect(svc.orders.requestEInvoiceByUser(order._id.toString(), userId, COMPANY)).rejects.toThrow('đã gửi yêu cầu');
-    expect((await OrderModel.findById(order._id).lean())?.total).toBe(284900);
+    expect((await OrderModel.findById(order._id).lean())?.total).toBe(281000);
   });
 
-  it.each([OrderStatus.SHIPPED, OrderStatus.DELIVERED, OrderStatus.CANCELLED])('refused once the order is %s', async (status) => {
+  it.each([OrderStatus.SHIPPED, OrderStatus.DELIVERED])('accepted after the parcel left the shop (%s)', async (status) => {
     const order = await seedOrder(status);
-    await expect(build().orders.requestEInvoiceByUser(order._id.toString(), userId, COMPANY)).rejects.toThrow(BadRequestException);
-    expect((await OrderModel.findById(order._id).lean())?.total).toBe(259000);
+    const res = await build().orders.requestEInvoiceByUser(order._id.toString(), userId, COMPANY);
+    expect(res.einvoiceRequest?.status).toBe(EInvoiceRequestStatus.PENDING);
+    expect(res.total).toBe(281000);
+  });
+
+  it('refused once the order is cancelled', async () => {
+    const order = await seedOrder(OrderStatus.CANCELLED);
+    await expect(build().orders.requestEInvoiceByUser(order._id.toString(), userId, COMPANY)).rejects.toThrow('đã hủy');
+    expect((await OrderModel.findById(order._id).lean())?.einvoiceRequest).toBeUndefined();
   });
 
   it('refused for marketplace orders and for other users', async () => {
@@ -325,28 +373,44 @@ describe('Request after the order was placed', () => {
 });
 
 describe('Shop decision', () => {
-  it('reject removes the VAT from the total and records the reason', async () => {
+  it('reject records the reason and leaves the total as is', async () => {
     const svc = build();
     const order = await seedOrder(OrderStatus.PENDING);
     await svc.orders.requestEInvoiceByUser(order._id.toString(), userId, COMPANY);
     const res = await svc.orders.rejectEInvoiceRequest(order._id.toString(), staffId, 'MST không tồn tại');
-    expect(res.total).toBe(259000);
+    expect(res.total).toBe(281000);
     expect(res.vatAmount).toBe(0);
     expect(res.einvoiceRequest).toMatchObject({ status: EInvoiceRequestStatus.REJECTED, rejectReason: 'MST không tồn tại', decidedBy: staffId });
     await expect(svc.orders.approveEInvoiceRequest(order._id.toString(), staffId)).rejects.toThrow('đã được xử lý');
   });
 
-  it('shipping is blocked while the request is pending, allowed after approval', async () => {
+  it('older request: reject takes the added VAT back out of the total', async () => {
+    const order = await seedOrder(OrderStatus.PENDING, LEGACY);
+    const res = await build().orders.rejectEInvoiceRequest(order._id.toString(), staffId, 'Sai MST');
+    expect(res.total).toBe(281000);
+    expect(res.vatAmount).toBe(0);
+  });
+
+  it('a pending request does not hold up shipping', async () => {
     const svc = build();
     const order = await seedOrder(OrderStatus.PROCESSING);
     const id = order._id.toString();
     await svc.orders.requestEInvoiceByUser(id, userId, COMPANY);
+    const shipped = await svc.orders.updateStatus(id, { status: OrderStatus.SHIPPED }, staffId, StaffRole.ADMIN);
+    expect(shipped.status).toBe(OrderStatus.SHIPPED);
+    expect(shipped.einvoiceRequest?.status).toBe(EInvoiceRequestStatus.PENDING);
+  });
+
+  it('older request: shipping is blocked while pending (COD includes the VAT), allowed after approval', async () => {
+    const svc = build();
+    const order = await seedOrder(OrderStatus.PROCESSING, LEGACY);
+    const id = order._id.toString();
     await expect(svc.orders.updateStatus(id, { status: OrderStatus.SHIPPED }, staffId, StaffRole.ADMIN)).rejects.toThrow(
       'chưa xử lý',
     );
     const approved = await svc.orders.approveEInvoiceRequest(id, staffId);
     expect(approved.einvoiceRequest?.status).toBe(EInvoiceRequestStatus.APPROVED);
-    expect(approved.total).toBe(284900);
+    expect(approved.total).toBe(306900);
     const shipped = await svc.orders.updateStatus(id, { status: OrderStatus.SHIPPED }, staffId, StaffRole.ADMIN);
     expect(shipped.status).toBe(OrderStatus.SHIPPED);
   });
@@ -377,10 +441,23 @@ describe('Invoice issued for an approved request', () => {
       buyerName: 'Nguyễn Văn A',
       customerTaxCode: '0312345678',
       customerEmail: 'ketoan@anhsang.vn',
-      totalAmount: 284900,
-      orderTotal: 284900,
+      totalBeforeTax: 255455,
+      vatAmount: 25545,
+      totalAmount: 281000,
+      orderTotal: 281000,
     });
-    expect(prefill.items).toEqual([expect.objectContaining({ name: 'Đèn', quantity: 1, unitPrice: 259000, vatRate: 10 })]);
+    expect(prefill.items).toEqual([
+      expect.objectContaining({ name: 'Đèn', quantity: 1, unitPrice: 235454, vatRate: 10 }),
+      expect.objectContaining({ name: 'Phí vận chuyển', quantity: 1, unitPrice: 20001, vatRate: 10 }),
+    ]);
+  });
+
+  it('older request (VAT on top): prefill keeps the order prices', async () => {
+    const svc = build();
+    const order = await seedOrder(OrderStatus.PROCESSING, LEGACY);
+    const prefill = await svc.einvoices.prefillFromOrderRequest(order._id.toString());
+    expect(prefill).toMatchObject({ totalBeforeTax: 281000, vatAmount: 28100, totalAmount: 309100, orderTotal: 306900 });
+    expect(prefill.items[0]).toMatchObject({ unitPrice: 259000 });
   });
 
   it('issuing links the invoice, marks the request ISSUED and emails the PDF + key', async () => {
@@ -389,7 +466,7 @@ describe('Invoice issued for an approved request', () => {
     const { orderId: _o, requestStatus: _s, totalBeforeTax: _b, vatAmount: _v, totalAmount: _t, orderTotal: _ot, paidAmount: _p, ...dto } =
       await svc.einvoices.prefillFromOrderRequest(id);
     const invoice = await svc.einvoices.create({ ...dto, orderId: id }, staffId);
-    expect(invoice.totalAmount).toBe(284900);
+    expect(invoice.totalAmount).toBe(281000);
 
     const order = await OrderModel.findById(id).lean();
     expect(order?.einvoiceRequest).toMatchObject({ status: EInvoiceRequestStatus.ISSUED });
@@ -400,7 +477,7 @@ describe('Invoice issued for an approved request', () => {
     expect(mail.sendEInvoiceIssued).toHaveBeenCalledTimes(1);
     const [to, data] = mail.sendEInvoiceIssued.mock.calls[0];
     expect(to).toBe('ketoan@anhsang.vn');
-    expect(data).toMatchObject({ invoiceNo: '00000077', totalAmount: 284900, viewUrl: order?.einvoiceRequest?.invoiceUrl });
+    expect(data).toMatchObject({ invoiceNo: '00000077', totalAmount: 281000, viewUrl: order?.einvoiceRequest?.invoiceUrl });
     expect(data.securityCode).toMatch(/^[A-Z2-9]{8}$/);
     expect(data.pdf.content.toString()).toContain('%PDF');
   });

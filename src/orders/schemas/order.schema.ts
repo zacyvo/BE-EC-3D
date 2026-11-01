@@ -280,7 +280,8 @@ export class OrderEInvoiceRequest {
   @Prop({ required: true, trim: true, lowercase: true }) email: string;
   @Prop({ trim: true }) phone?: string;
   @Prop({ required: true, min: 0 }) vatRate: number;
-  /** VAT added to Order.total by this request — mirrors Order.vatAmount while not REJECTED. */
+  /** VAT on the invoice: included in Order.total (prices include VAT). Requests made before
+   * 2026-11-02 added it on top instead — those orders have Order.vatAmount > 0. */
   @Prop({ required: true, min: 0 }) vatAmount: number;
   @Prop({ required: true }) requestedAt: Date;
   /** Account name at request time — what the owner's Zalo notification shows. */
@@ -415,7 +416,8 @@ export class Order {
   /** Shipping fee added on top of product subtotal */
   @Prop({ default: 0, min: 0 }) shippingFee: number;
 
-  /** VAT added on top because the customer asked for a VAT e-invoice (0 otherwise). */
+  /** VAT added on top for an e-invoice request — only orders requested before 2026-11-02; prices
+   * include VAT now, so this stays 0. */
   @Prop({ default: 0, min: 0 }) vatAmount: number;
 
   /** Final payable amount = subtotal - discountAmount + shippingFee + vatAmount */
