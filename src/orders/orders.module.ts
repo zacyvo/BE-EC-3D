@@ -11,6 +11,7 @@ import { PromotionsModule } from '../promotions/promotions.module';
 import { UsersModule } from '../users/users.module';
 import { LocationsModule } from '../locations/locations.module';
 import { ZaloBotModule } from '../zalo-bot/zalo-bot.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { ZaloBotModule } from '../zalo-bot/zalo-bot.module';
     UsersModule,
     LocationsModule,
     ZaloBotModule,
+    PaymentsModule,
   ],
   controllers: [OrdersController, AdminOrdersController],
   providers: [OrdersService],

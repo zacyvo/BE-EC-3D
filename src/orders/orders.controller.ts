@@ -5,13 +5,14 @@ import {
 import { OrdersService } from './orders.service';
 import {
   CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto, UserCancelOrderDto,
-  EInvoiceRequestDto, RejectEInvoiceRequestDto,
+  EInvoiceRequestDto, RejectEInvoiceRequestDto, ConfirmPaymentDto,
 } from './dto/order.dto';
 import { EInvoiceRequestStatus, OrderStatus } from './schemas/order.schema';
 import { JwtAuthGuard, JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { PaymentConfirmationService } from '../payments/payment-confirmation.service';
 
 @Controller('orders')
 @UseGuards(JwtAuthGuard)
@@ -52,6 +53,18 @@ export class OrdersController {
     return this.ordersService.requestCancelByUser(id, user.sub, dto.reason);
   }
 
+  /** VietQR bank-transfer instructions (own orders only). Stable across reloads. */
+  @Get(':id/payment')
+  getPayment(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
+    return this.ordersService.getPaymentForUser(id, user.sub);
+  }
+
+  /** "Tôi đã chuyển khoản" — records the customer's claim; never marks the order paid. */
+  @Post(':id/payment/report')
+  reportPayment(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
+    return this.ordersService.reportPaymentByUser(id, user.sub);
+  }
+
   /** Customer asks for a VAT e-invoice (+VAT on the total) — notifies the owner to accept/reject. */
   @Post(':id/einvoice-request')
   requestEInvoice(@Param('id') id: string, @CurrentUser() user: { sub: string }, @Body() dto: EInvoiceRequestDto) {
@@ -62,7 +75,10 @@ export class OrdersController {
 @Controller('admin/orders')
 @UseGuards(JwtStaffGuard, RolesGuard)
 export class AdminOrdersController {
-  constructor(private readonly ordersService: OrdersService) {}
+  constructor(
+    private readonly ordersService: OrdersService,
+    private readonly paymentConfirmation: PaymentConfirmationService,
+  ) {}
 
   @Get('stats')
   @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
@@ -107,6 +123,24 @@ export class AdminOrdersController {
     @CurrentUser() staff: { sub: string },
   ) {
     return this.ordersService.rejectEInvoiceRequest(id, staff.sub, dto.reason);
+  }
+
+  /** "Xác nhận đã thanh toán" — same PaymentConfirmationService as the Zalo Bot command. */
+  @Patch(':id/payment/confirm')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  confirmPayment(
+    @Param('id') id: string,
+    @Body() dto: ConfirmPaymentDto,
+    @CurrentUser() staff: { sub: string; email?: string },
+  ) {
+    return this.paymentConfirmation.confirmByStaff(id, { staffId: staff.sub, staffName: staff.email }, dto.expectedAmount);
+  }
+
+  /** Payment confirmation attempts for one order (audit trail). */
+  @Get(':id/payment/events')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  getPaymentEvents(@Param('id') id: string) {
+    return this.paymentConfirmation.eventsForOrder(id);
   }
 
   @Patch(':id/status')

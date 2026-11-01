@@ -11,6 +11,8 @@ import { OrderNotificationService } from './order-notification.service';
 import { ZaloBotWebhookController } from './zalo-bot-webhook.controller';
 import { ZaloBotAdminController } from './zalo-bot-admin.controller';
 import { ZaloZbsModule } from '../zalo-zbs/zalo-zbs.module';
+import { PaymentsModule } from '../payments/payments.module';
+import { ZaloPaymentCommandHandler } from './zalo-payment-command.handler';
 
 /** Owner notifications via Zalo Bot (ORDER_CREATED → shop owner's Zalo). Also hosts the
  * ORDER_CREATED entry point for the customer ZBS confirmation (ZaloZbsModule), which has its
@@ -24,9 +26,16 @@ import { ZaloZbsModule } from '../zalo-zbs/zalo-zbs.module';
     ]),
     AuditModule,
     ZaloZbsModule,
+    PaymentsModule,
   ],
   controllers: [ZaloBotWebhookController, ZaloBotAdminController],
-  providers: [ZaloBotConfigService, ZaloBotClient, ZaloOwnerRecipientService, OrderNotificationService],
+  providers: [
+    ZaloBotConfigService,
+    ZaloBotClient,
+    ZaloOwnerRecipientService,
+    OrderNotificationService,
+    ZaloPaymentCommandHandler,
+  ],
   exports: [OrderNotificationService, ZaloBotConfigService],
 })
 export class ZaloBotModule {}

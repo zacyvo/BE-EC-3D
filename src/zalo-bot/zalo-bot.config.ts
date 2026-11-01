@@ -21,6 +21,15 @@ export interface ZaloBotConfigSnapshot {
   workerIntervalMs: number;
   /** Admin dashboard origin used to build the "Xem đơn hàng" link. */
   adminUrl: string;
+  /** Zalo user ids (message.from.id) allowed to confirm bank-transfer payments by Bot command —
+   * ZALO_PAYMENT_ADMIN_IDS="id" or "id:Tên hiển thị", comma separated. Empty = command disabled. */
+  paymentAdmins: PaymentAdmin[];
+}
+
+export interface PaymentAdmin {
+  zaloId: string;
+  /** Shown as "Xác nhận bởi" — configured by the operator, never taken from the Zalo profile. */
+  label?: string;
 }
 
 export interface ZaloBotConfigValidation {
@@ -43,6 +52,7 @@ export interface ZaloBotReadiness {
   maxRetries: number;
   workerIntervalMs: number;
   adminUrl: string;
+  paymentAdminCount: number;
   valid: boolean;
   errors: string[];
   warnings: string[];
@@ -73,6 +83,7 @@ export class ZaloBotConfigService {
       retryBaseDelayMs: this.num('ZALO_BOT_RETRY_BASE_DELAY_MS', 30000),
       workerIntervalMs: this.num('ZALO_BOT_WORKER_INTERVAL_MS', 15000),
       adminUrl: (this.str('ZALO_BOT_ADMIN_URL', '') || this.str('ADMIN_URL', '')).replace(/\/+$/, ''),
+      paymentAdmins: parsePaymentAdmins(this.str('ZALO_PAYMENT_ADMIN_IDS', '')),
     };
   }
 
@@ -143,6 +154,7 @@ export class ZaloBotConfigService {
       maxRetries: cfg.maxRetries,
       workerIntervalMs: cfg.workerIntervalMs,
       adminUrl: cfg.adminUrl,
+      paymentAdminCount: cfg.paymentAdmins.length,
       ...v,
     };
   }
@@ -167,6 +179,19 @@ export function parseChatIds(raw: string): string[] {
         .filter(Boolean),
     ),
   );
+}
+
+/** "id1, id2:Chủ shop" → [{zaloId:'id1'}, {zaloId:'id2', label:'Chủ shop'}] (deduplicated by id). */
+export function parsePaymentAdmins(raw: string): PaymentAdmin[] {
+  const byId = new Map<string, PaymentAdmin>();
+  for (const part of raw.split(',')) {
+    const [id, ...rest] = part.split(':');
+    const zaloId = id.trim();
+    if (!zaloId || byId.has(zaloId)) continue;
+    const label = rest.join(':').trim().slice(0, 60);
+    byId.set(zaloId, label ? { zaloId, label } : { zaloId });
+  }
+  return [...byId.values()];
 }
 
 function isHttpsUrl(value: string): boolean {

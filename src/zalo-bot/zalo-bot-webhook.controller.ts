@@ -5,6 +5,7 @@ import {
   Headers,
   HttpCode,
   Logger,
+  Optional,
   Post,
   ServiceUnavailableException,
   UseGuards,
@@ -14,6 +15,7 @@ import { createHash, timingSafeEqual } from 'crypto';
 import { ZaloBotConfigService } from './zalo-bot.config';
 import { ZALO_WEBHOOK_SECRET_HEADER } from './zalo-bot.constants';
 import { InboundChat, ZaloOwnerRecipientService, maskChatId } from './zalo-owner-recipient.service';
+import { InboundTextMessage, ZaloPaymentCommandHandler } from './zalo-payment-command.handler';
 
 /** Constant-time comparison (hashing first makes lengths equal). */
 export function secretMatches(received: string | undefined, expected: string): boolean {
@@ -59,8 +61,13 @@ export function describePayloadShape(body: unknown): string {
  * (docs.zaloplatforms.com/docs/BOT/webhook):
  *   { ok: true, result: { event_name, message: { from: {id, display_name, is_bot}, chat: {id, chat_type}, text, ... } } }
  * Returns null for anything else — other event types and malformed bodies are ignored.
+ * `message` carries what the payment command needs (sender id, message id, date, text).
  */
-export function parseTextReceivedEvent(body: unknown): { eventName: string | null; chat: InboundChat | null } {
+export function parseTextReceivedEvent(body: unknown): {
+  eventName: string | null;
+  chat: InboundChat | null;
+  message?: InboundTextMessage;
+} {
   const result = eventObject(body);
   const eventName = typeof result?.event_name === 'string' ? result.event_name : null;
   if (eventName !== 'message.text.received') return { eventName, chat: null };
@@ -75,13 +82,31 @@ export function parseTextReceivedEvent(body: unknown): { eventName: string | nul
   const chatId = String(rawId).trim();
   if (chatId.length > 128 || from?.is_bot === true) return { eventName, chat: null };
 
+  const chatType = typeof chat?.chat_type === 'string' ? chat.chat_type.slice(0, 20) : undefined;
+  const fromId = typeof from?.id === 'string' || typeof from?.id === 'number' ? String(from.id).trim() : '';
+  const messageId = message?.message_id;
+  const date = Number(message?.date);
   return {
     eventName,
     chat: {
       chatId,
-      chatType: typeof chat?.chat_type === 'string' ? chat.chat_type.slice(0, 20) : undefined,
+      chatType,
       displayName: typeof from?.display_name === 'string' ? from.display_name : undefined,
     },
+    ...(fromId && fromId.length <= 128 && typeof message?.text === 'string'
+      ? {
+          message: {
+            fromId,
+            chatId,
+            chatType,
+            ...((typeof messageId === 'string' || typeof messageId === 'number') && String(messageId).length <= 128
+              ? { messageId: String(messageId) }
+              : {}),
+            ...(Number.isFinite(date) && date > 0 ? { date } : {}),
+            text: message.text,
+          },
+        }
+      : {}),
   };
 }
 
@@ -89,7 +114,9 @@ export function parseTextReceivedEvent(body: unknown): { eventName: string | nul
  * Public endpoint Zalo calls: POST /api/v1/webhooks/zalo-bot
  *
  * Purpose: chat id discovery for owner enrollment + webhook health (testWebhook/setWebhook
- * verification). It never authorizes anyone and never sends messages. Works regardless of
+ * verification), plus the admin payment command ("Đơn hàng: LG… / Đã thanh toán"), which only
+ * senders in ZALO_PAYMENT_ADMIN_IDS can use (ZaloPaymentCommandHandler). Enrollment never
+ * authorizes anyone. Works regardless of
  * ZALO_BOT_ENABLED so the owner can enroll before notifications are switched on; requires
  * ZALO_BOT_WEBHOOK_SECRET to be configured.
  *
@@ -103,6 +130,7 @@ export class ZaloBotWebhookController {
   constructor(
     private readonly configService: ZaloBotConfigService,
     private readonly recipients: ZaloOwnerRecipientService,
+    @Optional() private readonly paymentCommands?: ZaloPaymentCommandHandler,
   ) {}
 
   @Post()
@@ -120,7 +148,7 @@ export class ZaloBotWebhookController {
       throw new ForbiddenException('Unauthorized');
     }
 
-    const { eventName, chat } = parseTextReceivedEvent(body);
+    const { eventName, chat, message } = parseTextReceivedEvent(body);
     if (!chat) {
       // testWebhook probes, other event types (image/sticker/voice/unsupported), malformed
       // bodies: acknowledge so Zalo marks the endpoint healthy, but do nothing.
@@ -130,6 +158,13 @@ export class ZaloBotWebhookController {
 
     const outcome = await this.recipients.recordInboundChat(chat);
     this.logger.log(`Webhook Zalo Bot: ${eventName} từ chat ${maskChatId(chat.chatId)} → ${outcome}`);
+
+    if (message && this.paymentCommands) {
+      const command = await this.paymentCommands.handle(message);
+      if (command !== 'not_command') {
+        this.logger.log(`Webhook Zalo Bot: lệnh thanh toán từ ${maskChatId(message.fromId)} → ${command}`);
+      }
+    }
     return { received: true, handled: true };
   }
 }

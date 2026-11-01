@@ -15,6 +15,9 @@ export enum NotificationEventType {
   /** Customer asked for a VAT e-invoice (at checkout or later) — the owner must accept or
    * reject it in the admin dashboard before the order ships. */
   EINVOICE_REQUESTED = 'EINVOICE_REQUESTED',
+  /** Customer clicked "Tôi đã chuyển khoản" on a VietQR bank-transfer order — a claim only; the
+   * owner checks the bank account, then confirms with the Bot command or in the admin dashboard. */
+  PAYMENT_REPORTED = 'PAYMENT_REPORTED',
 }
 
 /** Owner Bot events that travel through the Order outbox (`pendingNotificationEvents`). */
@@ -24,6 +27,7 @@ export const ZALO_BOT_OUTBOX_EVENTS: NotificationEventType[] = [
   NotificationEventType.ORDER_CANCELLED_BY_CUSTOMER,
   NotificationEventType.ORDER_RETURN_REQUESTED,
   NotificationEventType.EINVOICE_REQUESTED,
+  NotificationEventType.PAYMENT_REPORTED,
 ];
 
 /**

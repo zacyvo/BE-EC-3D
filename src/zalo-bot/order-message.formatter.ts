@@ -19,9 +19,15 @@ export interface OrderMessageInput {
   shippingFee?: number;
   total?: number;
   paidAmount?: number;
-  /** Not on the Order schema today (storefront checkout is COD-only — see
-   * frontend-user/src/app/checkout/page.tsx). Read if a future payment flow adds it. */
+  /** COD / BANK_TRANSFER — absent on older and admin/marketplace orders (shown as COD). */
   paymentMethod?: string;
+  payment?: {
+    reference?: string;
+    amount?: number;
+    status?: string;
+    customerReportedAt?: Date | string;
+    bankAccount?: { bankName?: string; accountNumber?: string };
+  };
   customerNote?: string;
   cancelRequest?: { requestedAt?: Date | string; reason?: string; requestedByName?: string };
   cancelReason?: string;
@@ -68,10 +74,10 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
 
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
   COD: 'COD (thanh toán khi nhận hàng)',
-  BANK_TRANSFER: 'Chuyển khoản',
+  BANK_TRANSFER: 'Chuyển khoản ngân hàng (VietQR)',
 };
 
-/** The only payment method the storefront offers today. */
+/** Orders without a recorded method (placed before bank transfer existed) were COD. */
 const DEFAULT_PAYMENT_METHOD = 'COD';
 
 const MISSING = '(không có)';
@@ -334,6 +340,38 @@ export function formatEInvoiceRequestedMessage(order: OrderMessageInput, options
   lines.push(`Tổng thanh toán: ${formatVnd(total)}`);
   lines.push('', 'Vui lòng CHẤP NHẬN hoặc TỪ CHỐI trước khi giao hàng.');
   if (adminLink) lines.push('Xử lý yêu cầu:', adminLink);
+
+  const message = lines.join('\n');
+  return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;
+}
+
+/**
+ * Plain-text PAYMENT_REPORTED message: the customer says they transferred the money for a VietQR
+ * order. It is a claim, not a confirmation — the message says so and tells the owner the exact
+ * Bot command to send once the money is actually in the account.
+ */
+export function formatPaymentReportedMessage(order: OrderMessageInput, options: OrderMessageOptions = {}): string {
+  const maxLength = options.maxLength ?? ZALO_MESSAGE_MAX_LENGTH;
+  const orderId = order._id ? order._id.toString() : '';
+  const code = orderId ? orderDisplayCode(orderId) : MISSING;
+  const payment = order.payment ?? {};
+  const reference = payment.reference || MISSING;
+  const name = order.shippingInfo?.recipientName?.trim() || 'Khách hàng';
+  const adminLink = buildAdminOrderUrl(options.adminUrl, orderId);
+
+  const lines: string[] = ['💳 LUXE GLOW — KHÁCH BÁO ĐÃ CHUYỂN KHOẢN', ''];
+  lines.push(`${truncate(name, 80)} báo đã chuyển khoản cho đơn ${code}`);
+  const reportedAt = formatDateTime(payment.customerReportedAt);
+  if (reportedAt) lines.push(`Thời gian báo: ${reportedAt}`);
+  lines.push(`Số tiền cần nhận: ${formatVnd(payment.amount ?? order.total)}`);
+  lines.push(`Nội dung chuyển khoản: ${reference}`);
+  if (payment.bankAccount?.bankName) {
+    const acc = payment.bankAccount.accountNumber ?? '';
+    lines.push(`Tài khoản nhận: ${payment.bankAccount.bankName}${acc ? ` ••••${acc.slice(-4)}` : ''}`);
+  }
+  lines.push('', '⚠️ Đây chỉ là thông báo của khách, CHƯA phải xác nhận đã nhận tiền.');
+  lines.push('Sau khi kiểm tra tài khoản ngân hàng, gửi cho bot:', `Đơn hàng: ${reference}`, 'Đã thanh toán');
+  if (adminLink) lines.push('', 'Xem đơn hàng:', adminLink);
 
   const message = lines.join('\n');
   return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;

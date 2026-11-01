@@ -29,6 +29,7 @@ import {
   formatOrderCreatedMessage,
   formatOrderReturnRequestedMessage,
   formatEInvoiceRequestedMessage,
+  formatPaymentReportedMessage,
   orderDisplayCode,
   OrderMessageInput,
   OrderMessageOptions,
@@ -51,6 +52,7 @@ const MESSAGE_FORMATTERS: Record<NotificationEventType, (o: OrderMessageInput, o
   [NotificationEventType.ORDER_CANCELLED_BY_CUSTOMER]: formatOrderCancelledByCustomerMessage,
   [NotificationEventType.ORDER_RETURN_REQUESTED]: formatOrderReturnRequestedMessage,
   [NotificationEventType.EINVOICE_REQUESTED]: formatEInvoiceRequestedMessage,
+  [NotificationEventType.PAYMENT_REPORTED]: formatPaymentReportedMessage,
 };
 
 export function notificationDedupKey(eventType: NotificationEventType, orderId: string, recipientId: string): string {
@@ -170,6 +172,11 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
   /** Same as above for a customer's VAT e-invoice request (also written at checkout). */
   einvoiceRequestedOutboxEvents(): string[] {
     return this.botOutboxEvents(NotificationEventType.EINVOICE_REQUESTED);
+  }
+
+  /** Same as above for a customer's "Tôi đã chuyển khoản" on a bank-transfer order. */
+  paymentReportedOutboxEvents(): string[] {
+    return this.botOutboxEvents(NotificationEventType.PAYMENT_REPORTED);
   }
 
   private botOutboxEvents(event: NotificationEventType): string[] {

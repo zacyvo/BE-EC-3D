@@ -299,6 +299,88 @@ export class OrderEInvoiceRequest {
 
 const OrderEInvoiceRequestSchema = SchemaFactory.createForClass(OrderEInvoiceRequest);
 
+/** How the customer pays. Absent on orders placed before bank transfer existed (= COD) and on
+ * admin-created / marketplace orders, whose payment is tracked through `paidAmount` only. */
+export enum PaymentMethod {
+  COD = 'COD',
+  BANK_TRANSFER = 'BANK_TRANSFER',
+}
+
+/** Whether the money of a bank-transfer order has been received (decided by an admin only). */
+export enum PaymentStatus {
+  PENDING_PAYMENT = 'PENDING_PAYMENT',
+  PAID = 'PAID',
+}
+
+/** The customer's own claim ("Tôi đã chuyển khoản") — never proof of payment. */
+export enum PaymentVerificationStatus {
+  NOT_REPORTED = 'NOT_REPORTED',
+  AWAITING_CONFIRMATION = 'AWAITING_CONFIRMATION',
+  CONFIRMED = 'CONFIRMED',
+}
+
+export enum PaymentConfirmationSource {
+  ZALO_ADMIN_BOT = 'ZALO_ADMIN_BOT',
+  ADMIN_CMS = 'ADMIN_CMS',
+}
+
+export enum PaymentHistoryAction {
+  INSTRUCTIONS_CREATED = 'INSTRUCTIONS_CREATED',
+  AMOUNT_UPDATED = 'AMOUNT_UPDATED',
+  CUSTOMER_REPORTED = 'CUSTOMER_REPORTED',
+  CONFIRMED = 'CONFIRMED',
+}
+
+/** The receiving account as it was when the instructions were created — a later change of the
+ * shop's bank config doesn't rewrite what an old order told its customer. */
+@Schema({ _id: false })
+export class BankAccountSnapshot {
+  @Prop({ required: true }) bankBin: string;
+  @Prop({ required: true }) bankName: string;
+  @Prop({ required: true }) accountNumber: string;
+  @Prop({ required: true }) accountName: string;
+}
+
+const BankAccountSnapshotSchema = SchemaFactory.createForClass(BankAccountSnapshot);
+
+@Schema({ _id: false })
+export class PaymentHistoryEntry {
+  @Prop({ required: true, enum: Object.values(PaymentHistoryAction) }) action: PaymentHistoryAction;
+  @Prop({ required: true }) at: Date;
+  @Prop({ required: true, enum: ['user', 'staff', 'zalo', 'system'] }) byType: 'user' | 'staff' | 'zalo' | 'system';
+  @Prop() by?: string;
+  @Prop() byName?: string;
+  @Prop({ enum: Object.values(PaymentConfirmationSource) }) source?: PaymentConfirmationSource;
+  @Prop({ min: 0 }) amount?: number;
+  @Prop() note?: string;
+}
+
+const PaymentHistoryEntrySchema = SchemaFactory.createForClass(PaymentHistoryEntry);
+
+/** Bank-transfer (VietQR) payment of an order — see src/payments. PAID is only ever set by an
+ * authorized admin (Zalo Bot command or Admin CMS) through PaymentConfirmationService. */
+@Schema({ _id: false })
+export class OrderPayment {
+  @Prop({ required: true, enum: Object.values(PaymentStatus) }) status: PaymentStatus;
+  /** Transfer description (nội dung CK) — unique per order, e.g. "LG6A1B2C3D". */
+  @Prop({ required: true }) reference: string;
+  /** Amount the customer is asked to transfer — follows Order.total until the order is paid. */
+  @Prop({ required: true, min: 0 }) amount: number;
+  @Prop({ required: true, default: 'VND' }) currency: string;
+  @Prop({ type: BankAccountSnapshotSchema, required: true }) bankAccount: BankAccountSnapshot;
+  @Prop({ required: true, enum: Object.values(PaymentVerificationStatus) })
+  verificationStatus: PaymentVerificationStatus;
+  @Prop() customerReportedAt?: Date;
+  @Prop() confirmedAt?: Date;
+  /** Staff id (Admin CMS) or "zalo:<user id>" (Zalo Bot). */
+  @Prop() confirmedBy?: string;
+  @Prop() confirmedByName?: string;
+  @Prop({ enum: Object.values(PaymentConfirmationSource) }) confirmationSource?: PaymentConfirmationSource;
+  @Prop({ type: [PaymentHistoryEntrySchema], default: [] }) history: PaymentHistoryEntry[];
+}
+
+const OrderPaymentSchema = SchemaFactory.createForClass(OrderPayment);
+
 @Schema({ timestamps: true })
 export class Order {
   _id: Types.ObjectId;
@@ -350,6 +432,10 @@ export class Order {
 
   @Prop({ default: 0, min: 0 }) paidAmount: number;
 
+  @Prop({ enum: Object.values(PaymentMethod) }) paymentMethod?: PaymentMethod;
+  /** Present only when paymentMethod = BANK_TRANSFER. */
+  @Prop({ type: OrderPaymentSchema }) payment?: OrderPayment;
+
   /** Set when this order was imported/synced from a marketplace (e.g. Shopee) instead
    * of placed directly on Luxe Glow. Absent = a normal order. */
   @Prop({ type: OrderExternalRefSchema }) externalRef?: OrderExternalRef;
@@ -364,8 +450,8 @@ export class Order {
    * written in the SAME insert as the order, so the intent exists iff the order does; the
    * worker of each channel pulls its own marker once the notification jobs exist —
    * 'ORDER_CREATED' / 'ORDER_CANCEL_REQUESTED' / 'ORDER_CANCELLED_BY_CUSTOMER' /
-   * 'ORDER_RETURN_REQUESTED' / 'EINVOICE_REQUESTED' (owner Zalo Bot, the cancel/return/e-invoice
-   * events are added by the same write that records them), 'ORDER_CREATED:ZALO_ZBS'
+   * 'ORDER_RETURN_REQUESTED' / 'EINVOICE_REQUESTED' / 'PAYMENT_REPORTED' (owner Zalo Bot, the
+   * cancel/return/e-invoice/transfer-report events are added by the same write that records them), 'ORDER_CREATED:ZALO_ZBS'
    * (customer ZBS). Absent on most
    * orders; hidden from API responses by the toJSON transform below. */
   @Prop({ type: [String], default: undefined }) pendingNotificationEvents?: string[];
@@ -385,6 +471,8 @@ OrderSchema.index({ 'externalRef.channel': 1, 'externalRef.code': 1 }, { unique:
 OrderSchema.index({ 'returnRequest.status': 1, 'returnRequest.requestedAt': -1 }, { sparse: true });
 // Sparse: only orders with an e-invoice request carry the field (admin "Yêu cầu HĐĐT" filter).
 OrderSchema.index({ 'einvoiceRequest.status': 1 }, { sparse: true });
+// Unique transfer reference per bank-transfer order (also how the Zalo Bot finds the order).
+OrderSchema.index({ 'payment.reference': 1 }, { unique: true, sparse: true });
 // Sparse: only orders with a not-yet-dispatched notification carry the field.
 OrderSchema.index({ pendingNotificationEvents: 1 }, { sparse: true });
 // Internal worker state — keep it out of checkout/admin API responses.

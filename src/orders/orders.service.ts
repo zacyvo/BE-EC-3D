@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types, PipelineStage } from 'mongoose';
@@ -15,6 +16,9 @@ import {
   EInvoiceBuyerType,
   EInvoiceRequestStatus,
   OrderEInvoiceRequest,
+  OrderPayment,
+  PaymentMethod,
+  PaymentStatus,
 } from './schemas/order.schema';
 import { OrderVersion, OrderVersionDocument } from './schemas/order-version.schema';
 import { NET_ORDER_TOTAL_EXPR } from './order-return-aggregation';
@@ -36,6 +40,7 @@ import { PromotionsService } from '../promotions/promotions.service';
 import { UsersService } from '../users/users.service';
 import { AddressConversionService } from '../locations/address-conversion.service';
 import { OrderNotificationService } from '../zalo-bot/order-notification.service';
+import { BankTransferService, PaymentInstructions, PAYMENT_REFERENCE_LENGTHS } from '../payments/bank-transfer.service';
 
 /** One imported line item — already resolved to a catalog product by the caller
  * (e.g. ShopeeOrderSyncService); OrdersService just persists it as-is. */
@@ -104,6 +109,8 @@ export class OrdersService {
     private readonly usersService: UsersService,
     private readonly addressConversionService: AddressConversionService,
     private readonly orderNotifications: OrderNotificationService,
+    /** VietQR bank transfer (optional so COD-only setups / older specs construct without it). */
+    @Optional() private readonly bankTransfer?: BankTransferService,
   ) {}
 
   /** Validates the selected color/size against the product's configured options
@@ -232,7 +239,8 @@ export class OrdersService {
       ...(einvoiceRequest ? this.orderNotifications.einvoiceRequestedOutboxEvents() : []),
     ];
 
-    const order = await this.orderModel.create({
+    const paymentMethod = dto.paymentMethod ?? PaymentMethod.COD;
+    const fields = {
       userId: new Types.ObjectId(userId),
       items,
       shippingInfo: this.resolveShippingInfo(dto.shippingInfo),
@@ -243,10 +251,15 @@ export class OrdersService {
       total,
       status: OrderStatus.PENDING,
       currentVersion: 1,
+      paymentMethod,
       ...(dto.customerNote ? { customerNote: dto.customerNote } : {}),
       ...(einvoiceRequest ? { einvoiceRequest } : {}),
       ...(outboxEvents.length ? { pendingNotificationEvents: outboxEvents } : {}),
-    });
+    };
+    const order =
+      paymentMethod === PaymentMethod.BANK_TRANSFER
+        ? await this.createBankTransferOrder(fields, total)
+        : await this.orderModel.create(fields);
 
     // Mark coupons as used
     if (appliedCoupons.length) {
@@ -274,6 +287,27 @@ export class OrdersService {
     this.orderNotifications.kick();
 
     return order;
+  }
+
+  /** Bank-transfer checkout: the payment snapshot (bank account, server-computed amount, unique
+   * transfer reference derived from the order id) is written in the same insert as the order.
+   * A reference collision (unique index) is retried with a longer id suffix. */
+  private async createBankTransferOrder(fields: Record<string, unknown>, total: number): Promise<OrderDocument> {
+    if (!this.bankTransfer) {
+      throw new BadRequestException('Phương thức chuyển khoản ngân hàng tạm thời không khả dụng — vui lòng chọn COD');
+    }
+    const _id = new Types.ObjectId();
+    for (const [i, length] of PAYMENT_REFERENCE_LENGTHS.entries()) {
+      const payment: OrderPayment = this.bankTransfer.buildInitialPayment(_id, total, length);
+      try {
+        return await this.orderModel.create({ _id, ...fields, payment });
+      } catch (err) {
+        const e = err as { code?: number; keyPattern?: Record<string, unknown> };
+        const referenceTaken = e.code === 11000 && !!e.keyPattern?.['payment.reference'];
+        if (!referenceTaken || i === PAYMENT_REFERENCE_LENGTHS.length - 1) throw err;
+      }
+    }
+    throw new BadRequestException('Không tạo được mã thanh toán, vui lòng thử lại');
   }
 
   async createForAdmin(staffId: string, dto: AdminCreateOrderDto): Promise<OrderDocument> {
@@ -545,6 +579,45 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.userId.toString() !== userId) throw new ForbiddenException('Access denied');
     return order;
+  }
+
+  /** VietQR payment instructions of the customer's own bank-transfer order. */
+  async getPaymentForUser(orderId: string, userId: string): Promise<PaymentInstructions> {
+    if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
+    const order = await this.findByIdForUser(orderId, userId);
+    if (!this.bankTransfer) throw new BadRequestException('Đơn hàng này không sử dụng phương thức chuyển khoản ngân hàng');
+    return this.bankTransfer.getInstructions(order);
+  }
+
+  /** "Tôi đã chuyển khoản" — a customer CLAIM only: the payment stays unpaid until an admin
+   * confirms it. The owner's Zalo Bot notification is queued in the same atomic update. */
+  async reportPaymentByUser(
+    orderId: string,
+    userId: string,
+  ): Promise<PaymentInstructions & { alreadyReported: boolean }> {
+    if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
+    const before = await this.findByIdForUser(orderId, userId);
+    if (!this.bankTransfer) throw new BadRequestException('Đơn hàng này không sử dụng phương thức chuyển khoản ngân hàng');
+    const user = await this.usersService.findById(userId);
+    const { order, reported } = await this.bankTransfer.reportTransfer(
+      before,
+      { userId, name: user?.name || before.shippingInfo?.recipientName },
+      this.orderNotifications.paymentReportedOutboxEvents(),
+    );
+    if (reported) {
+      await this.saveVersion(order, userId, 'user', 'Khách hàng báo đã chuyển khoản');
+      await this.auditService.log({
+        actorId: userId,
+        actorType: 'user',
+        action: 'USER_REPORT_BANK_TRANSFER',
+        module: 'payments',
+        targetId: orderId,
+        afterData: { verificationStatus: order.payment?.verificationStatus, amount: order.payment?.amount },
+      });
+      // Non-blocking, same as checkout: a Zalo failure can't affect the report.
+      this.orderNotifications.kick();
+    }
+    return { ...this.bankTransfer.toInstructions(order), alreadyReported: !reported };
   }
 
   /** Throws the right error for a user action on an order that the guarded update didn't match. */
@@ -842,6 +915,7 @@ export class OrdersService {
           $match: {
             $or: [
               { $expr: { $regexMatch: { input: { $toString: '$_id' }, regex: escaped, options: 'i' } } },
+              { 'payment.reference': { $regex: escaped, $options: 'i' } },
               { '_user.name': { $regex: escaped, $options: 'i' } },
               { '_user.email': { $regex: escaped, $options: 'i' } },
             ],
@@ -906,6 +980,19 @@ export class OrdersService {
     ) {
       throw new BadRequestException(
         'Đơn có yêu cầu xuất hoá đơn điện tử chưa xử lý — vui lòng chấp nhận hoặc từ chối trước khi giao hàng',
+      );
+    }
+
+    // A bank-transfer order is marked paid only through "Xác nhận đã thanh toán" (payment
+    // confirmation service + audit) — not by editing the paid amount here.
+    if (
+      dto.paidAmount !== undefined &&
+      dto.paidAmount !== order.paidAmount &&
+      order.paymentMethod === PaymentMethod.BANK_TRANSFER &&
+      order.payment?.status === PaymentStatus.PENDING_PAYMENT
+    ) {
+      throw new BadRequestException(
+        'Đơn chuyển khoản chưa được xác nhận thanh toán — vui lòng dùng "Xác nhận đã thanh toán" thay vì sửa số tiền đã trả',
       );
     }
 

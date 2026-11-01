@@ -19,7 +19,7 @@ import {
   ValidateBy,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
-import { EInvoiceBuyerType, OrderStatus } from '../schemas/order.schema';
+import { EInvoiceBuyerType, OrderStatus, PaymentMethod } from '../schemas/order.schema';
 import { OldAddressInputDto } from '../../locations/dto/old-address-input.dto';
 
 /** Shared with shopee-order-mapping.util.ts (masked/invalid Shopee phone detection) —
@@ -122,6 +122,16 @@ export class CreateOrderDto {
   /** Customer asks for a VAT e-invoice — adds EINVOICE_VAT_RATE % to the total, shop approves. */
   @IsOptional() @ValidateNested() @Type(() => EInvoiceRequestDto)
   einvoiceRequest?: EInvoiceRequestDto;
+
+  /** COD (default) or BANK_TRANSFER (VietQR). The amount is always computed server-side. */
+  @IsOptional() @IsEnum(PaymentMethod, { message: 'Phương thức thanh toán không hợp lệ' })
+  paymentMethod?: PaymentMethod;
+}
+
+/** Admin CMS "Xác nhận đã thanh toán" — `expectedAmount` is the amount shown in the dialog; the
+ * confirmation is refused if the order total changed since (stale screen). */
+export class ConfirmPaymentDto {
+  @IsOptional() @IsNumber() @Min(0) expectedAmount?: number;
 }
 
 export class RejectEInvoiceRequestDto {
