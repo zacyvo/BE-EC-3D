@@ -322,7 +322,7 @@ export class ZbsPromotionCampaignService implements OnModuleInit, OnModuleDestro
   }
 
   /**
-   * Audience ∩ allowed-to-use-the-coupon, one row per phone. The phone is the latest
+   * Audience ∩ opted-in to promotions ∩ allowed-to-use-the-coupon, one row per phone. The phone is the latest
    * storefront order's (the number the customer actually uses with us) or the account's.
    * Marketplace orders (externalRef) are ignored: their buyers are not storefront customers.
    */
@@ -335,6 +335,7 @@ export class ZbsPromotionCampaignService implements OnModuleInit, OnModuleDestro
       notAllowedByPromotion: 0,
       couponAlreadyUsed: 0,
       alreadyReceived: 0,
+      noMarketingConsent: 0,
     };
     let userIds: Types.ObjectId[];
     if (audience === ZbsCampaignAudience.ASSIGNED_USERS) {
@@ -355,7 +356,11 @@ export class ZbsPromotionCampaignService implements OnModuleInit, OnModuleDestro
       ])
       .exec();
     const orderPhone = new Map(latestPhones.map((r) => [r._id.toString(), r.phone]));
-    const users = await this.userModel.find({ _id: { $in: userIds } }).select('name phone isDeleted isBlocked').lean().exec();
+    const users = await this.userModel
+      .find({ _id: { $in: userIds } })
+      .select('name phone isDeleted isBlocked marketingOptIn')
+      .lean()
+      .exec();
     const userById = new Map(users.map((u) => [u._id.toString(), u]));
     const existing = new Set(
       (await this.messageModel.find({ dedupKey: { $regex: `^PROMO:${couponId}:` } }).select('dedupKey').lean().exec()).map((m) => m.dedupKey),
@@ -368,6 +373,11 @@ export class ZbsPromotionCampaignService implements OnModuleInit, OnModuleDestro
       const user = userById.get(id);
       if (!user || user.isDeleted || user.isBlocked) {
         exclusions.blockedOrDeleted++;
+        continue;
+      }
+      // Promotional messages need the customer's prior opt-in (Chính sách bảo mật §8).
+      if (!user.marketingOptIn) {
+        exclusions.noMarketingConsent++;
         continue;
       }
       if (!userMayUse(promo, id)) {

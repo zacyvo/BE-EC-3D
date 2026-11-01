@@ -425,6 +425,8 @@ export class Order {
   status: OrderStatus;
 
   @Prop() customerNote?: string;
+  /** Storefront checkout: when the customer accepted the Terms + Privacy Policy for this order. */
+  @Prop() termsAcceptedAt?: Date;
   @Prop() csNote?: string;
   @Prop() cancelReason?: string;
   @Prop({ type: OrderCancelRequestSchema }) cancelRequest?: OrderCancelRequest;

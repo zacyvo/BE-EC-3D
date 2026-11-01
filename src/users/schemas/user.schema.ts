@@ -85,6 +85,19 @@ export class User {
   @Prop()
   dob?: Date;
 
+
+  /** When the user ticked "Tôi đồng ý với Điều khoản dịch vụ và Chính sách bảo mật" at registration. */
+
+  @Prop() termsAcceptedAt?: Date;
+
+  /** Opt-in to promotional messages (Zalo/email). Promotion campaigns only target users with true. */
+
+  @Prop({ default: false }) marketingOptIn: boolean;
+
+  /** Last time the opt-in was granted or withdrawn. */
+
+  @Prop() marketingOptInAt?: Date;
+
   @Prop({ select: false })
   deleteAccountCode?: string;
 

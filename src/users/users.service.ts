@@ -22,6 +22,9 @@ export class UsersService {
     avatar?: string;
     provider?: string;
     providerId?: string;
+    termsAcceptedAt?: Date;
+    marketingOptIn?: boolean;
+    marketingOptInAt?: Date;
   }): Promise<UserDocument> {
     const existing = await this.userModel.findOne({ email: data.email }).select('+password').exec();
     if (existing) {
@@ -226,7 +229,7 @@ export class UsersService {
 
   async updateProfile(
     userId: string,
-    data: { name?: string; phone?: string; avatar?: string; dob?: Date },
+    data: { name?: string; phone?: string; avatar?: string; dob?: Date; marketingOptIn?: boolean; marketingOptInAt?: Date },
   ): Promise<UserDocument> {
     const user = await this.userModel
       .findByIdAndUpdate(userId, { $set: data }, { new: true })

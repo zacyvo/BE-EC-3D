@@ -31,6 +31,8 @@ export class AuthService {
       password: dto.password,
       name: dto.name,
       phone: dto.phone,
+      ...(dto.acceptTerms ? { termsAcceptedAt: new Date() } : {}),
+      ...(dto.marketingOptIn ? { marketingOptIn: true, marketingOptInAt: new Date() } : {}),
     });
 
     const tokens = await this.generateUserTokens(user._id.toString(), user.email);

@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsEmail,
   IsString,
   MinLength,
@@ -30,6 +31,13 @@ export class RegisterDto {
     message: 'Số điện thoại không hợp lệ (VD: 0912345678)',
   })
   phone?: string;
+
+  /** "Tôi đồng ý với Điều khoản dịch vụ và Chính sách bảo mật" — required by the storefront form;
+   * optional here only so an older cached page can't break registration during a deploy. */
+  @IsOptional() @IsBoolean() acceptTerms?: boolean;
+
+  /** Optional opt-in to promotional messages. */
+  @IsOptional() @IsBoolean() marketingOptIn?: boolean;
 }
 
 export class LoginDto {

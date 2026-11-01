@@ -218,6 +218,14 @@ describe('VietQR checkout + payment instructions', () => {
     expect(order.payment!.history.map((h) => h.action)).toEqual([PaymentHistoryAction.INSTRUCTIONS_CREATED]);
   });
 
+  it('records when the customer accepted the Terms + Privacy Policy at checkout', async () => {
+    const { orders } = build();
+    const accepted = await orders.create(userId, checkoutDto({ acceptTerms: true }));
+    expect(accepted.termsAcceptedAt).toBeInstanceOf(Date);
+    const legacy = await orders.create(userId, checkoutDto());
+    expect(legacy.termsAcceptedAt).toBeUndefined();
+  });
+
   it('keeps COD as the default and stores no payment instructions', async () => {
     const { orders } = build();
     const order = await orders.create(userId, checkoutDto());

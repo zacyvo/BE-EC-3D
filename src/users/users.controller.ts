@@ -25,6 +25,8 @@ import { OldAddressInputDto } from '../locations/dto/old-address-input.dto';
 class UpdateProfileDto {
   @IsOptional() @IsString() @MaxLength(64) name?: string;
   @IsOptional() @IsDateString() dob?: string;
+  /** Grant / withdraw consent to promotional messages. */
+  @IsOptional() @IsBoolean() marketingOptIn?: boolean;
 }
 
 class ChangePasswordDto {
@@ -74,9 +76,13 @@ export class UsersController {
     @CurrentUser() user: { sub: string },
     @Body() dto: UpdateProfileDto,
   ) {
-    const data: { name?: string; dob?: Date } = {};
+    const data: { name?: string; dob?: Date; marketingOptIn?: boolean; marketingOptInAt?: Date } = {};
     if (dto.name !== undefined) data.name = dto.name;
     if (dto.dob !== undefined) data.dob = new Date(dto.dob);
+    if (dto.marketingOptIn !== undefined) {
+      data.marketingOptIn = dto.marketingOptIn;
+      data.marketingOptInAt = new Date();
+    }
     return this.usersService.updateProfile(user.sub, data);
   }
 

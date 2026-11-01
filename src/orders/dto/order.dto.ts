@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsString,
   IsArray,
   IsMongoId,
@@ -122,6 +123,10 @@ export class CreateOrderDto {
   /** Customer asks for a VAT e-invoice — adds EINVOICE_VAT_RATE % to the total, shop approves. */
   @IsOptional() @ValidateNested() @Type(() => EInvoiceRequestDto)
   einvoiceRequest?: EInvoiceRequestDto;
+
+  /** The customer ticked "Tôi đồng ý với Điều khoản dịch vụ và Chính sách bảo mật" (storefront
+   * enforces it; optional here so a cached older page can't break checkout during a deploy). */
+  @IsOptional() @IsBoolean() acceptTerms?: boolean;
 
   /** COD (default) or BANK_TRANSFER (VietQR). The amount is always computed server-side. */
   @IsOptional() @IsEnum(PaymentMethod, { message: 'Phương thức thanh toán không hợp lệ' })

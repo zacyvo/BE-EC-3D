@@ -96,7 +96,7 @@ const users: Record<string, Types.ObjectId> = {};
 async function addUser(key: string, fields: Record<string, unknown> = {}) {
   const _id = new Types.ObjectId();
   users[key] = _id;
-  await UserModel.collection.insertOne({ _id, email: `${key}@test.vn`, name: `Khách ${key}`, isDeleted: false, isBlocked: false, isGuest: false, ...fields });
+  await UserModel.collection.insertOne({ _id, email: `${key}@test.vn`, name: `Khách ${key}`, isDeleted: false, isBlocked: false, isGuest: false, marketingOptIn: true, ...fields });
   return _id;
 }
 async function addOrder(userKey: string, status: string, phone: string, extra: Record<string, unknown> = {}) {
@@ -237,6 +237,21 @@ describe('helpers', () => {
 });
 
 describe('draft', () => {
+  it('never targets customers who have not opted in to promotional messages', async () => {
+    await addUser('x', { marketingOptIn: false });
+    await addOrder('x', 'DELIVERED', '0912345611');
+    await addUser('y', { marketingOptIn: undefined }); // accounts created before the opt-in existed
+    await addOrder('y', 'DELIVERED', '0912345612');
+    await addUser('z');
+    await addOrder('z', 'DELIVERED', '0912345613');
+    const { svc } = build();
+    const res = await draft(svc);
+    expect(res.campaign.recipientCount).toBe(1);
+    expect(res.campaign.exclusions).toMatchObject({ noMarketingConsent: 2 });
+    const phones = (await MsgModel.find({}).lean()).map((m) => m.phone);
+    expect(phones).toEqual(['84912345613']); // stored in Zalo's 84… format
+  });
+
   it('builds the audience with exclusions, dedups phones and previews the 652780 params', async () => {
     await seedCustomers();
     await addUser('i');
@@ -254,6 +269,7 @@ describe('draft', () => {
       couponAlreadyUsed: 1, // i
       notAllowedByPromotion: 0,
       alreadyReceived: 0,
+      noMarketingConsent: 0,
     });
     expect(res.preview.templateData).toEqual({
       customer_name: 'Khách a',

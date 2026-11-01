@@ -252,6 +252,7 @@ export class OrdersService {
       status: OrderStatus.PENDING,
       currentVersion: 1,
       paymentMethod,
+      ...(dto.acceptTerms ? { termsAcceptedAt: new Date() } : {}),
       ...(dto.customerNote ? { customerNote: dto.customerNote } : {}),
       ...(einvoiceRequest ? { einvoiceRequest } : {}),
       ...(outboxEvents.length ? { pendingNotificationEvents: outboxEvents } : {}),

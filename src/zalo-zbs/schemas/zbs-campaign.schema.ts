@@ -37,6 +37,8 @@ export class ZbsCampaignExclusions {
   @Prop({ default: 0 }) notAllowedByPromotion: number;
   @Prop({ default: 0 }) couponAlreadyUsed: number;
   @Prop({ default: 0 }) alreadyReceived: number;
+  /** Customer has not opted in to promotional messages (Chính sách bảo mật §8). */
+  @Prop({ default: 0 }) noMarketingConsent: number;
 }
 const ZbsCampaignExclusionsSchema = SchemaFactory.createForClass(ZbsCampaignExclusions);
 
