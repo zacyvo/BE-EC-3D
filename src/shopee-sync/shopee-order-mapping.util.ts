@@ -247,7 +247,11 @@ export function mapShopeeApiOrderStatus(apiStatus: string): OrderStatus {
 /** Status of an order group, whichever source the rows came from. */
 export function resolveOrderStatusFromRow(row: ShopeeOrderRawRow): OrderStatus {
   const apiStatus = row[SHOPEE_API_ROW_KEYS.orderStatus];
-  if (apiStatus) return mapShopeeApiOrderStatus(apiStatus);
+  if (apiStatus) {
+    // The API mapper only fills returnStatus for a fully refunded order (see mapShopeeApiOrderToRows).
+    if ((row[SHOPEE_ORDER_COLUMNS.returnStatus] || '').trim()) return OrderStatus.CANCELLED;
+    return mapShopeeApiOrderStatus(apiStatus);
+  }
   return mapShopeeOrderStatus(row[SHOPEE_ORDER_COLUMNS.status], row[SHOPEE_ORDER_COLUMNS.returnStatus]);
 }
 
@@ -369,11 +373,15 @@ export function computeOrderMoney(rows: ShopeeOrderRawRow[]): ShopeeOrderMoney {
 
   // Rows from Shopee Open API carry Shopee's own settlement figure — authoritative, so the
   // reverse-engineered fee/tax formula below is only the fallback for Excel imports.
+  // escrow_amount goes negative when Shopee charges the seller (e.g. return shipping on a
+  // refunded order): nothing was collected, and Order.paidAmount has min 0.
   const escrowAmount = rows[0][SHOPEE_API_ROW_KEYS.escrowAmount];
-  const sellerRevenue =
+  const sellerRevenue = Math.max(
+    0,
     escrowAmount !== undefined && escrowAmount !== ''
       ? parseVndAmount(escrowAmount)
-      : subtotal + netShippingImpact - fixedFee - serviceFee - transactionFee - vatWithheld - pitWithheld - displayServiceFee;
+      : subtotal + netShippingImpact - fixedFee - serviceFee - transactionFee - vatWithheld - pitWithheld - displayServiceFee,
+  );
 
   return { subtotal, shippingFee, discountAmount, total, sellerRevenue };
 }

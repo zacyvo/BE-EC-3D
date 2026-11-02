@@ -73,6 +73,22 @@ describe('mapShopeeApiOrderToRows', () => {
     expect(resolveOrderStatusFromRow(rows[0])).toBe(OrderStatus.SHIPPED);
   });
 
+  it('COMPLETED but refunded (negative escrow) → CANCELLED with sellerRevenue 0, never negative', () => {
+    const rows = mapShopeeApiOrderToRows({ ...order, item_list: [order.item_list![0]] }, {
+      escrow: { return_order_sn_list: ['RET123'], order_income: { escrow_amount: -28700 } },
+    });
+    expect(resolveOrderStatusFromRow(rows[0])).toBe(OrderStatus.CANCELLED);
+    expect(computeOrderMoney(rows).sellerRevenue).toBe(0);
+  });
+
+  it('COMPLETED with a partial return keeps the positive payout and stays DELIVERED', () => {
+    const rows = mapShopeeApiOrderToRows(order, {
+      escrow: { return_order_sn_list: ['RET123'], order_income: { escrow_amount: 90000 } },
+    });
+    expect(resolveOrderStatusFromRow(rows[0])).toBe(OrderStatus.DELIVERED);
+    expect(computeOrderMoney(rows).sellerRevenue).toBe(90000);
+  });
+
   it('rejects orders it cannot represent', () => {
     expect(() => mapShopeeApiOrderToRows({ ...order, item_list: [] })).toThrow(ShopeeOrderMappingError);
     expect(() => mapShopeeApiOrderToRows({ ...order, order_sn: '' })).toThrow(ShopeeOrderMappingError);

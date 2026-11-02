@@ -48,6 +48,14 @@ export function mapShopeeApiOrderToRows(
   // the buyer paid on top of the goods (vouchers already netted into total_amount).
   const buyerPaidShipping = income?.buyer_paid_shipping_fee ?? Math.max(0, total - subtotal);
   const addr = order.recipient_address ?? {};
+  const escrowAmount = income?.escrow_amount;
+  // A COMPLETED order can still have been returned: Shopee then settles nothing (or a negative
+  // amount — the return shipping it charges the seller). Partial returns keep a positive escrow
+  // and stay delivered with that payout.
+  const fullyReturned =
+    escrowAmount !== undefined &&
+    escrowAmount !== null &&
+    (escrowAmount < 0 || (escrowAmount === 0 && (extras.escrow?.return_order_sn_list?.length ?? 0) > 0));
   const pkg = order.package_list?.[0];
   const note = [order.message_to_seller, order.note].map((v) => (v ?? '').trim()).filter(Boolean).join(' — ');
 
@@ -56,7 +64,7 @@ export function mapShopeeApiOrderToRows(
     [SHOPEE_ORDER_COLUMNS.packageCode]: pkg?.package_number ?? '',
     [SHOPEE_ORDER_COLUMNS.orderDate]: order.create_time ? new Date(order.create_time * 1000).toISOString() : '',
     [SHOPEE_ORDER_COLUMNS.status]: API_ORDER_STATUS_LABELS[status as ShopeeApiOrderStatus] ?? status,
-    [SHOPEE_ORDER_COLUMNS.returnStatus]: '',
+    [SHOPEE_ORDER_COLUMNS.returnStatus]: fullyReturned ? API_ORDER_STATUS_LABELS.TO_RETURN : '',
     [SHOPEE_ORDER_COLUMNS.buyerComment]: '',
     [SHOPEE_ORDER_COLUMNS.trackingCode]: extras.trackingNumber ?? '',
     [SHOPEE_ORDER_COLUMNS.carrierName]: order.shipping_carrier || pkg?.shipping_carrier || '',
@@ -75,7 +83,7 @@ export function mapShopeeApiOrderToRows(
     [SHOPEE_ORDER_COLUMNS.address]: orMasked(addr.full_address),
     [SHOPEE_ORDER_COLUMNS.note]: note,
     [SHOPEE_API_ROW_KEYS.orderStatus]: status,
-    [SHOPEE_API_ROW_KEYS.escrowAmount]: income?.escrow_amount !== undefined && income?.escrow_amount !== null ? String(income.escrow_amount) : '',
+    [SHOPEE_API_ROW_KEYS.escrowAmount]: escrowAmount !== undefined && escrowAmount !== null ? String(escrowAmount) : '',
   };
 
   return items.map((it) => ({

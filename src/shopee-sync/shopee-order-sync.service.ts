@@ -389,7 +389,13 @@ export class ShopeeOrderSyncService {
       // escrow has released money to the seller — but NOT the full `money.total` the
       // buyer paid: Shopee deducts marketplace fees + withholding tax first, so the
       // amount actually collected is `money.sellerRevenue` (see computeOrderMoney()).
-      ...(status === OrderStatus.DELIVERED ? { paidAmount: money.sellerRevenue } : {}),
+      // CANCELLED (incl. returned/refunded) → 0, so an order re-synced after a refund no longer
+      // keeps the payout recorded while it was DELIVERED.
+      ...(status === OrderStatus.DELIVERED
+        ? { paidAmount: money.sellerRevenue }
+        : status === OrderStatus.CANCELLED
+          ? { paidAmount: 0 }
+          : {}),
       ...(carrierName || trackingCode || estimatedDeliveryDate ? { delivery: { carrierName, trackingCode, estimatedDeliveryDate } } : {}),
       ...(orderDate ? { orderDate } : {}),
       buyer: { externalBuyerId: buyerUsername, ...(hasValidPhone ? { phone: normalizeVnPhone(shippingInfo.phone) } : {}) },
