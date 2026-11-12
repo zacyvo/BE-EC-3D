@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import * as crypto from 'crypto';
 import * as forge from 'node-forge';
 import { PadesSignatureInfo } from './pades.types';
+import { certCommonName } from './pkcs12';
 
 /**
  * SignerInfo ASN.1 validator (RFC 2315 / RFC 5652) — node-forge có định nghĩa tương đương
@@ -262,8 +263,8 @@ export class PadesVerifyService {
     if (!matchedCert) matchedCert = certificates[0];
 
     if (matchedCert) {
-      base.signerCertCN = matchedCert.subject.getField('CN')?.value ?? '';
-      base.signerCertIssuer = matchedCert.issuer.getField('CN')?.value ?? '';
+      base.signerCertCN = certCommonName(matchedCert.subject);
+      base.signerCertIssuer = certCommonName(matchedCert.issuer);
       base.signerCertSerial = matchedCert.serialNumber ?? '';
       base.certNotBefore = matchedCert.validity.notBefore;
       base.certNotAfter = matchedCert.validity.notAfter;

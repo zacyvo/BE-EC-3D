@@ -31,6 +31,7 @@ import {
   PublicVerifyDto,
   RejectSignatureDto,
   RevealCodeDto,
+  SignContractDto,
   SubmitSimpleSignatureDto,
   UpdateContractDto,
   UpdateContractStatusDto,
@@ -48,6 +49,18 @@ const PDF_UPLOAD_OPTIONS: MulterOptions = {
   fileFilter: (_req, file, cb) => {
     if (!['application/pdf', 'application/x-pdf'].includes(file.mimetype)) {
       return cb(new BadRequestException('Chỉ chấp nhận file PDF'), false);
+    }
+    cb(null, true);
+  },
+};
+
+/** File chứng thư số PKCS#12 (.p12/.pfx) — mimetype không thống nhất giữa các trình duyệt/OS nên lọc theo đuôi file */
+const P12_UPLOAD_OPTIONS: MulterOptions = {
+  storage: memoryStorage(),
+  limits: { fileSize: 100 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (!/\.(p12|pfx)$/i.test(file.originalname ?? '')) {
+      return cb(new BadRequestException('Chỉ chấp nhận file chứng thư số .p12 hoặc .pfx'), false);
     }
     cb(null, true);
   },
@@ -110,6 +123,13 @@ export class AdminContractsController {
     @Query('source') source?: string,
   ) {
     return this.service.findAll({ page, limit, status, search, source });
+  }
+
+  /** Cấu hình ký số trên hệ thống (có chứng thư server hay không) — khai báo TRƯỚC ':id' */
+  @Get('signing-config')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  getSigningConfig() {
+    return this.service.getSigningConfig();
   }
 
   @Get(':id')
@@ -230,6 +250,42 @@ export class AdminContractsController {
   ) {
     if (!file) throw new BadRequestException('Vui lòng chọn file PDF đã ký');
     return this.service.uploadPartyBSigned(id, file.buffer, staff.sub);
+  }
+
+  /**
+   * Bên B ký số trực tiếp trên hệ thống. Multipart: `certificate` (file .p12/.pfx, khi
+   * certSource = UPLOAD) + các field của SignContractDto. File chứng thư và mật khẩu chỉ dùng trong
+   * request, không lưu lại.
+   */
+  @Post(':id/document/sign')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } }) // chống dò mật khẩu chứng thư / tài khoản
+  @UseInterceptors(FileInterceptor('certificate', P12_UPLOAD_OPTIONS))
+  async signPartyB(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body() body: Record<string, unknown>,
+    @CurrentUser() staff: { sub: string },
+  ) {
+    const dto: SignContractDto = await multipartValidation.transform(body ?? {}, {
+      type: 'body',
+      metatype: SignContractDto,
+    });
+    return this.service.signPartyBInSystem(id, dto, file?.buffer, staff.sub);
+  }
+
+  /** Xuất PDF hợp đồng kèm chữ ký số (bản mới nhất: Bên A PKI > Bên B) */
+  @Get(':id/document/signed')
+  @Roles(StaffRole.SUPER_ADMIN, StaffRole.ADMIN, StaffRole.CS, StaffRole.SELLER)
+  async downloadSigned(@Param('id') id: string, @Res() res: Response) {
+    const { buffer, filename } = await this.service.getSignedPdfBuffer(id);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+      'Content-Length': String(buffer.length),
+    });
+    res.send(buffer);
   }
 
   @Post(':id/document/party-a-signed/reject')

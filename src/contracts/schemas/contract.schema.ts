@@ -87,6 +87,13 @@ export enum SignatureMode {
   SIMPLE = 'SIMPLE', // chữ ký điện tử đơn giản (canvas) — không phải PKI thật
 }
 
+/** Cách Bên B ký: ký ngoài hệ thống rồi upload, hay ký trực tiếp trên hệ thống bằng file chứng thư */
+export enum PartySignMethod {
+  EXTERNAL_UPLOAD = 'EXTERNAL_UPLOAD', // ký bằng phần mềm/USB token ngoài hệ thống rồi tải file lên
+  SYSTEM_UPLOADED_CERT = 'SYSTEM_UPLOADED_CERT', // ký trên hệ thống, chứng thư .p12 tải lên lúc ký
+  SYSTEM_SERVER_CERT = 'SYSTEM_SERVER_CERT', // ký trên hệ thống, chứng thư cấu hình trên server
+}
+
 export enum PartySignatureStatus {
   PENDING = 'PENDING',
   UPLOADED = 'UPLOADED',
@@ -113,6 +120,8 @@ export class PartyBSignature {
   @Prop({ default: false }) chainValidated: boolean;
   @Prop({ trim: true, default: '' }) rejectReason: string;
   @Prop({ trim: true, default: '' }) uploadedBy: string;
+  /** Hợp đồng ký trước khi có field này coi như EXTERNAL_UPLOAD */
+  @Prop({ enum: Object.values(PartySignMethod) }) signMethod?: PartySignMethod;
 }
 
 export const PartyBSignatureSchema = SchemaFactory.createForClass(PartyBSignature);

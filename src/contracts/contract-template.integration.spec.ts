@@ -55,6 +55,9 @@ function build() {
     {} as never,
     {} as never,
     {} as never,
+    {} as never, // PadesSignService
+    {} as never, // SignaturePlacementService
+    {} as never, // SigningCredentialsService
   );
   return { service, pdf };
 }

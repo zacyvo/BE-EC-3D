@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
   UnauthorizedException,
@@ -17,6 +18,7 @@ import {
   ContractSource,
   ContractStatus,
   ContractTemplate,
+  PartySignMethod,
   PartySignatureStatus,
   PaymentInfoType,
   PaymentInstallment,
@@ -38,6 +40,14 @@ import { DocumentStorageService } from '../document-signing/storage/document-sto
 import { PadesVerifyService } from '../document-signing/pades/pades-verify.service';
 import { TamperCheckService } from '../document-signing/pades/tamper-check.service';
 import { PdfInspectService } from '../document-signing/pdfjs/pdf-inspect.service';
+import { PadesSignService } from '../document-signing/pades/pades-sign.service';
+import { SignaturePlacementService } from '../document-signing/pades/signature-placement.service';
+import { SigningCredentialsService } from '../document-signing/pades/signing-credentials.service';
+import {
+  assertCertificateUsable,
+  loadPkcs12,
+  SignerCredentials,
+} from '../document-signing/pades/pkcs12';
 import {
   ContractItemDto,
   CreateContractDto,
@@ -46,6 +56,8 @@ import {
   PublicUpdateDto,
   PublicVerifyDto,
   RejectSignatureDto,
+  SignCertSource,
+  SignContractDto,
   SubmitSimpleSignatureDto,
   UpdateContractDto,
   UpdateContractStatusDto,
@@ -160,6 +172,9 @@ export class ContractsService {
     private readonly padesVerifyService: PadesVerifyService,
     private readonly tamperCheckService: TamperCheckService,
     private readonly pdfInspectService: PdfInspectService,
+    private readonly padesSignService: PadesSignService,
+    private readonly signaturePlacementService: SignaturePlacementService,
+    private readonly signingCredentialsService: SigningCredentialsService,
   ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1002,15 +1017,8 @@ export class ContractsService {
     return { buffer, filename: `hop-dong-${contract.contractNo.replace(/\//g, '-')}-da-ky-ben-b.pdf` };
   }
 
-  /**
-   * Admin upload PDF đã ký bởi Bên B (ký ngoài hệ thống bằng phần mềm ký số riêng trên máy có
-   * cắm USB token). Xác thực: (1) file là bản nối thêm từ đúng PDF chưa ký hệ thống đã tạo —
-   * không bị chỉnh sửa nội dung, (2) chữ ký PAdES/CMS nhúng trong file hợp lệ về mặt mật mã.
-   * KHÔNG xác minh chuỗi CA gốc — xem PartyBSignature.chainValidated.
-   */
-  async uploadPartyBSigned(id: string, fileBuffer: Buffer, staffId: string) {
-    const contract = await this.contractModel.findById(id).exec();
-    if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+  /** Điều kiện chung để Bên B ký (upload file đã ký ngoài hoặc ký trực tiếp trên hệ thống) */
+  private assertPartyBCanSign(contract: ContractDocument): void {
     // HĐ import đã có PDF ngay từ DRAFT — chỉ cho ký khi file đã khoá (FINAL), tránh ký rồi thay file
     if (EDITABLE_STATUSES.includes(contract.status)) {
       throw new BadRequestException('Hợp đồng chưa chốt bản chính thức, chưa thể ký');
@@ -1021,16 +1029,108 @@ export class ContractsService {
     if (contract.partyBSignature?.status === PartySignatureStatus.VERIFIED) {
       throw new BadRequestException('Hợp đồng đã có chữ ký Bên B hợp lệ, không thể ghi đè');
     }
+  }
 
-    const unsignedBuffer = await this.documentStorageService.downloadPdf(contract.unsignedPdfUrl);
+  /**
+   * Admin upload PDF đã ký bởi Bên B (ký ngoài hệ thống bằng phần mềm ký số riêng trên máy có
+   * cắm USB token). Xác thực: (1) file là bản nối thêm từ đúng PDF chưa ký hệ thống đã tạo —
+   * không bị chỉnh sửa nội dung, (2) chữ ký PAdES/CMS nhúng trong file hợp lệ về mặt mật mã.
+   * KHÔNG xác minh chuỗi CA gốc — xem PartyBSignature.chainValidated.
+   */
+  async uploadPartyBSigned(id: string, fileBuffer: Buffer, staffId: string) {
+    const contract = await this.contractModel.findById(id).exec();
+    if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    this.assertPartyBCanSign(contract);
+
+    const unsignedBuffer = await this.documentStorageService.downloadPdf(contract.unsignedPdfUrl!);
+    return this.acceptPartyBSignedPdf(contract, unsignedBuffer, fileBuffer, staffId, PartySignMethod.EXTERNAL_UPLOAD);
+  }
+
+  /** Thông tin cấu hình ký số trên hệ thống — FE dùng để hiển thị lựa chọn chứng thư server */
+  getSigningConfig() {
+    return { serverCertificate: this.signingCredentialsService.getServerCertificate() };
+  }
+
+  /**
+   * Bên B (Luxe Glow) ký số trực tiếp trên hệ thống bằng chứng thư dạng file PKCS#12: tải file
+   * .p12/.pfx lên khi ký (không lưu lại) hoặc dùng chứng thư cấu hình sẵn trên server (bắt buộc
+   * nhập lại mật khẩu tài khoản admin). Chữ ký PAdES được nối thêm (incremental update) vào đúng
+   * PDF chưa ký đã chốt, kèm khung chữ ký hiển thị tại mục "ĐẠI DIỆN BÊN B", rồi đi qua cùng bước
+   * xác thực với file upload (tamper-check + verify) trước khi lưu.
+   */
+  async signPartyBInSystem(id: string, dto: SignContractDto, certFile: Buffer | undefined, staffId: string) {
+    const contract = await this.contractModel.findById(id).exec();
+    if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    if (contract.status === ContractStatus.CLOSED) {
+      throw new BadRequestException('Hợp đồng đã hủy, không thể ký');
+    }
+    this.assertPartyBCanSign(contract);
+
+    let credentials: SignerCredentials;
+    let method: PartySignMethod;
+    if (dto.certSource === SignCertSource.SERVER) {
+      if (!dto.staffPassword) {
+        throw new BadRequestException('Vui lòng nhập mật khẩu tài khoản để xác nhận ký bằng chứng thư của hệ thống');
+      }
+      // 400 thay vì 401 — 401 sẽ làm FE tự refresh token và gửi lại request
+      if (!(await this.staffService.verifyPassword(staffId, dto.staffPassword))) {
+        throw new BadRequestException('Mật khẩu tài khoản không đúng');
+      }
+      credentials = this.signingCredentialsService.getServerCredentials();
+      method = PartySignMethod.SYSTEM_SERVER_CERT;
+    } else {
+      if (!certFile?.length) throw new BadRequestException('Vui lòng chọn file chứng thư số (.p12 / .pfx)');
+      credentials = loadPkcs12(certFile, dto.certPassword ?? '');
+      method = PartySignMethod.SYSTEM_UPLOADED_CERT;
+    }
+    assertCertificateUsable(credentials.certificate);
+
+    const unsignedBuffer = await this.documentStorageService.downloadPdf(contract.unsignedPdfUrl!);
+    let appearance = null;
+    if (dto.visible !== false) {
+      try {
+        appearance = await this.signaturePlacementService.resolve(unsignedBuffer, 'B');
+      } catch (err) {
+        // Không dựng được vị trí hiển thị → vẫn ký (chữ ký ẩn), không chặn nghiệp vụ
+        this.logger.warn(`Không xác định được vị trí chữ ký cho HĐ ${contract.contractNo}: ${(err as Error).message}`);
+      }
+    }
+
+    const signedBuffer = await this.padesSignService.sign(unsignedBuffer, {
+      credentials,
+      reason: `Ký hợp đồng số ${contract.contractNo}`,
+      location: contract.signPlace || undefined,
+      appearance,
+      fieldNamePrefix: 'BenB',
+    });
+
+    return this.acceptPartyBSignedPdf(contract, unsignedBuffer, signedBuffer, staffId, method);
+  }
+
+  /** Xác thực PDF đã ký Bên B (dù ký ngoài hay ký trên hệ thống) rồi lưu trữ + ghi nhận */
+  private async acceptPartyBSignedPdf(
+    contract: ContractDocument,
+    unsignedBuffer: Buffer,
+    fileBuffer: Buffer,
+    staffId: string,
+    method: PartySignMethod,
+  ) {
+    const id = contract._id.toString();
+    const signedInSystem = method !== PartySignMethod.EXTERNAL_UPLOAD;
     await this.tamperCheckService.assertIncrementalOnly(unsignedBuffer, fileBuffer);
 
     const signatures = this.padesVerifyService.verify(fileBuffer);
+    const sig = signatures[signatures.length - 1];
+    const valid = !!sig && sig.coversToEndOfFile && sig.digestValid && sig.signatureValid;
+    if (!valid && signedInSystem) {
+      // File do chính hệ thống ký mà không qua được verify → lỗi hệ thống, không đánh dấu REJECTED
+      this.logger.error(`Chữ ký số do hệ thống tạo không qua được bước xác thực (HĐ ${contract.contractNo})`);
+      throw new InternalServerErrorException('Ký số thất bại — chữ ký tạo ra không hợp lệ, vui lòng thử lại');
+    }
     if (signatures.length === 0) {
       throw new BadRequestException('Không tìm thấy chữ ký số hợp lệ trong file tải lên');
     }
-    const sig = signatures[signatures.length - 1];
-    if (!sig.coversToEndOfFile || !sig.digestValid || !sig.signatureValid) {
+    if (!valid) {
       contract.partyBSignature = {
         ...(contract.partyBSignature as any),
         status: PartySignatureStatus.REJECTED,
@@ -1046,7 +1146,7 @@ export class ContractsService {
 
     const stored = await this.documentStorageService.uploadPdf(
       fileBuffer,
-      `${contract._id.toString()}/party-b-signed`,
+      `${id}/party-b-signed`,
     );
     const now = new Date();
     contract.partyBSignature = {
@@ -1064,23 +1164,47 @@ export class ContractsService {
       chainValidated: false,
       rejectReason: '',
       uploadedBy: staffId,
+      signMethod: method,
     } as any;
     await contract.save();
 
     await this.auditService.log({
       actorId: staffId,
       actorType: 'staff',
-      action: 'CONTRACT_PARTY_B_SIGNED',
+      action: signedInSystem ? 'CONTRACT_PARTY_B_SIGNED_IN_SYSTEM' : 'CONTRACT_PARTY_B_SIGNED',
       module: 'contracts',
       targetId: id,
       afterData: {
         signerCertCN: sig.signerCertCN,
         signerCertIssuer: sig.signerCertIssuer,
+        signerCertSerial: sig.signerCertSerial,
         signingTime: sig.signingTime,
+        signMethod: method,
       },
     });
 
     return this.toAdminResponse(contract);
+  }
+
+  /**
+   * Xuất PDF hợp đồng kèm chữ ký số — bản mới nhất: đã ký Bên A (PKI, chồng lên chữ ký Bên B)
+   * nếu có, ngược lại bản đã ký Bên B.
+   */
+  async getSignedPdfBuffer(id: string): Promise<{ buffer: Buffer; filename: string }> {
+    const contract = await this.contractModel
+      .findById(id)
+      .select('contractNo partyBSignature partyASignature')
+      .exec();
+    if (!contract) throw new NotFoundException('Hợp đồng không tồn tại');
+    const a = contract.partyASignature;
+    const b = contract.partyBSignature;
+    const url =
+      (a?.status === PartySignatureStatus.VERIFIED && a.mode === SignatureMode.PKI && a.signedPdfUrl) ||
+      (b?.status === PartySignatureStatus.VERIFIED && b.signedPdfUrl) ||
+      undefined;
+    if (!url) throw new NotFoundException('Hợp đồng chưa có bản PDF đã ký số');
+    const buffer = await this.documentStorageService.downloadPdf(url);
+    return { buffer, filename: `hop-dong-${contract.contractNo.replace(/\//g, '-')}-da-ky-so.pdf` };
   }
 
   /**

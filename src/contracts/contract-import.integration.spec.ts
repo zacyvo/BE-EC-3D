@@ -68,6 +68,9 @@ function build() {
     {} as never,
     {} as never,
     inspect as never,
+    {} as never, // PadesSignService
+    {} as never, // SignaturePlacementService
+    {} as never, // SigningCredentialsService
   );
   return { service, storage, inspect, audit };
 }

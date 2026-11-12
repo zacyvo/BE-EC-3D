@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -234,6 +234,42 @@ export class RevealCodeDto {
   @IsString()
   @IsNotEmpty({ message: 'Vui lòng nhập mật khẩu' })
   password: string;
+}
+
+/** Nguồn chứng thư số khi ký trực tiếp trên hệ thống */
+export enum SignCertSource {
+  UPLOAD = 'UPLOAD', // admin tải file .p12/.pfx lên khi ký — không lưu lại
+  SERVER = 'SERVER', // chứng thư cấu hình sẵn trên server (env CONTRACT_SIGNING_P12_*)
+}
+
+/** Ký số Bên B trực tiếp trên hệ thống — gửi dạng multipart (file `certificate` + các field dưới) */
+export class SignContractDto {
+  @IsEnum(SignCertSource, { message: 'Nguồn chứng thư số không hợp lệ' })
+  certSource: SignCertSource;
+
+  /** Mật khẩu file .p12/.pfx (certSource = UPLOAD) */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  certPassword?: string;
+
+  /** Mật khẩu tài khoản admin — xác nhận lại khi dùng chứng thư server (certSource = SERVER) */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  staffPassword?: string;
+
+  /**
+   * Hiển thị khung chữ ký trên văn bản (mặc định có). Field multipart là chuỗi 'true'/'false' —
+   * đọc giá trị gốc từ `obj` vì enableImplicitConversion đã đổi 'false' thành true (Boolean('false')).
+   */
+  @IsOptional()
+  @Transform(({ obj, key }) => {
+    const raw = (obj as Record<string, unknown>)[key];
+    return typeof raw === 'string' ? raw.trim().toLowerCase() !== 'false' : raw;
+  })
+  @IsBoolean()
+  visible?: boolean;
 }
 
 export class RejectSignatureDto {
