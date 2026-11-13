@@ -23,6 +23,7 @@ import {
   PaymentInfoType,
   PaymentInstallment,
   SignatureMode,
+  LEGACY_PAYMENT_SCHEDULE_LENGTHS,
   TEMPLATE_PAYMENT_SCHEDULES,
 } from './schemas/contract.schema';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
@@ -281,10 +282,22 @@ export class ContractsService {
     };
   }
 
-  /** Điều 3.2 — số đợt phải khớp template, tổng % các đợt thanh toán phải đúng 100 */
-  private validatePaymentSchedule(schedule: PaymentInstallmentDto[], template: ContractTemplate): void {
+  /**
+   * Điều 3.2 — số đợt phải khớp template, tổng % các đợt thanh toán phải đúng 100.
+   * `storedLength`: số đợt đang lưu của hợp đồng (khi sửa) — nếu là lịch cũ của template
+   * (VD: DEFAULT 3 đợt trước khi đổi sang 2 lần) thì vẫn cho giữ đúng số đợt đó.
+   */
+  private validatePaymentSchedule(
+    schedule: PaymentInstallmentDto[],
+    template: ContractTemplate,
+    storedLength?: number,
+  ): void {
     const expected = TEMPLATE_PAYMENT_SCHEDULES[template].length;
-    if (schedule.length !== expected) {
+    const keepsLegacy =
+      storedLength !== undefined &&
+      schedule.length === storedLength &&
+      (LEGACY_PAYMENT_SCHEDULE_LENGTHS[template] ?? []).includes(storedLength);
+    if (schedule.length !== expected && !keepsLegacy) {
       throw new BadRequestException(`Lịch thanh toán của mẫu hợp đồng này phải có đúng ${expected} đợt`);
     }
     const sum = schedule.reduce((s, i) => s + i.percent, 0);
@@ -789,13 +802,20 @@ export class ContractsService {
     if (dto.deliveryDate !== undefined) contract.deliveryDate = new Date(dto.deliveryDate);
     if (dto.deliveryAddress !== undefined) contract.deliveryAddress = dto.deliveryAddress;
     if (dto.adminNote !== undefined) contract.adminNote = dto.adminNote;
+    // Số đợt đang lưu — chỉ có ý nghĩa khi giữ nguyên template (cho phép sửa hợp đồng theo lịch cũ)
+    let storedScheduleLength: number | undefined = contract.paymentSchedule?.length;
     if (dto.template && dto.template !== (contract.template ?? ContractTemplate.DEFAULT)) {
+      storedScheduleLength = undefined;
       contract.template = dto.template;
       // Số đợt thanh toán khác nhau giữa các template — không kèm lịch mới thì dùng lịch mặc định
       if (!dto.paymentSchedule) contract.paymentSchedule = TEMPLATE_PAYMENT_SCHEDULES[dto.template] as any;
     }
     if (dto.paymentSchedule) {
-      this.validatePaymentSchedule(dto.paymentSchedule, contract.template ?? ContractTemplate.DEFAULT);
+      this.validatePaymentSchedule(
+        dto.paymentSchedule,
+        contract.template ?? ContractTemplate.DEFAULT,
+        storedScheduleLength,
+      );
       contract.paymentSchedule = dto.paymentSchedule as any;
     }
     if (dto.paymentInfoType) {

@@ -48,6 +48,19 @@ export interface ContractPdfInput {
   deliveryAddress: string;
 }
 
+/**
+ * Mã sản phẩm có giá đã gồm vận chuyển — hợp đồng chứa một trong các mã này sẽ KHÔNG in các câu
+ * "chưa bao gồm chi phí vận chuyển" (Điều 3.1, 4.2, ghi chú Phụ lục 01). Giữ đồng bộ ở 3 nơi:
+ * backend contract-pdf.definition.ts, frontend-admin lib/contractTemplates.ts, frontend-user ContractDocument.tsx.
+ */
+export const SHIPPING_INCLUDED_PRODUCT_CODES = ['D4296C'];
+
+export function isShippingIncluded(items: { productCode?: string }[] | undefined): boolean {
+  return (items ?? []).some((i) =>
+    SHIPPING_INCLUDED_PRODUCT_CODES.includes((i.productCode ?? '').trim().toUpperCase()),
+  );
+}
+
 // ── Đọc số tiền thành chữ (port từ frontend ContractDocument.tsx) ────────────
 
 const VN_DIGITS = ['không', 'một', 'hai', 'ba', 'bốn', 'năm', 'sáu', 'bảy', 'tám', 'chín'];
@@ -130,6 +143,19 @@ const indent = (text: Content): Content => ({
   alignment: 'justify',
 });
 
+/** Thụt lề cấp 2/3 (điều kiện thanh toán lồng trong Lần 2 của Điều 3.2) */
+const indent2 = (text: Content): Content => ({
+  text,
+  margin: [36, 1, 0, 1],
+  alignment: 'justify',
+});
+
+const indent3 = (text: Content): Content => ({
+  text,
+  margin: [54, 1, 0, 1],
+  alignment: 'justify',
+});
+
 const articleTitle = (text: string): Content => ({
   text,
   bold: true,
@@ -164,16 +190,46 @@ export function buildContractDocDefinition(data: ContractPdfInput): TDocumentDef
     { text: formatNumber(item.subtotal), alignment: 'right' },
   ]);
 
-  const paymentLines: Content[] = (data.paymentSchedule ?? []).map((installment, i) => {
-    const isLast = i === (data.paymentSchedule?.length ?? 0) - 1;
-    const amount = Math.round((data.totalAmount * installment.percent) / 100);
-    return indent(
-      `– Đợt ${i + 1}: Bên A thanh toán ${installment.percent}% giá trị hợp đồng (${formatCurrency(amount)}) ${dots(
-        installment.timing,
-        '……………',
-      )}${isLast ? '.' : ';'}`,
-    );
-  });
+  const schedule = data.paymentSchedule ?? [];
+  const isTwoInstallments = schedule.length === 2;
+  const shippingIncluded = isShippingIncluded(data.items);
+
+  const paymentLines: Content[] = isTwoInstallments
+    ? // Lịch 2 lần: tạm ứng + phần còn lại (kèm điều kiện thanh toán)
+      schedule.flatMap((installment, i) => {
+        const isLast = i === schedule.length - 1;
+        const amount = Math.round((data.totalAmount * installment.percent) / 100);
+        const lines: Content[] = [
+          indent([{ text: `Lần ${i + 1} – ${isLast ? 'Thanh toán phần giá trị còn lại' : 'Thanh toán tạm ứng'}:`, bold: true }] as unknown as Content),
+          indent([
+            `Bên A thanh toán ${installment.percent}% tổng giá trị hợp đồng, tương đương số tiền ${formatCurrency(amount)} (bằng chữ: `,
+            { text: numberToVietnameseWords(amount), italics: true },
+            `) ${dots(installment.timing, '……………')}${isLast ? ':' : '.'}`,
+          ] as unknown as Content),
+        ];
+        if (isLast) {
+          lines.push(
+            indent2('– Bên A đã nhận đủ hàng hóa theo đúng số lượng quy định tại Điều 1 và thời gian giao hàng quy định tại Điều 4;'),
+            indent2('– Hàng hóa đã được Bên A kiểm tra, nghiệm thu và xác nhận đạt yêu cầu theo thỏa thuận tại Điều 4.3;'),
+            indent2('– Bên A đã nhận đầy đủ hồ sơ thanh toán hợp lệ từ Bên B, bao gồm:'),
+            indent3('+ Hóa đơn hợp pháp, hợp lệ theo quy định pháp luật;'),
+            indent3('+ Biên bản giao nhận và nghiệm thu hàng hóa của từng đợt giao hàng;'),
+            indent3('+ Các chứng từ, tài liệu liên quan khác theo thỏa thuận (nếu có).'),
+          );
+        }
+        return lines;
+      })
+    : // Hợp đồng cũ (lịch 3 đợt) — giữ nguyên văn bản như lúc lập/ký
+      schedule.map((installment, i) => {
+        const isLast = i === schedule.length - 1;
+        const amount = Math.round((data.totalAmount * installment.percent) / 100);
+        return indent(
+          `– Đợt ${i + 1}: Bên A thanh toán ${installment.percent}% giá trị hợp đồng (${formatCurrency(amount)}) ${dots(
+            installment.timing,
+            '……………',
+          )}${isLast ? '.' : ';'}`,
+        );
+      });
 
   const content: Content[] = [
     { text: 'CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM', alignment: 'center', bold: true },
@@ -240,9 +296,16 @@ export function buildContractDocDefinition(data: ContractPdfInput): TDocumentDef
       ' (bằng chữ: ',
       { text: numberToVietnameseWords(data.totalAmount), italics: true },
       '). ',
-      { text: 'Giá trên đã bao gồm thuế GTGT, chưa bao gồm chi phí vận chuyển.', bold: true },
+      {
+        text: shippingIncluded
+          ? 'Giá trên đã bao gồm thuế GTGT.'
+          : 'Giá trên đã bao gồm thuế GTGT, chưa bao gồm chi phí vận chuyển.',
+        bold: true,
+      },
     ] as unknown as Content),
-    p('3.2. Thanh toán chia thành 03 đợt:'),
+    p(isTwoInstallments
+      ? '3.2. Thanh toán chia thành 02 lần:'
+      : `3.2. Thanh toán chia thành ${String(schedule.length).padStart(2, '0')} đợt:`),
     ...paymentLines,
     p(
       `3.3. Hình thức thanh toán: tiền mặt hoặc chuyển khoản. Số tài khoản: ${dots(data.bankAccountNumber, '……………………')} Ngân hàng: ${dots(data.bankName, '……………………')} Chủ tài khoản: ${dots(data.bankAccountHolder, '……………………')}`,
@@ -250,7 +313,11 @@ export function buildContractDocDefinition(data: ContractPdfInput): TDocumentDef
 
     articleTitle('Điều 4. Thời gian thực hiện và giao nhận'),
     p(`4.1. Thời gian giao hàng: ${vnDate(data.deliveryDate ?? null)}.`),
-    p(`4.2. Địa điểm giao hàng: ${dots(data.deliveryAddress)}. Chi phí vận chuyển do hai bên thỏa thuận (chưa bao gồm trong giá trị hợp đồng).`),
+    p(
+      `4.2. Địa điểm giao hàng: ${dots(data.deliveryAddress)}.${
+        shippingIncluded ? '' : ' Chi phí vận chuyển do hai bên thỏa thuận (chưa bao gồm trong giá trị hợp đồng).'
+      }`,
+    ),
     p('4.3. Bên A kiểm tra và nghiệm thu số lượng, ngoại quan sản phẩm khi Bên B bàn giao; khiếu nại (nếu có) gửi cho Bên B trong vòng 05 ngày làm việc kể từ ngày nghiệm thu.'),
 
     articleTitle('Điều 5. Tiêu chuẩn chất lượng và sai số'),

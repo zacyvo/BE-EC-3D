@@ -4,6 +4,7 @@ import {
   ContractPdfParty,
   dots,
   formatNumber,
+  isShippingIncluded,
   numberToVietnameseWords,
 } from './contract-pdf.definition';
 
@@ -32,6 +33,8 @@ const p = (text: Content, opts: Record<string, unknown> = {}): Content => ({
 const clause = (no: string, text: string): Content => p([{ text: `${no} `, bold: true }, text] as unknown as Content);
 
 const sub = (text: string): Content => ({ text, margin: [14, 1, 0, 3], alignment: 'justify' });
+/** Thụt lề cấp 2 (mục "+" bên trong một điểm a/b/c) */
+const sub2 = (text: string): Content => ({ text, margin: [28, 1, 0, 3], alignment: 'justify' });
 
 const articleTitle = (text: string): Content => ({ text, bold: true, color: NAVY, margin: [0, 9, 0, 3] });
 
@@ -72,6 +75,7 @@ export function buildJoyloveAdvanceDocDefinition(data: ContractPdfInput): TDocum
   const B = data.partyB;
   const total = formatNumber(data.totalAmount);
   const schedule = data.paymentSchedule ?? [];
+  const shippingIncluded = isShippingIncluded(data.items);
 
   const paymentLines: Content[] = schedule.map((installment, i) => {
     const amount = Math.round((data.totalAmount * installment.percent) / 100);
@@ -179,15 +183,22 @@ export function buildJoyloveAdvanceDocDefinition(data: ContractPdfInput): TDocum
     clause('2.4.', 'Thay đổi sau khi đã duyệt mẫu được xem là yêu cầu phát sinh. Hai Bên thống nhất lại chi phí, ảnh hưởng tiến độ và cách xử lý vật tư/sản phẩm đã làm trước khi thực hiện. Thời gian Bên A chậm cung cấp dữ liệu hoặc chậm duyệt mẫu làm gia hạn tiến độ tương ứng với ảnh hưởng thực tế.'),
 
     articleTitle('Điều 3. Giá trị hợp đồng, thuế và thanh toán'),
-    clause('3.1.', `Tổng giá trị Hợp đồng: ${total} đồng (bằng chữ: ${numberToVietnameseWords(data.totalAmount)}). Đây là giá trọn gói cho phạm vi tại Phụ lục 01, đã tính đến nghĩa vụ thuế, phí mà Bên B phải thực hiện theo chế độ thuế thực tế áp dụng (nếu có), nhưng CHƯA bao gồm phí vận chuyển. Bên B cung cấp hóa đơn/chứng từ hợp pháp theo chế độ đăng ký; điều khoản này không đồng nghĩa với cam kết phát hành hóa đơn GTGT theo phương pháp khấu trừ nếu Bên B không thuộc đối tượng áp dụng.`),
+    clause('3.1.', `Tổng giá trị Hợp đồng: ${total} đồng (bằng chữ: ${numberToVietnameseWords(data.totalAmount)}). Đây là giá trọn gói cho phạm vi tại Phụ lục 01, đã tính đến nghĩa vụ thuế, phí mà Bên B phải thực hiện theo chế độ thuế thực tế áp dụng (nếu có)${shippingIncluded ? '' : ', nhưng CHƯA bao gồm phí vận chuyển'}. Bên B cung cấp hóa đơn/chứng từ hợp pháp theo chế độ đăng ký; điều khoản này không đồng nghĩa với cam kết phát hành hóa đơn GTGT theo phương pháp khấu trừ nếu Bên B không thuộc đối tượng áp dụng.`),
     clause('3.2.', `Thanh toán bằng chuyển khoản hoặc hình thức hợp pháp khác mà hai bên thống nhất, chia thành ${String(schedule.length).padStart(2, '0')} đợt:`),
     ...paymentLines,
     clause('3.3.', `Tài khoản thụ hưởng: ${dots(data.bankAccountNumber)}; Ngân hàng: ${dots(data.bankName)}; Chủ tài khoản: ${dots(data.bankAccountHolder)}. Nội dung chuyển khoản ghi rõ mã Hợp đồng và đợt thanh toán.`),
     clause('3.4.', 'Mọi thay đổi làm phát sinh giá trị Hợp đồng chỉ có hiệu lực sau khi người có thẩm quyền của hai bên xác nhận qua kênh chính thức tại Điều 13.'),
+    clause('3.5.', 'Điều kiện thanh toán: Trừ khoản thanh toán Đợt 1, Bên A thực hiện thanh toán các đợt tiếp theo khi đáp ứng đầy đủ các điều kiện sau:'),
+    sub('a) Bên A đã nhận đủ hàng hóa theo đúng số lượng quy định tại Điều 1 (Phụ lục 01) và tiến độ giao hàng quy định tại Điều 4.1;'),
+    sub('b) Hàng hóa đã được Bên A kiểm tra, nghiệm thu và xác nhận đạt yêu cầu theo thỏa thuận tại Điều 4.3 (bao gồm trường hợp được coi là đã nghiệm thu theo Điều 4.3.3);'),
+    sub('c) Bên A đã nhận đầy đủ hồ sơ thanh toán hợp lệ từ Bên B, bao gồm:'),
+    sub2('+ Hóa đơn hợp pháp, hợp lệ theo quy định pháp luật, phù hợp với Điều 3.1;'),
+    sub2('+ Biên bản giao nhận và nghiệm thu hàng hóa của từng đợt (theo mẫu Phụ lục 02 hoặc xác nhận tương đương qua kênh chính thức tại Điều 13);'),
+    sub2('+ Các chứng từ, tài liệu liên quan khác theo thỏa thuận (nếu có).'),
 
     articleTitle('Điều 4. Tiến độ, giao hàng và nghiệm thu'),
     clause('4.1.', `Thời gian hoàn thiện thiết kế: ........ ngày làm việc kể từ khi Bên B nhận đủ tiền đợt 1 và dữ liệu đầu vào; thời gian sản xuất: ........ ngày làm việc kể từ ngày Bên A duyệt mẫu và các điều kiện khởi động sản xuất được đáp ứng. Lịch giao cụ thể: ${data.deliveryDate ? dmy(data.deliveryDate) : DOTS_LONG}. Bất kỳ điều chỉnh nào do Bên A chậm duyệt, thay đổi yêu cầu hoặc bất khả kháng được xử lý theo Điều 2 và Điều 12.`),
-    clause('4.2.', `Địa điểm giao hàng: ${dots(data.deliveryAddress)}. Người nhận: ${SHORT_DOTS}. Phí vận chuyển do hai bên thỏa thuận và xác nhận bằng văn bản trước khi gửi hàng; không nằm trong giá trị Hợp đồng tại Điều 3.1.`),
+    clause('4.2.', `Địa điểm giao hàng: ${dots(data.deliveryAddress)}. Người nhận: ${SHORT_DOTS}.${shippingIncluded ? '' : ' Phí vận chuyển do hai bên thỏa thuận và xác nhận bằng văn bản trước khi gửi hàng; không nằm trong giá trị Hợp đồng tại Điều 3.1.'}`),
     clause('4.3.1.', 'Bên B giao đúng số lượng, chất lượng, thông số, địa điểm và thời hạn đã thỏa thuận; thông báo trước thông tin lô hàng, hình thức vận chuyển và chứng từ giao nhận cần thiết.'),
     clause('4.3.2.', 'Khi nhận hàng, Bên A kiểm tra sơ bộ số lượng kiện, tình trạng bao bì và lỗi ngoại quan có thể phát hiện bằng kiểm tra thông thường. Việc ký nhận hàng không đồng nghĩa với nghiệm thu cuối cùng hoặc từ bỏ quyền khiếu nại lỗi tiềm ẩn.'),
     clause('4.3.3.', 'Bên A thông báo bằng văn bản các sai lệch số lượng/lỗi ngoại quan thông thường trong 05 ngày làm việc kể từ ngày nhận hàng, kèm bằng chứng. Nếu hết thời hạn này mà không có phản hồi hợp lệ, phần hàng không có khiếu nại được coi là đã nghiệm thu để xác định nghĩa vụ thanh toán; quyền bảo hành lỗi tiềm ẩn theo Điều 11 vẫn được bảo lưu.'),
@@ -293,7 +304,7 @@ export function buildJoyloveAdvanceDocDefinition(data: ContractPdfInput): TDocum
       fontSize: 9.5,
       margin: [0, 2, 0, 4],
     },
-    p(`Ghi chú: Tổng các dòng hàng hóa/dịch vụ phải khớp ${total} đồng; không bao gồm phí vận chuyển. Nếu có phí thiết kế riêng, ghi thành một dòng trong bảng.`),
+    p(`Ghi chú: Tổng các dòng hàng hóa/dịch vụ phải khớp ${total} đồng${shippingIncluded ? '' : '; không bao gồm phí vận chuyển'}. Nếu có phí thiết kế riêng, ghi thành một dòng trong bảng.`),
 
     sectionTitle('B. Thông số kỹ thuật và đối chứng duyệt mẫu'),
     {

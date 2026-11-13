@@ -182,12 +182,27 @@ export class ImportedDocument {
 
 export const ImportedDocumentSchema = SchemaFactory.createForClass(ImportedDocument);
 
-/** Lịch thanh toán mặc định (Điều 3.2) — Đợt 1: 50% ký HĐ, Đợt 2: 40% nghiệm thu, Đợt 3: 10% sau 5 ngày */
+/**
+ * Lịch thanh toán mặc định (Điều 3.2) — Lần 1: tạm ứng 50%, Lần 2: 50% còn lại khi đủ điều kiện
+ * (nhận đủ hàng, nghiệm thu đạt, đủ hồ sơ thanh toán — nội dung điều kiện in trong văn bản HĐ).
+ * Hợp đồng DEFAULT lập trước đó có thể vẫn lưu lịch 3 đợt (50/40/10) — xem LEGACY_PAYMENT_SCHEDULE_LENGTHS.
+ */
 export const DEFAULT_PAYMENT_SCHEDULE: { percent: number; timing: string }[] = [
-  { percent: 50, timing: 'ngay khi ký hợp đồng' },
-  { percent: 40, timing: 'khi nghiệm thu' },
-  { percent: 10, timing: 'sau 05 ngày kể từ ngày nghiệm thu' },
+  {
+    percent: 50,
+    timing:
+      'trong vòng 07 ngày kể từ ngày ký kết Hợp đồng sau khi Bên A nhận được đầy đủ bảng báo giá và đề nghị thanh toán tạm ứng từ Bên B',
+  },
+  {
+    percent: 50,
+    timing: 'trong vòng 07 ngày kể từ ngày đồng thời đáp ứng đầy đủ các điều kiện sau',
+  },
 ];
+
+/** Số đợt của lịch thanh toán cũ vẫn được chấp nhận khi sửa hợp đồng đã lưu theo lịch đó */
+export const LEGACY_PAYMENT_SCHEDULE_LENGTHS: Partial<Record<ContractTemplate, number[]>> = {
+  [ContractTemplate.DEFAULT]: [3],
+};
 
 /** Lịch thanh toán mặc định theo template — số phần tử cũng là số đợt bắt buộc của template đó */
 export const TEMPLATE_PAYMENT_SCHEDULES: Record<ContractTemplate, { percent: number; timing: string }[]> = {
