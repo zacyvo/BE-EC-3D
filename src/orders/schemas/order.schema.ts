@@ -398,6 +398,102 @@ export class OrderPayment {
 
 const OrderPaymentSchema = SchemaFactory.createForClass(OrderPayment);
 
+/** Shop-initiated edit of an order the customer may already have paid for ("Điều chỉnh đơn hàng",
+ * see orders/order-adjustment.service.ts):
+ *  PROPOSED (Super Admin sent the new version — the order itself is unchanged) →
+ *  ACCEPTED (customer agreed: the new version is applied) | REJECTED (customer declined: order
+ *  unchanged) | WITHDRAWN (shop took the proposal back, or the order was cancelled). */
+export enum OrderAdjustmentStatus {
+  PROPOSED = 'PROPOSED',
+  ACCEPTED = 'ACCEPTED',
+  REJECTED = 'REJECTED',
+  WITHDRAWN = 'WITHDRAWN',
+}
+
+/** Statuses in which the shop may still change what is in the parcel. */
+export const ORDER_ADJUSTABLE_STATUSES = [OrderStatus.PENDING, OrderStatus.CONFIRMED, OrderStatus.PROCESSING];
+
+/** How the difference between the new total and what the customer already paid is settled. */
+export enum AdjustmentSettlementType {
+  /** New total < paid → the shop transfers the excess back. */
+  REFUND = 'REFUND',
+  /** New total > paid → the customer pays the rest (COD or bank transfer). */
+  EXTRA_PAYMENT = 'EXTRA_PAYMENT',
+}
+
+export enum AdjustmentSettlementStatus {
+  PENDING = 'PENDING',
+  /** Extra payment by bank transfer: the customer clicked "Tôi đã chuyển khoản" (a claim only). */
+  AWAITING_CONFIRMATION = 'AWAITING_CONFIRMATION',
+  COMPLETED = 'COMPLETED',
+}
+
+/** The priced content of an order at one point of an adjustment (before / after). */
+@Schema({ _id: false })
+export class OrderAdjustmentSnapshot {
+  @Prop({ type: [OrderItemSchema], required: true }) items: OrderItem[];
+  @Prop({ type: ShippingInfoSchema, required: true }) shippingInfo: ShippingInfo;
+  @Prop({ required: true, min: 0 }) subtotal: number;
+  @Prop({ default: 0, min: 0 }) discountAmount: number;
+  @Prop({ default: 0, min: 0 }) shippingFee: number;
+  @Prop({ default: 0, min: 0 }) shippingDiscount: number;
+  @Prop({ required: true, min: 0 }) total: number;
+  @Prop() customerNote?: string;
+}
+
+const OrderAdjustmentSnapshotSchema = SchemaFactory.createForClass(OrderAdjustmentSnapshot);
+
+@Schema({ _id: false })
+export class AdjustmentSettlement {
+  @Prop({ required: true, enum: Object.values(AdjustmentSettlementType) }) type: AdjustmentSettlementType;
+  @Prop({ required: true, min: 1 }) amount: number;
+  @Prop({ required: true, enum: Object.values(AdjustmentSettlementStatus) }) status: AdjustmentSettlementStatus;
+  /** REFUND: where the customer wants the money sent. */
+  @Prop({ type: RefundAccountSchema }) refundAccount?: RefundAccount;
+  /** EXTRA_PAYMENT: how the customer pays the rest. */
+  @Prop({ enum: Object.values(PaymentMethod) }) method?: PaymentMethod;
+  /** EXTRA_PAYMENT by bank transfer: its own transfer description, e.g. "LG6A1B2C3DT1". */
+  @Prop() reference?: string;
+  @Prop({ type: BankAccountSnapshotSchema }) bankAccount?: BankAccountSnapshot;
+  @Prop() customerReportedAt?: Date;
+  @Prop() completedAt?: Date;
+  /** Staff id, or "system" (COD collected on delivery). */
+  @Prop() completedBy?: string;
+  @Prop() completedByName?: string;
+  /** Bank transaction reference of the refund / received transfer. */
+  @Prop() transferRef?: string;
+  @Prop() note?: string;
+}
+
+const AdjustmentSettlementSchema = SchemaFactory.createForClass(AdjustmentSettlement);
+
+@Schema({ _id: false })
+export class OrderAdjustment {
+  /** 1, 2, … per order — part of the extra-payment reference and of notification dedup keys. */
+  @Prop({ required: true, min: 1 }) number: number;
+  @Prop({ required: true, enum: Object.values(OrderAdjustmentStatus) }) status: OrderAdjustmentStatus;
+  /** The shop's explanation shown to the customer (e.g. "Bạn đặt nhầm màu, shop đổi sang màu Đen"). */
+  @Prop({ required: true }) reason: string;
+  @Prop({ required: true }) proposedAt: Date;
+  @Prop({ required: true }) proposedBy: string;
+  @Prop() proposedByName?: string;
+  @Prop({ type: OrderAdjustmentSnapshotSchema, required: true }) before: OrderAdjustmentSnapshot;
+  @Prop({ type: OrderAdjustmentSnapshotSchema, required: true }) after: OrderAdjustmentSnapshot;
+  /** What the shop held when the proposal was made — the difference is settled against THIS,
+   * not against the old total. Acceptance is refused if it changed meanwhile. */
+  @Prop({ required: true, min: 0 }) paidAmountAtProposal: number;
+  /** after.total − paidAmountAtProposal when something was paid (< 0 refund, > 0 extra), else 0. */
+  @Prop({ required: true }) balance: number;
+  @Prop() respondedAt?: Date;
+  @Prop() rejectReason?: string;
+  @Prop() withdrawnAt?: Date;
+  @Prop() withdrawnBy?: string;
+  @Prop() withdrawReason?: string;
+  @Prop({ type: AdjustmentSettlementSchema }) settlement?: AdjustmentSettlement;
+}
+
+const OrderAdjustmentSchema = SchemaFactory.createForClass(OrderAdjustment);
+
 @Schema({ timestamps: true })
 export class Order {
   _id: Types.ObjectId;
@@ -460,6 +556,10 @@ export class Order {
   /** Present only when paymentMethod = BANK_TRANSFER. */
   @Prop({ type: OrderPaymentSchema }) payment?: OrderPayment;
 
+  /** Latest shop-initiated adjustment ("Điều chỉnh đơn hàng"); earlier ones are in adjustmentHistory. */
+  @Prop({ type: OrderAdjustmentSchema }) adjustment?: OrderAdjustment;
+  @Prop({ type: [OrderAdjustmentSchema], default: undefined }) adjustmentHistory?: OrderAdjustment[];
+
   /** Set when this order was imported/synced from a marketplace (e.g. Shopee) instead
    * of placed directly on Luxe Glow. Absent = a normal order. */
   @Prop({ type: OrderExternalRefSchema }) externalRef?: OrderExternalRef;
@@ -474,7 +574,8 @@ export class Order {
    * written in the SAME insert as the order, so the intent exists iff the order does; the
    * worker of each channel pulls its own marker once the notification jobs exist —
    * 'ORDER_CREATED' / 'ORDER_CANCEL_REQUESTED' / 'ORDER_CANCELLED_BY_CUSTOMER' /
-   * 'ORDER_RETURN_REQUESTED' / 'EINVOICE_REQUESTED' / 'PAYMENT_REPORTED' (owner Zalo Bot, the
+   * 'ORDER_RETURN_REQUESTED' / 'EINVOICE_REQUESTED' / 'PAYMENT_REPORTED' /
+   * 'ORDER_ADJUSTMENT_RESPONDED#adj<n>' / 'ADJUSTMENT_PAYMENT_REPORTED#adj<n>' (owner Zalo Bot, the
    * cancel/return/e-invoice/transfer-report events are added by the same write that records them), 'ORDER_CREATED:ZALO_ZBS'
    * (customer ZBS). Absent on most
    * orders; hidden from API responses by the toJSON transform below. */
@@ -497,6 +598,8 @@ OrderSchema.index({ 'returnRequest.status': 1, 'returnRequest.requestedAt': -1 }
 OrderSchema.index({ 'einvoiceRequest.status': 1 }, { sparse: true });
 // Unique transfer reference per bank-transfer order (also how the Zalo Bot finds the order).
 OrderSchema.index({ 'payment.reference': 1 }, { unique: true, sparse: true });
+// Unique extra-payment reference of an adjustment (bank-transfer remainder).
+OrderSchema.index({ 'adjustment.settlement.reference': 1 }, { unique: true, sparse: true });
 // Sparse: only orders with a not-yet-dispatched notification carry the field.
 OrderSchema.index({ pendingNotificationEvents: 1 }, { sparse: true });
 // Internal worker state — keep it out of checkout/admin API responses.

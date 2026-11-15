@@ -231,3 +231,68 @@ export class AdminCreateOrderDto {
   /** Shipping fee added to the order total */
   @IsOptional() @IsNumber() @Min(0) shippingFee?: number;
 }
+
+// ─── Điều chỉnh đơn hàng (shop-initiated order adjustment) ───────────────────
+
+/** One line of the adjusted order. `unitPrice` keeps / overrides the price (e.g. the price the
+ * customer originally paid); absent → the current catalog price of the selected variant. */
+export class AdjustmentItemDto {
+  @IsMongoId() productId: string;
+  @IsNumber() @Min(1) @Max(10_000) quantity: number;
+  @IsOptional() @IsString() color?: string;
+  @IsOptional() @IsString() size?: string;
+  @IsOptional() @IsNumber() @Min(0) unitPrice?: number;
+  @IsOptional() @IsString() @MaxLength(500) note?: string;
+}
+
+/** Super Admin proposes a new version of the order; nothing changes until the customer accepts. */
+export class ProposeOrderAdjustmentDto {
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Đơn hàng phải có ít nhất 1 sản phẩm' })
+  @ValidateNested({ each: true })
+  @Type(() => AdjustmentItemDto)
+  items: AdjustmentItemDto[];
+
+  /** Absent → keep the current recipient/address. */
+  @IsOptional() @ValidateNested() @Type(() => ShippingInfoDto) shippingInfo?: ShippingInfoDto;
+
+  /** Shipping fee the customer pays (net). Absent → keep the current one. */
+  @IsOptional() @IsNumber() @Min(0) shippingFee?: number;
+
+  /** Total discount on the goods. Absent → keep the current one (capped at the new subtotal). */
+  @IsOptional() @IsNumber() @Min(0) discountAmount?: number;
+
+  /** Absent → keep; '' → clear. */
+  @IsOptional() @IsString() @MaxLength(1000) customerNote?: string;
+
+  /** Shown to the customer — why the order is being changed. */
+  @Transform(trim) @IsString() @IsNotEmpty({ message: 'Vui lòng nhập lý do điều chỉnh để gửi khách hàng' }) @MaxLength(500)
+  reason: string;
+
+  /** Order version the admin edited — refused if the order changed since (stale screen). */
+  @IsOptional() @IsNumber() expectedVersion?: number;
+}
+
+export class WithdrawOrderAdjustmentDto {
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(500) reason?: string;
+}
+
+/** Customer accepts adjustment `number`. A refund needs the account to send it to; an extra
+ * payment needs how the customer will pay it. */
+export class AcceptOrderAdjustmentDto {
+  @IsNumber() @Min(1) number: number;
+  @IsOptional() @ValidateNested() @Type(() => RefundAccountDto) refundAccount?: RefundAccountDto;
+  @IsOptional() @IsEnum(PaymentMethod, { message: 'Vui lòng chọn hình thức thanh toán phần còn lại' })
+  extraPaymentMethod?: PaymentMethod;
+}
+
+export class RejectOrderAdjustmentDto {
+  @IsNumber() @Min(1) number: number;
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(500) reason?: string;
+}
+
+/** Admin records that the refund was sent / the extra payment was received. */
+export class CompleteAdjustmentSettlementDto {
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(100) transferRef?: string;
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(500) note?: string;
+}

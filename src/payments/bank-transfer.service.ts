@@ -168,32 +168,9 @@ export class BankTransferService {
   toInstructions(order: OrderDocument): PaymentInstructions {
     const payment = order.payment!;
     const payable = isPaymentOpen(order);
-    let qrPayload: string | null = null;
-    let qrError: string | undefined;
-    if (payable) {
-      try {
-        const payload = buildVietQrPayload({
-          bankBin: payment.bankAccount.bankBin,
-          accountNumber: payment.bankAccount.accountNumber,
-          amount: payment.amount,
-          description: payment.reference,
-        });
-        // Self-check: never hand out a QR whose content differs from the order.
-        const decoded = decodeVietQrPayload(payload);
-        if (
-          decoded.amount !== payment.amount ||
-          decoded.description !== payment.reference ||
-          decoded.accountNumber !== payment.bankAccount.accountNumber ||
-          decoded.bankBin !== payment.bankAccount.bankBin
-        ) {
-          throw new Error('payload self-check mismatch');
-        }
-        qrPayload = payload;
-      } catch (err) {
-        this.logger.error(`Không tạo được VietQR cho đơn ${order._id}: ${(err as Error).message}`);
-        qrError = 'Không tạo được mã QR — vui lòng chuyển khoản theo thông tin bên dưới';
-      }
-    }
+    const { qrPayload, qrError } = payable
+      ? this.buildQr(payment.bankAccount, payment.amount, payment.reference, order._id.toString())
+      : { qrPayload: null, qrError: undefined };
     return {
       orderId: order._id.toString(),
       orderCode: `#${order._id.toString().slice(-8).toUpperCase()}`,
@@ -218,6 +195,44 @@ export class BankTransferService {
       ...(payment.refundAmount !== undefined ? { refundAmount: payment.refundAmount } : {}),
       ...(payment.refundedAt ? { refundedAt: payment.refundedAt } : {}),
     };
+  }
+
+  /** The receiving account to snapshot into a new payment request, or null when bank transfer is
+   * off / misconfigured. */
+  activeAccountSnapshot(): BankAccountSnapshot | null {
+    const account = this.config.activeAccount();
+    return account ? { ...account } : null;
+  }
+
+  /** VietQR payload for one transfer, self-checked: never hands out a QR whose content differs
+   * from what was asked. Used for the order payment and for an adjustment's extra payment. */
+  buildQr(
+    bank: BankAccountSnapshot,
+    amount: number,
+    reference: string,
+    logContext: string,
+  ): { qrPayload: string | null; qrError?: string } {
+    try {
+      const payload = buildVietQrPayload({
+        bankBin: bank.bankBin,
+        accountNumber: bank.accountNumber,
+        amount,
+        description: reference,
+      });
+      const decoded = decodeVietQrPayload(payload);
+      if (
+        decoded.amount !== amount ||
+        decoded.description !== reference ||
+        decoded.accountNumber !== bank.accountNumber ||
+        decoded.bankBin !== bank.bankBin
+      ) {
+        throw new Error('payload self-check mismatch');
+      }
+      return { qrPayload: payload };
+    } catch (err) {
+      this.logger.error(`Không tạo được VietQR cho đơn ${logContext}: ${(err as Error).message}`);
+      return { qrPayload: null, qrError: 'Không tạo được mã QR — vui lòng chuyển khoản theo thông tin bên dưới' };
+    }
   }
 
   /**

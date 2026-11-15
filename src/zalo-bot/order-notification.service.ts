@@ -19,6 +19,7 @@ import {
   NotificationStatus,
   ZALO_BOT_CHANNEL,
   ZALO_BOT_OUTBOX_EVENTS,
+  ADJUSTMENT_SCOPED_EVENTS,
 } from './zalo-bot.constants';
 import { ZaloBotConfigService } from './zalo-bot.config';
 import { ZaloBotCallResult, ZaloBotClient, ZaloSendMessageResult } from './zalo-bot.client';
@@ -30,6 +31,8 @@ import {
   formatOrderReturnRequestedMessage,
   formatEInvoiceRequestedMessage,
   formatPaymentReportedMessage,
+  formatAdjustmentRespondedMessage,
+  formatAdjustmentPaymentReportedMessage,
   orderDisplayCode,
   OrderMessageInput,
   OrderMessageOptions,
@@ -53,10 +56,19 @@ const MESSAGE_FORMATTERS: Record<NotificationEventType, (o: OrderMessageInput, o
   [NotificationEventType.ORDER_RETURN_REQUESTED]: formatOrderReturnRequestedMessage,
   [NotificationEventType.EINVOICE_REQUESTED]: formatEInvoiceRequestedMessage,
   [NotificationEventType.PAYMENT_REPORTED]: formatPaymentReportedMessage,
+  [NotificationEventType.ORDER_ADJUSTMENT_RESPONDED]: formatAdjustmentRespondedMessage,
+  [NotificationEventType.ADJUSTMENT_PAYMENT_REPORTED]: formatAdjustmentPaymentReportedMessage,
 };
 
-export function notificationDedupKey(eventType: NotificationEventType, orderId: string, recipientId: string): string {
-  return `${eventType}:${ZALO_BOT_CHANNEL}:${orderId}:${recipientId}`;
+/** `scope` (e.g. "adj2") lets an event that may happen once per adjustment — not once per order —
+ * be delivered again for the next adjustment. Absent for every other event (key unchanged). */
+export function notificationDedupKey(
+  eventType: NotificationEventType,
+  orderId: string,
+  recipientId: string,
+  scope?: string,
+): string {
+  return `${eventType}${scope ? `#${scope}` : ''}:${ZALO_BOT_CHANNEL}:${orderId}:${recipientId}`;
 }
 
 /** Exponential backoff: base, 2×base, 4×base … capped at 30 min. `attempt` is 1-based. */
@@ -179,6 +191,16 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
     return this.botOutboxEvents(NotificationEventType.PAYMENT_REPORTED);
   }
 
+  /** Same as above for the customer's answer to an order adjustment. */
+  adjustmentRespondedOutboxEvents(adjustmentNumber: number): string[] {
+    return this.botOutboxEvents(NotificationEventType.ORDER_ADJUSTMENT_RESPONDED).map((e) => `${e}#adj${adjustmentNumber}`);
+  }
+
+  /** Same as above for "Tôi đã chuyển khoản" on the extra amount of an adjustment. */
+  adjustmentPaymentReportedOutboxEvents(adjustmentNumber: number): string[] {
+    return this.botOutboxEvents(NotificationEventType.ADJUSTMENT_PAYMENT_REPORTED).map((e) => `${e}#adj${adjustmentNumber}`);
+  }
+
   private botOutboxEvents(event: NotificationEventType): string[] {
     try {
       return this.configService.get().enabled ? [event] : [];
@@ -249,17 +271,53 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
       }
       fannedOut += orders.length;
     }
+    return fannedOut + (await this.fanOutScopedMarkers(limit));
+  }
+
+  /** Adjustment events are queued as "<EVENT>#adj<n>" markers, so answers to two different
+   * adjustments of one order stay two notifications even if neither was dispatched yet. */
+  private async fanOutScopedMarkers(limit: number): Promise<number> {
+    let fannedOut = 0;
+    for (const event of ADJUSTMENT_SCOPED_EVENTS) {
+      const pattern = new RegExp(`^${event}#(adj\\d+)$`);
+      await this.orderModel
+        .updateMany({ [ORDER_OUTBOX_FIELD]: pattern, isDeleted: true }, { $pull: { [ORDER_OUTBOX_FIELD]: pattern } })
+        .exec();
+      const orders = await this.orderModel
+        .find({ [ORDER_OUTBOX_FIELD]: pattern })
+        .select({ [ORDER_OUTBOX_FIELD]: 1, createdAt: 1 })
+        .sort({ createdAt: 1 })
+        .limit(limit)
+        .lean()
+        .exec();
+      for (const order of orders) {
+        const markers = ((order as { pendingNotificationEvents?: string[] }).pendingNotificationEvents ?? []).filter((m) =>
+          pattern.test(m),
+        );
+        for (const marker of markers) {
+          await this.fanOutOrder(order._id.toString(), event, pattern.exec(marker)![1]);
+          await this.orderModel.updateOne({ _id: order._id }, { $pull: { [ORDER_OUTBOX_FIELD]: marker } }).exec();
+        }
+      }
+      fannedOut += orders.length;
+    }
     return fannedOut;
   }
 
   /** Creates one job per approved recipient (idempotent). With no valid config/recipient it
    * records a single SKIPPED_NOT_CONFIGURED placeholder instead, so the gap is visible. */
-  async fanOutOrder(orderId: string, eventType: NotificationEventType): Promise<{ jobs: number; skipped: boolean }> {
+  async fanOutOrder(
+    orderId: string,
+    eventType: NotificationEventType,
+    /** "adj<n>" for an adjustment event; absent → the order's current adjustment. */
+    scopeHint?: string,
+  ): Promise<{ jobs: number; skipped: boolean }> {
     const cfg = this.configService.get();
     const validation = this.configService.validate(cfg);
     const approved = validation.valid ? await this.recipients.getApprovedRecipients() : [];
     const orderCode = orderDisplayCode(orderId);
     const orderObjectId = new Types.ObjectId(orderId);
+    const scope = scopeHint ?? (await this.dedupScope(orderObjectId, eventType));
 
     if (!validation.valid || !approved.length) {
       const reason = !cfg.enabled ? 'BOT_DISABLED' : !validation.valid ? 'CONFIG_INVALID' : 'NO_APPROVED_RECIPIENT';
@@ -267,7 +325,7 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
         ? validation.errors.join('; ') || 'Zalo Bot chưa được bật'
         : 'Chưa có chat id chủ shop nào được duyệt (ZALO_OWNER_CHAT_IDS / duyệt trong admin)';
       await this.upsertJob({
-        dedupKey: notificationDedupKey(eventType, orderId, NO_RECIPIENT_PLACEHOLDER),
+        dedupKey: notificationDedupKey(eventType, orderId, NO_RECIPIENT_PLACEHOLDER, scope),
         channel: ZALO_BOT_CHANNEL,
         eventType,
         orderId: orderObjectId,
@@ -285,7 +343,7 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
 
     for (const r of approved) {
       await this.upsertJob({
-        dedupKey: notificationDedupKey(eventType, orderId, r.chatId),
+        dedupKey: notificationDedupKey(eventType, orderId, r.chatId, scope),
         channel: ZALO_BOT_CHANNEL,
         eventType,
         orderId: orderObjectId,
@@ -301,11 +359,32 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
     // A real fan-out supersedes an earlier "not configured" placeholder for this order.
     await this.jobModel
       .deleteOne({
-        dedupKey: notificationDedupKey(eventType, orderId, NO_RECIPIENT_PLACEHOLDER),
+        dedupKey: notificationDedupKey(eventType, orderId, NO_RECIPIENT_PLACEHOLDER, scope),
         status: NotificationStatus.SKIPPED_NOT_CONFIGURED,
       })
       .exec();
     return { jobs: approved.length, skipped: false };
+  }
+
+  /** An adjustment event describes the adjustment it was raised for (its number is in the dedup
+   * key) — not whatever adjustment the order carries by the time the message is sent. */
+  private messageInputFor(
+    order: OrderMessageInput & { adjustmentHistory?: unknown[] },
+    job: Pick<NotificationJob, 'eventType' | 'dedupKey'>,
+  ): OrderMessageInput {
+    if (!ADJUSTMENT_SCOPED_EVENTS.includes(job.eventType)) return order;
+    const n = Number(/#adj(\d+):/.exec(job.dedupKey)?.[1]);
+    if (!n || order.adjustment?.number === n) return order;
+    const match = (order.adjustmentHistory ?? []).find((a) => (a as { number?: number }).number === n);
+    return match ? { ...order, adjustment: match as OrderMessageInput['adjustment'] } : order;
+  }
+
+  /** "adj<number>" for adjustment events (read from the order now), else undefined. */
+  private async dedupScope(orderId: Types.ObjectId, eventType: NotificationEventType): Promise<string | undefined> {
+    if (!ADJUSTMENT_SCOPED_EVENTS.includes(eventType)) return undefined;
+    const order = await this.orderModel.findById(orderId).select({ 'adjustment.number': 1 }).lean().exec();
+    const n = (order as { adjustment?: { number?: number } } | null)?.adjustment?.number;
+    return n ? `adj${n}` : undefined;
   }
 
   private async upsertJob(fields: Partial<NotificationJob> & { dedupKey: string }): Promise<void> {
@@ -386,7 +465,8 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
 
       const format = MESSAGE_FORMATTERS[job.eventType] ?? formatOrderCreatedMessage;
       // Only approved shop owners receive these messages — they call the customer, so no masking.
-      const text = format(order as unknown as OrderMessageInput, { adminUrl: cfg.adminUrl, showFullPhone: true });
+      const input = this.messageInputFor(order as unknown as OrderMessageInput & { adjustmentHistory?: unknown[] }, job);
+      const text = format(input, { adminUrl: cfg.adminUrl, showFullPhone: true });
       sendStarted = true;
       const res = await this.client.sendMessage(job.recipientId, text);
       return this.applySendResult(job, res, cfg.retryBaseDelayMs);
@@ -606,7 +686,7 @@ export class OrderNotificationService implements OnModuleInit, OnModuleDestroy {
           v.valid ? 'Chưa có người nhận nào được duyệt' : `Cấu hình Zalo Bot chưa hợp lệ: ${v.errors.join('; ')}`,
         );
       }
-      const fan = await this.fanOutOrder(job.orderId.toString(), job.eventType);
+      const fan = await this.fanOutOrder(job.orderId.toString(), job.eventType, /#(adj\d+):/.exec(job.dedupKey)?.[1]);
       result = { mode: 'fanned_out', jobs: fan.jobs };
     } else {
       const res = await this.jobModel

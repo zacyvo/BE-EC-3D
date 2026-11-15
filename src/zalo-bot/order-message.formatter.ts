@@ -54,6 +54,27 @@ export interface OrderMessageInput {
     vatRate?: number;
     vatAmount?: number;
   };
+  /** Latest shop-initiated adjustment ("Điều chỉnh đơn hàng"). */
+  adjustment?: {
+    number?: number;
+    status?: string;
+    reason?: string;
+    respondedAt?: Date | string;
+    rejectReason?: string;
+    paidAmountAtProposal?: number;
+    balance?: number;
+    before?: { total?: number };
+    after?: { total?: number };
+    settlement?: {
+      type?: string;
+      amount?: number;
+      status?: string;
+      method?: string;
+      reference?: string;
+      customerReportedAt?: Date | string;
+      refundAccount?: { bankName?: string; accountNumber?: string; accountHolder?: string };
+    };
+  };
 }
 
 export interface OrderMessageOptions {
@@ -376,6 +397,83 @@ export function formatPaymentReportedMessage(order: OrderMessageInput, options: 
   }
   lines.push('', '⚠️ Đây chỉ là thông báo của khách, CHƯA phải xác nhận đã nhận tiền.');
   lines.push('Sau khi kiểm tra tài khoản ngân hàng, gửi cho bot:', `Đơn hàng: ${reference}`, 'Đã thanh toán');
+  if (adminLink) lines.push('', 'Xem đơn hàng:', adminLink);
+
+  const message = lines.join('\n');
+  return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;
+}
+
+/**
+ * Plain-text ORDER_ADJUSTMENT_RESPONDED message: the customer accepted (with how the difference is
+ * settled) or rejected the shop's adjustment. Read from the order at send time.
+ */
+export function formatAdjustmentRespondedMessage(order: OrderMessageInput, options: OrderMessageOptions = {}): string {
+  const maxLength = options.maxLength ?? ZALO_MESSAGE_MAX_LENGTH;
+  const orderId = order._id ? order._id.toString() : '';
+  const code = orderId ? orderDisplayCode(orderId) : MISSING;
+  const adj = order.adjustment ?? {};
+  const name = order.shippingInfo?.recipientName?.trim() || 'Khách hàng';
+  const adminLink = buildAdminOrderUrl(options.adminUrl, orderId);
+  const accepted = adj.status === 'ACCEPTED';
+
+  const lines: string[] = [
+    accepted ? '✅ LUXE GLOW — KHÁCH ĐỒNG Ý ĐIỀU CHỈNH ĐƠN' : '❌ LUXE GLOW — KHÁCH TỪ CHỐI ĐIỀU CHỈNH ĐƠN',
+    '',
+  ];
+  lines.push(`${truncate(name, 80)} đã ${accepted ? 'đồng ý' : 'từ chối'} điều chỉnh lần ${adj.number ?? '?'} của đơn ${code}`);
+  const at = formatDateTime(adj.respondedAt);
+  if (at) lines.push(`Thời gian: ${at}`);
+  lines.push(`Tổng tiền: ${formatVnd(adj.before?.total)} → ${formatVnd(adj.after?.total)}`);
+  if ((adj.paidAmountAtProposal ?? 0) > 0) lines.push(`Khách đã thanh toán: ${formatVnd(adj.paidAmountAtProposal)}`);
+
+  if (accepted) {
+    const st = adj.settlement;
+    if (st?.type === 'REFUND') {
+      lines.push('', `💸 Cần hoàn lại cho khách: ${formatVnd(st.amount)}`);
+      const acc = st.refundAccount;
+      if (acc) {
+        lines.push(`Tài khoản nhận: ${acc.bankName ?? MISSING} · ${acc.accountNumber ?? MISSING} · ${acc.accountHolder ?? MISSING}`);
+      }
+      lines.push('Sau khi chuyển khoản hoàn tiền, ghi nhận trong trang quản trị đơn hàng.');
+    } else if (st?.type === 'EXTRA_PAYMENT') {
+      lines.push('', `➕ Khách cần trả thêm: ${formatVnd(st.amount)}`);
+      lines.push(
+        st.method === 'BANK_TRANSFER'
+          ? `Hình thức: chuyển khoản — nội dung CK: ${st.reference ?? MISSING}`
+          : 'Hình thức: COD — thu thêm khi giao hàng (đã cập nhật số tiền COD).',
+      );
+    } else {
+      lines.push('', 'Không phát sinh chênh lệch thanh toán.');
+    }
+  } else if (adj.rejectReason) {
+    lines.push(`Lý do: ${truncate(adj.rejectReason, MAX_NOTE_LENGTH)}`);
+    lines.push('', 'Đơn hàng giữ nguyên như trước khi điều chỉnh — vui lòng liên hệ khách.');
+  } else {
+    lines.push('', 'Đơn hàng giữ nguyên như trước khi điều chỉnh — vui lòng liên hệ khách.');
+  }
+  if (adminLink) lines.push('', 'Xem đơn hàng:', adminLink);
+
+  const message = lines.join('\n');
+  return message.length > maxLength ? `${message.slice(0, maxLength - 1)}…` : message;
+}
+
+/** Plain-text ADJUSTMENT_PAYMENT_REPORTED message — a customer claim, never a confirmation. */
+export function formatAdjustmentPaymentReportedMessage(order: OrderMessageInput, options: OrderMessageOptions = {}): string {
+  const maxLength = options.maxLength ?? ZALO_MESSAGE_MAX_LENGTH;
+  const orderId = order._id ? order._id.toString() : '';
+  const code = orderId ? orderDisplayCode(orderId) : MISSING;
+  const st = order.adjustment?.settlement ?? {};
+  const name = order.shippingInfo?.recipientName?.trim() || 'Khách hàng';
+  const adminLink = buildAdminOrderUrl(options.adminUrl, orderId);
+
+  const lines: string[] = ['💳 LUXE GLOW — KHÁCH BÁO ĐÃ CHUYỂN KHOẢN PHẦN THÊM', ''];
+  lines.push(`${truncate(name, 80)} báo đã chuyển khoản phần chênh lệch của đơn ${code}`);
+  const at = formatDateTime(st.customerReportedAt);
+  if (at) lines.push(`Thời gian báo: ${at}`);
+  lines.push(`Số tiền cần nhận: ${formatVnd(st.amount)}`);
+  lines.push(`Nội dung chuyển khoản: ${st.reference || MISSING}`);
+  lines.push('', '⚠️ Đây chỉ là thông báo của khách, CHƯA phải xác nhận đã nhận tiền.');
+  lines.push('Sau khi kiểm tra tài khoản, bấm "Xác nhận đã nhận tiền" trong trang quản trị đơn hàng.');
   if (adminLink) lines.push('', 'Xem đơn hàng:', adminLink);
 
   const message = lines.join('\n');

@@ -19,6 +19,9 @@ import {
   OrderPayment,
   PaymentMethod,
   PaymentStatus,
+  OrderAdjustmentStatus,
+  AdjustmentSettlementType,
+  AdjustmentSettlementStatus,
 } from './schemas/order.schema';
 import { OrderVersion, OrderVersionDocument } from './schemas/order-version.schema';
 import { NET_ORDER_TOTAL_EXPR } from './order-return-aggregation';
@@ -116,8 +119,9 @@ export class OrdersService {
   ) {}
 
   /** Validates the selected color/size against the product's configured options
-   * (if any) and resolves the image to snapshot for this order item. */
-  private resolveVariant(
+   * (if any) and resolves the image to snapshot for this order item. Also used by
+   * OrderAdjustmentService. */
+  resolveVariant(
     product: { colors: { name: string; images: string[] }[]; sizes: string[]; images: string[]; name: string },
     color?: string,
     size?: string,
@@ -143,7 +147,7 @@ export class OrdersService {
   /** If shippingInfo carries an `oldAddress` selection, resolves it via
    * AddressConversionService and overwrites ward/city with the authoritative
    * result -- client-submitted ward/city are ignored in that case. */
-  private resolveShippingInfo(shippingInfo: CreateOrderDto['shippingInfo']) {
+  resolveShippingInfo(shippingInfo: CreateOrderDto['shippingInfo']) {
     if (!shippingInfo.oldAddress) return shippingInfo;
     const entry = this.addressConversionService.resolve(
       shippingInfo.oldAddress.districtCode,
@@ -1012,6 +1016,40 @@ export class OrdersService {
       throw new BadRequestException(
         'Đơn chuyển khoản chưa được xác nhận thanh toán — vui lòng dùng "Xác nhận đã thanh toán" thay vì sửa số tiền đã trả',
       );
+    }
+
+    // A pending adjustment proposal decides what goes in the parcel and what the customer pays.
+    if (
+      order.adjustment?.status === OrderAdjustmentStatus.PROPOSED &&
+      [OrderStatus.SHIPPED, OrderStatus.DELIVERED].includes(dto.status) &&
+      order.status !== dto.status
+    ) {
+      throw new BadRequestException(
+        'Đơn đang chờ khách xác nhận điều chỉnh — vui lòng chờ khách phản hồi hoặc thu hồi đề xuất trước khi giao hàng',
+      );
+    }
+    // A cancelled order can't be adjusted any more — the proposal goes with it.
+    if (dto.status === OrderStatus.CANCELLED && order.adjustment?.status === OrderAdjustmentStatus.PROPOSED) {
+      order.adjustment.status = OrderAdjustmentStatus.WITHDRAWN;
+      order.adjustment.withdrawnAt = new Date();
+      order.adjustment.withdrawnBy = staffId;
+      order.adjustment.withdrawReason = 'Đơn hàng đã bị hủy';
+    }
+    // The rest of an accepted adjustment paid by COD is collected with the delivery.
+    const settlement = order.adjustment?.settlement;
+    if (
+      dto.status === OrderStatus.DELIVERED &&
+      order.status !== OrderStatus.DELIVERED &&
+      settlement?.type === AdjustmentSettlementType.EXTRA_PAYMENT &&
+      settlement.method === PaymentMethod.COD &&
+      settlement.status !== AdjustmentSettlementStatus.COMPLETED
+    ) {
+      settlement.status = AdjustmentSettlementStatus.COMPLETED;
+      settlement.completedAt = new Date();
+      settlement.completedBy = 'system';
+      settlement.completedByName = 'Thu COD khi giao hàng';
+      order.paidAmount = Math.max(dto.paidAmount ?? order.paidAmount ?? 0, order.total);
+      dto = { ...dto, paidAmount: order.paidAmount };
     }
 
     order.status = dto.status;

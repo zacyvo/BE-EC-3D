@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { OrdersService } from './orders.service';
 import { OrdersController, AdminOrdersController } from './orders.controller';
+import { OrderAdjustmentsController, AdminOrderAdjustmentsController } from './order-adjustments.controller';
+import { OrderAdjustmentService } from './order-adjustment.service';
 import { Order, OrderSchema } from './schemas/order.schema';
 import { OrderVersion, OrderVersionSchema } from './schemas/order-version.schema';
 import { ProductsModule } from '../products/products.module';
@@ -28,8 +30,8 @@ import { PaymentsModule } from '../payments/payments.module';
     ZaloBotModule,
     PaymentsModule,
   ],
-  controllers: [OrdersController, AdminOrdersController],
-  providers: [OrdersService],
-  exports: [OrdersService],
+  controllers: [OrdersController, AdminOrdersController, OrderAdjustmentsController, AdminOrderAdjustmentsController],
+  providers: [OrdersService, OrderAdjustmentService],
+  exports: [OrdersService, OrderAdjustmentService],
 })
 export class OrdersModule {}

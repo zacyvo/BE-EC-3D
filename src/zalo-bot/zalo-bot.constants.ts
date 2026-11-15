@@ -18,7 +18,19 @@ export enum NotificationEventType {
   /** Customer clicked "Tôi đã chuyển khoản" on a VietQR bank-transfer order — a claim only; the
    * owner checks the bank account, then confirms with the Bot command or in the admin dashboard. */
   PAYMENT_REPORTED = 'PAYMENT_REPORTED',
+  /** Customer accepted or rejected the shop's order adjustment ("Điều chỉnh đơn hàng") — the
+   * owner then refunds / collects the difference, or follows up. One per adjustment number. */
+  ORDER_ADJUSTMENT_RESPONDED = 'ORDER_ADJUSTMENT_RESPONDED',
+  /** Customer clicked "Tôi đã chuyển khoản" for the extra amount of an accepted adjustment. */
+  ADJUSTMENT_PAYMENT_REPORTED = 'ADJUSTMENT_PAYMENT_REPORTED',
 }
+
+/** Events that can happen once per adjustment (not once per order): queued in the Order outbox as
+ * "<EVENT>#adj<n>" markers and deduplicated per adjustment number. */
+export const ADJUSTMENT_SCOPED_EVENTS: NotificationEventType[] = [
+  NotificationEventType.ORDER_ADJUSTMENT_RESPONDED,
+  NotificationEventType.ADJUSTMENT_PAYMENT_REPORTED,
+];
 
 /** Owner Bot events that travel through the Order outbox (`pendingNotificationEvents`). */
 export const ZALO_BOT_OUTBOX_EVENTS: NotificationEventType[] = [
