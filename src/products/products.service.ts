@@ -11,6 +11,7 @@ import { AuditService } from '../audit/audit.service';
 import { Category, CategoryDocument } from '../categories/schemas/category.schema';
 import { Order, SOLD_ORDER_STATUSES } from '../orders/schemas/order.schema';
 import { NET_ITEM_QTY_EXPR, UNWIND_ITEMS_WITH_RETURNS } from '../orders/order-return-aggregation';
+import { sanitizeVariantPrices, type VariantPriceInput } from './product-variant-price.util';
 
 const CACHE_KEY_LIST = 'products:list';
 const CACHE_KEY_DETAIL = (slug: string) => `products:detail:${slug}`;
@@ -58,9 +59,10 @@ export class ProductsService {
   /** Guarantees colors/sizes are arrays on the response. Products saved before this
    * feature existed have no such fields in MongoDB, and `.lean()` queries (unlike
    * hydrated Mongoose documents) don't apply schema defaults for missing paths. */
-  private withVariantDefaults<T extends { colors?: unknown; sizes?: unknown; socials?: unknown }>(doc: T): T {
+  private withVariantDefaults<T extends { colors?: unknown; sizes?: unknown; socials?: unknown; variants?: unknown }>(doc: T): T {
     if (doc.colors === undefined) (doc as { colors?: unknown }).colors = [];
     if (doc.sizes === undefined) (doc as { sizes?: unknown }).sizes = [];
+    if (doc.variants === undefined) (doc as { variants?: unknown }).variants = [];
     if (doc.socials === undefined) (doc as { socials?: unknown }).socials = [];
     return doc;
   }
@@ -167,10 +169,13 @@ export class ProductsService {
       dto.discountPercent,
     );
 
+    const colors = this.sanitizeColors(dto.colors) ?? [];
+    const sizes = this.sanitizeSizes(dto.sizes) ?? [];
     const product = new this.productModel({
       ...dto,
-      colors: this.sanitizeColors(dto.colors) ?? [],
-      sizes: this.sanitizeSizes(dto.sizes) ?? [],
+      colors,
+      sizes,
+      variants: sanitizeVariantPrices(dto.variants, colors.map((c) => c.name), sizes, dto.discountPercent ?? 0),
       socials: this.sanitizeSocials(dto.socials) ?? [],
       slug,
       category: new Types.ObjectId(dto.category),
@@ -372,6 +377,13 @@ export class ProductsService {
     if (dto.colors !== undefined) updates.colors = this.sanitizeColors(dto.colors) as any;
     if (dto.sizes !== undefined) updates.sizes = this.sanitizeSizes(dto.sizes) as any;
     if (dto.socials !== undefined) updates.socials = this.sanitizeSocials(dto.socials) as any;
+    // Variant prices follow the (possibly changed) options and discount: entries for removed
+    // colors/sizes are dropped and finalPrice is recomputed even when only the discount changed.
+    const colorNames = (updates.colors ?? product.colors ?? []).map((c) => c.name);
+    const sizes = updates.sizes ?? product.sizes ?? [];
+    const variantSource: VariantPriceInput[] =
+      dto.variants ?? (product.variants ?? []).map((v) => ({ color: v.color, size: v.size, sellingPrice: v.sellingPrice, sku: v.sku }));
+    updates.variants = sanitizeVariantPrices(variantSource, colorNames, sizes, discountPercent) as any;
 
     const updated = await this.productModel
       .findByIdAndUpdate(id, { $set: updates }, { new: true })

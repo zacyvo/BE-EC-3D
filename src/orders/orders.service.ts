@@ -33,6 +33,7 @@ import {
   OrderVatInput,
 } from './einvoice-request.util';
 import { computeShippingFee } from './shipping-fee.util';
+import { resolveUnitPrice } from '../products/product-variant-price.util';
 import { ProductsService } from '../products/products.service';
 import { CartService } from '../cart/cart.service';
 import { AuditService } from '../audit/audit.service';
@@ -196,14 +197,16 @@ export class OrdersService {
           throw new BadRequestException(`Insufficient stock for ${product.name}`);
         }
         const variant = this.resolveVariant(product, item.color, item.size);
+        // Giá theo phân loại: the selected color/size's own price, else the product price.
+        const unitPrice = resolveUnitPrice(product, variant.color, variant.size);
         return {
           productId: new Types.ObjectId(item.productId),
           productName: product.name,
           productImage: variant.image,
           productSlug: product.slug,
           quantity: item.quantity,
-          unitPrice: product.finalPrice,
-          subtotal: product.finalPrice * item.quantity,
+          unitPrice,
+          subtotal: unitPrice * item.quantity,
           ...(variant.color ? { color: variant.color } : {}),
           ...(variant.size ? { size: variant.size } : {}),
         };
@@ -342,14 +345,16 @@ export class OrdersService {
           throw new BadRequestException(`Không đủ hàng: ${product.name}`);
         }
         const variant = this.resolveVariant(product, item.color, item.size);
+        // Giá theo phân loại: the selected color/size's own price, else the product price.
+        const unitPrice = resolveUnitPrice(product, variant.color, variant.size);
         return {
           productId: new Types.ObjectId(item.productId),
           productName: product.name,
           productImage: variant.image,
           productSlug: product.slug,
           quantity: item.quantity,
-          unitPrice: product.finalPrice,
-          subtotal: product.finalPrice * item.quantity,
+          unitPrice,
+          subtotal: unitPrice * item.quantity,
           ...(item.note ? { note: item.note } : {}),
           ...(variant.color ? { color: variant.color } : {}),
           ...(variant.size ? { size: variant.size } : {}),

@@ -99,6 +99,15 @@ export class AdminIntegrationsShopeeController {
     return this.service.commit(id, staff.sub);
   }
 
+  /** One-off: copies per-variant prices from the synced mirror onto already-published catalog
+   * products (only `variants` is written). */
+  @Post('catalog/backfill-variant-prices')
+  @UseGuards(JwtStaffGuard, RolesGuard)
+  @Roles(...STAFF_WRITE_ROLES)
+  backfillVariantPrices(@CurrentUser() staff: StaffPrincipal) {
+    return this.service.backfillVariantPrices(staff.sub);
+  }
+
   @Delete('sync-sessions/:id')
   @UseGuards(JwtStaffGuard, RolesGuard)
   @Roles(...STAFF_WRITE_ROLES)

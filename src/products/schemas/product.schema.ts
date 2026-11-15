@@ -15,6 +15,20 @@ export class ProductColor {
 
 export const ProductColorSchema = SchemaFactory.createForClass(ProductColor);
 
+/** Price of one color/size combination ("giá theo phân loại"). A combination with no entry
+ * sells at the product's own price. `finalPrice` = sellingPrice after the product discount,
+ * always computed server-side (see products/product-variant-price.util.ts). */
+@Schema({ _id: false })
+export class ProductVariantPrice {
+  @Prop({ trim: true }) color?: string;
+  @Prop({ trim: true }) size?: string;
+  @Prop({ required: true, min: 0 }) sellingPrice: number;
+  @Prop({ required: true, min: 0 }) finalPrice: number;
+  @Prop({ trim: true }) sku?: string;
+}
+
+export const ProductVariantPriceSchema = SchemaFactory.createForClass(ProductVariantPrice);
+
 export enum SocialPlatform {
   SHOPEE = 'SHOPEE',
   THREADS = 'THREADS',
@@ -51,6 +65,11 @@ export class Product {
   /** Selectable size labels (e.g. "S", "M", "L"). Empty = no size options (default behavior). */
   @Prop({ type: [String], default: [] })
   sizes: string[];
+
+  /** Per color/size prices. Empty = every combination sells at `finalPrice`. For Shopee-synced
+   * products `sellingPrice`/`finalPrice` hold the lowest variant price ("từ ..."). */
+  @Prop({ type: [ProductVariantPriceSchema], default: [] })
+  variants: ProductVariantPrice[];
 
   /** Linked social/marketplace channels for this product (e.g. its Shopee listing). */
   @Prop({ type: [ProductSocialSchema], default: [] })

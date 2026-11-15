@@ -1,4 +1,10 @@
-import { buildColorsAndSizes, buildShopeeSocialLink, mergeShopeeSocial, sanitizeProductName } from './shopee-catalog-publish.service';
+import {
+  buildColorsAndSizes,
+  buildShopeeSocialLink,
+  buildVariantPrices,
+  mergeShopeeSocial,
+  sanitizeProductName,
+} from './shopee-catalog-publish.service';
 import { SocialPlatform } from '../products/schemas/product.schema';
 
 describe('buildColorsAndSizes', () => {
@@ -98,5 +104,34 @@ describe('mergeShopeeSocial (test: liên kết mạng xã hội/sàn TMĐT — k
       { name: SocialPlatform.FACEBOOK, link: 'https://facebook.com/abc' },
       { name: SocialPlatform.SHOPEE, id: 'new', link: 'https://shopee.vn/product/1/new' },
     ]);
+  });
+});
+
+describe('buildVariantPrices (giá theo phân loại từ Shopee model)', () => {
+  const tiers = [
+    { name: 'Màu', options: ['Đỏ', 'Xanh'] },
+    { name: 'Kích thước', options: ['20cm', '30cm'] },
+  ];
+
+  it('maps each model price to its color/size by tier index', () => {
+    const out = buildVariantPrices(tiers, [
+      { tierIndexes: [0, 0], effectivePrice: '120000' },
+      { tierIndexes: [1, 1], effectivePrice: '250000.00', sku: 'X-30' },
+    ]);
+    expect(out).toEqual([
+      { color: 'Đỏ', size: '20cm', sellingPrice: 120000 },
+      { color: 'Xanh', size: '30cm', sellingPrice: 250000, sku: 'X-30' },
+    ]);
+  });
+
+  it('maps single-tier products to color-only entries', () => {
+    expect(buildVariantPrices([tiers[0]], [{ tierIndexes: [1], effectivePrice: '99000' }])).toEqual([
+      { color: 'Xanh', sellingPrice: 99000 },
+    ]);
+  });
+
+  it('returns [] for no-variation products and skips zero/invalid prices', () => {
+    expect(buildVariantPrices([], [{ tierIndexes: [], effectivePrice: '100', isDefault: true }])).toEqual([]);
+    expect(buildVariantPrices(tiers, [{ tierIndexes: [0, 0], effectivePrice: '0' }, { tierIndexes: [0, 1], effectivePrice: 'abc' }])).toEqual([]);
   });
 });

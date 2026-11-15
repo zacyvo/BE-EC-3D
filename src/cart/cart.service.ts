@@ -3,6 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Cart, CartDocument } from './schemas/cart.schema';
 import { ProductsService } from '../products/products.service';
+import { resolveUnitPrice } from '../products/product-variant-price.util';
 import { IsMongoId, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 
 export class AddToCartDto {
@@ -95,7 +96,7 @@ export class CartService {
         productName: product.name,
         productImage: variant.image,
         quantity: dto.quantity,
-        price: product.finalPrice,
+        price: resolveUnitPrice(product, variant.color, variant.size),
         slug: product.slug,
         ...(variant.color ? { color: variant.color } : {}),
         ...(variant.size ? { size: variant.size } : {}),

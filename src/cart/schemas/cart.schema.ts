@@ -9,7 +9,7 @@ export class CartItem {
   @Prop({ required: true }) productName: string;
   @Prop({ required: true }) productImage: string;
   @Prop({ required: true, min: 1 }) quantity: number;
-  @Prop({ required: true }) price: number; // finalPrice at time of add
+  @Prop({ required: true }) price: number; // unit price (variant price if set) at time of add
   @Prop({ required: true }) slug: string;
   /** Selected color/size variant, if the product has variant options. */
   @Prop() color?: string;

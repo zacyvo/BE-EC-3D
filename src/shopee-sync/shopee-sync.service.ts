@@ -67,6 +67,36 @@ export class ShopeeSyncService {
 
   // ── Config ──────────────────────────────────────────────────────────────────
 
+  /** Writes per-variant prices (giá theo phân loại) from the mirror onto every linked catalog
+   * product — for products published before Product.variants existed. Later syncs keep them
+   * current through publishProduct(). */
+  async backfillVariantPrices(adminId: string) {
+    const shopId = this.configService.get().shopId;
+    const products = await this.productModel
+      .find({
+        channel: MarketplaceChannel.SHOPEE,
+        shopId,
+        internalProductId: { $ne: null },
+        'tierVariations.0': { $exists: true },
+      })
+      .exec();
+    const variants = products.length
+      ? await this.variantModel.find({ marketplaceProductId: { $in: products.map((p) => p._id) } }).exec()
+      : [];
+    const result = await this.catalogPublishService.backfillVariantPrices(
+      products.map((p) => ({ marketplaceProduct: p, variants: variants.filter((v) => v.marketplaceProductId.equals(p._id)) })),
+      adminId,
+    );
+    await this.auditService.log({
+      actorId: adminId,
+      actorType: 'staff',
+      action: 'shopee_sync.backfill_variant_prices',
+      module: SHOPEE_SYNC_AUDIT_MODULE,
+      afterData: { ...result, failed: result.failed.length ? result.failed : undefined },
+    });
+    return { candidates: products.length, ...result };
+  }
+
   getConfig() {
     return this.configService.get();
   }

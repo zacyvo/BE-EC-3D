@@ -3,7 +3,13 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import slugify from 'slugify';
 import { ProductsService } from '../products/products.service';
-import { CreateProductDto, ProductColorDto, ProductSocialDto, UpdateProductDto } from '../products/dto/product.dto';
+import {
+  CreateProductDto,
+  ProductColorDto,
+  ProductSocialDto,
+  ProductVariantPriceDto,
+  UpdateProductDto,
+} from '../products/dto/product.dto';
 import { SocialPlatform } from '../products/schemas/product.schema';
 import { Category, CategoryDocument } from '../categories/schemas/category.schema';
 import { MarketplaceProductDocument } from './schemas/marketplace-product.schema';
@@ -43,6 +49,35 @@ export function buildColorsAndSizes(
   const sizes = sizeTier ? sizeTier.options.filter((s) => s.trim().length > 0) : [];
 
   return { colors, sizes };
+}
+
+/** Pure mapping: each Shopee model's own price → `Product.variants` (giá theo phân loại).
+ * Same index-based tier mapping as buildColorsAndSizes (tier 1 → color, tier 2 → size), so
+ * the color/size names line up exactly with what the storefront offers. The price is the
+ * model's effective price (promotion price when one runs) — the same basis the product-level
+ * `sellingPrice` (= sellingPriceMin) uses. A no-variation product returns [] (its single
+ * price is the product price). */
+export function buildVariantPrices(
+  tierVariations: { name: string; options: string[] }[],
+  variants: { tierIndexes: number[]; effectivePrice: string; sku?: string | null; isDefault?: boolean }[],
+): ProductVariantPriceDto[] {
+  if (tierVariations.length === 0) return [];
+  const out: ProductVariantPriceDto[] = [];
+  for (const v of variants) {
+    if (v.isDefault) continue;
+    const price = Number(v.effectivePrice);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    const color = tierVariations[0]?.options[v.tierIndexes[0]]?.trim();
+    const size = tierVariations[1] ? tierVariations[1].options[v.tierIndexes[1]]?.trim() : undefined;
+    if (!color && !size) continue;
+    out.push({
+      ...(color ? { color } : {}),
+      ...(size ? { size } : {}),
+      sellingPrice: Math.round(price),
+      ...(v.sku ? { sku: v.sku } : {}),
+    });
+  }
+  return out;
 }
 
 /** Builds the Shopee entry for `Product.socials` — real Shopee URL format confirmed
@@ -141,6 +176,7 @@ export class ShopeeCatalogPublishService {
         marketplaceProduct.tierVariations,
         activeVariants.map((v) => ({ tierIndexes: v.tierIndexes, imageUrl: v.imageUrl })),
       );
+      const variantPrices = buildVariantPrices(marketplaceProduct.tierVariations, activeVariants);
       const galleryImages = images
         .filter((img) => img.isActive && img.imageType !== MarketplaceImageType.VARIANT)
         .sort((a, b) => a.position - b.position)
@@ -163,6 +199,7 @@ export class ShopeeCatalogPublishService {
           video: marketplaceProduct.videoUrl ?? undefined,
           colors,
           sizes,
+          variants: variantPrices,
           socials: [shopeeSocial],
           costPrice: 0,
           sellingPrice,
@@ -190,6 +227,7 @@ export class ShopeeCatalogPublishService {
         video: marketplaceProduct.videoUrl ?? undefined,
         colors,
         sizes,
+        variants: variantPrices,
         socials: mergeShopeeSocial(existing.socials ?? [], shopeeSocial),
         sellingPrice,
         stock,
@@ -205,5 +243,37 @@ export class ShopeeCatalogPublishService {
       return { externalProductId, action: 'skipped', error: message };
     }
   }
-}
 
+  /**
+   * One-off backfill for products published before per-variant prices existed: writes ONLY
+   * `variants` (from the already-synced mirror) onto each linked catalog product — name,
+   * images, description, base price… stay untouched, so admin edits since the last sync
+   * survive. Products whose mirror has no variation tiers are skipped. Idempotent.
+   */
+  async backfillVariantPrices(
+    items: { marketplaceProduct: MarketplaceProductDocument; variants: MarketplaceVariantDocument[] }[],
+    staffId: string,
+  ): Promise<{ updated: number; skipped: number; failed: { externalProductId: string; error: string }[] }> {
+    let updated = 0;
+    let skipped = 0;
+    const failed: { externalProductId: string; error: string }[] = [];
+    for (const { marketplaceProduct, variants } of items) {
+      const externalProductId = marketplaceProduct.externalProductId;
+      if (!marketplaceProduct.internalProductId) { skipped += 1; continue; }
+      const variantPrices = buildVariantPrices(
+        marketplaceProduct.tierVariations,
+        variants.filter((v) => v.isActive),
+      );
+      if (variantPrices.length === 0) { skipped += 1; continue; }
+      try {
+        await this.productsService.update(marketplaceProduct.internalProductId.toString(), { variants: variantPrices }, staffId);
+        updated += 1;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Lỗi không xác định';
+        this.logger.error(`Backfill giá phân loại thất bại cho ${externalProductId}: ${message}`);
+        failed.push({ externalProductId, error: message });
+      }
+    }
+    return { updated, skipped, failed };
+  }
+}

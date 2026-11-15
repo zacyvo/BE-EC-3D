@@ -12,6 +12,7 @@ import {
   IsMongoId,
   ValidateNested,
   Matches,
+  ArrayMaxSize,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { SocialPlatform } from '../schemas/product.schema';
@@ -28,6 +29,14 @@ export class ProductColorDto {
   @IsArray()
   @IsString({ each: true })
   images?: string[];
+}
+
+/** Price for one color/size combination. finalPrice is computed server-side. */
+export class ProductVariantPriceDto {
+  @IsOptional() @IsString() @MaxLength(50) color?: string;
+  @IsOptional() @IsString() @MaxLength(50) size?: string;
+  @IsNumber() @Min(0) sellingPrice: number;
+  @IsOptional() @IsString() @MaxLength(100) sku?: string;
 }
 
 export class ProductSocialDto {
@@ -57,6 +66,14 @@ export class CreateProductDto {
   @IsArray()
   @IsString({ each: true })
   sizes?: string[];
+
+  /** Per color/size prices; entries not matching the current colors/sizes are dropped. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => ProductVariantPriceDto)
+  variants?: ProductVariantPriceDto[];
 
   @IsOptional()
   @IsArray()
@@ -91,6 +108,14 @@ export class UpdateProductDto {
   @IsArray()
   @IsString({ each: true })
   sizes?: string[];
+
+  /** Per color/size prices; entries not matching the current colors/sizes are dropped. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => ProductVariantPriceDto)
+  variants?: ProductVariantPriceDto[];
 
   @IsOptional()
   @IsArray()
