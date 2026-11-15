@@ -86,6 +86,9 @@ export class AppliedCoupon {
   @Prop({ required: true }) code: string;
   @Prop({ required: true }) name: string;
   @Prop({ required: true, min: 0 }) discountAmount: number;
+  /** 'order' = goods discount (counted in Order.discountAmount); 'shipping' = free-shipping code
+   * (counted in Order.shippingDiscount). Older orders have no kind → 'order'. */
+  @Prop({ enum: ['order', 'shipping'], default: 'order' }) kind?: 'order' | 'shipping';
 }
 
 const AppliedCouponSchema = SchemaFactory.createForClass(AppliedCoupon);
@@ -413,8 +416,12 @@ export class Order {
   @Prop({ type: [AppliedCouponSchema], default: [] })
   appliedCoupons: AppliedCoupon[];
 
-  /** Shipping fee added on top of product subtotal */
+  /** Shipping fee charged, added on top of product subtotal — already net of `shippingDiscount`. */
   @Prop({ default: 0, min: 0 }) shippingFee: number;
+
+  /** Shipping fee waived by a free-shipping coupon (display only: shippingFee is already reduced by
+   * it, so the original fee = shippingFee + shippingDiscount). */
+  @Prop({ default: 0, min: 0 }) shippingDiscount: number;
 
   /** VAT added on top for an e-invoice request — only orders requested before 2026-11-02; prices
    * include VAT now, so this stays 0. */

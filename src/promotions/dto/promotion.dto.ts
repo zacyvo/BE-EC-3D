@@ -1,6 +1,6 @@
 import {
   IsString, IsEnum, IsNumber, IsOptional, IsBoolean,
-  IsDateString, IsArray, IsMongoId, Min, Max, ArrayUnique,
+  IsDateString, IsArray, IsMongoId, Min, Max, ArrayUnique, ArrayMaxSize, MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { DiscountType } from '../schemas/promotion.schema';
@@ -68,11 +68,15 @@ export class UpdateCouponItemDto {
 // ─── User-facing DTOs ─────────────────────────────────────────────────────────
 
 export class ValidateCouponsDto {
-  @IsArray() @ArrayUnique() @IsString({ each: true })
+  @IsArray() @ArrayUnique() @ArrayMaxSize(10) @IsString({ each: true }) @MaxLength(50, { each: true })
   couponCodes: string[];
 
   @IsNumber() @Min(0) @Type(() => Number)
   orderTotal: number;
+
+  /** Delivery province — the server derives the shipping fee from it to price free-shipping codes. */
+  @IsOptional() @IsString() @MaxLength(200)
+  city?: string;
 }
 
 export class QueryPromotionsDto {

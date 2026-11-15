@@ -215,21 +215,26 @@ export class OrdersService {
 
     const subtotal = items.reduce((sum, item) => sum + item.subtotal, 0);
 
-    // Apply coupon codes (floor rule enforced inside validateCoupons)
-    let discountAmount = 0;
-    let appliedCoupons: { code: string; name: string; discountAmount: number }[] = [];
-    if (dto.couponCodes?.length) {
-      const validation = await this.promotionsService.validateCoupons(userId, {
-        couponCodes: dto.couponCodes,
-        orderTotal: subtotal,
-      });
-      discountAmount = validation.totalDiscount;
-      appliedCoupons = validation.appliedCoupons;
-    }
-
     // Resolved first: the fee depends on the authoritative city (old addresses are converted).
     const shippingInfo = this.resolveShippingInfo(dto.shippingInfo);
-    const shippingFee = computeShippingFee(shippingInfo.city);
+    const baseShippingFee = computeShippingFee(shippingInfo.city);
+
+    // Apply coupon codes (floor rule + free-shipping pricing enforced inside validateCoupons).
+    // A free-shipping code lowers the charged shippingFee; the waived part is kept in shippingDiscount.
+    let discountAmount = 0;
+    let shippingDiscount = 0;
+    let appliedCoupons: { code: string; name: string; discountAmount: number; kind: 'order' | 'shipping' }[] = [];
+    if (dto.couponCodes?.length) {
+      const validation = await this.promotionsService.validateCoupons(
+        userId,
+        { couponCodes: dto.couponCodes, orderTotal: subtotal },
+        { shippingFee: baseShippingFee },
+      );
+      discountAmount = validation.totalDiscount;
+      shippingDiscount = Math.min(validation.shippingDiscount, baseShippingFee);
+      appliedCoupons = validation.appliedCoupons;
+    }
+    const shippingFee = baseShippingFee - shippingDiscount;
 
     // VAT e-invoice requested at checkout: prices include VAT, the shop handles the request later.
     const einvoiceRequest = dto.einvoiceRequest
@@ -256,6 +261,7 @@ export class OrdersService {
       discountAmount,
       appliedCoupons,
       shippingFee,
+      shippingDiscount,
       total,
       status: OrderStatus.PENDING,
       currentVersion: 1,

@@ -79,7 +79,12 @@ function build() {
     })),
   };
   const promotions = {
-    validateCoupons: jest.fn(async () => ({ totalDiscount: 50000, appliedCoupons: [{ code: 'GIAM50', name: 'Giảm 50k', discountAmount: 50000 }] })),
+    validateCoupons: jest.fn(async () => ({
+      totalDiscount: 50000,
+      shippingDiscount: 0,
+      appliedCoupons: [{ code: 'GIAM50', name: 'Giảm 50k', discountAmount: 50000, kind: 'order' }],
+      rejectedCoupons: [],
+    })),
     markUsed: jest.fn(),
   };
   const orders = new OrdersService(

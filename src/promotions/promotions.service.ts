@@ -1,14 +1,18 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ConflictException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
-  Promotion, PromotionDocument, DiscountType,
+  Promotion, PromotionDocument, DiscountType, CouponItem,
+  DEFAULT_FREE_SHIP_CODE, DEFAULT_FREE_SHIP_SYSTEM_KEY,
 } from './schemas/promotion.schema';
+import { computeShippingFee } from '../orders/shipping-fee.util';
 import {
   CreatePromotionDto, UpdatePromotionDto, AssignPromotionDto,
   CreateCouponItemDto, UpdateCouponItemDto,
@@ -18,16 +22,33 @@ import {
 /** Final total must stay at or above this amount after all discounts (VND) */
 const FLOOR_AMOUNT = 50_000;
 
+/** 'order' = takes money off the goods; 'shipping' = waives (part of) the shipping fee. */
+export type AppliedCouponKind = 'order' | 'shipping';
+
 export interface AppliedCoupon {
   code: string;
   name: string;       // program name
   discountAmount: number;
+  kind: AppliedCouponKind;
+}
+
+export interface RejectedCoupon {
+  code: string;
+  reason: string;
 }
 
 export interface ValidateResult {
   appliedCoupons: AppliedCoupon[];
+  /** Codes that could not be applied, with a customer-facing reason. */
+  rejectedCoupons: RejectedCoupon[];
+  /** Discount on the goods only (coupons of kind 'order'). */
   totalDiscount: number;
+  /** Goods total after `totalDiscount` (shipping not included). */
   finalTotal: number;
+  /** Shipping fee the code(s) waive — subtract it from the shipping fee. */
+  shippingDiscount: number;
+  /** Shipping fee the free-shipping code was priced against (null when unknown: no address yet). */
+  shippingFee: number | null;
 }
 
 /** Flat coupon shape returned to user-facing endpoints */
@@ -47,11 +68,79 @@ export interface UserCoupon {
 }
 
 @Injectable()
-export class PromotionsService {
+export class PromotionsService implements OnModuleInit {
+  private readonly logger = new Logger(PromotionsService.name);
+
   constructor(
     @InjectModel(Promotion.name)
     private readonly promotionModel: Model<PromotionDocument>,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    try {
+      await this.ensureDefaultFreeShipCoupon();
+    } catch (err) {
+      // Never block boot over the seed — the shop can still create the code by hand.
+      this.logger.warn(`Could not seed default ${DEFAULT_FREE_SHIP_CODE} coupon: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Seed the built-in "Miễn phí vận chuyển" program holding the FREE_SHIP code, once per database.
+   * Created switched OFF (isActive=false) so deploying never starts waiving shipping on its own —
+   * the shop turns it on (and tunes min order / limits) in admin → Khuyến mãi.
+   * Skipped when the program was already seeded (systemKey, even if the shop later edited it) or a
+   * FREE_SHIP code already exists in another program. Upsert + unique sparse index on systemKey
+   * keep concurrent boots from creating it twice.
+   */
+  async ensureDefaultFreeShipCoupon(): Promise<'created' | 'exists'> {
+    const already = await this.promotionModel.exists({
+      $or: [{ systemKey: DEFAULT_FREE_SHIP_SYSTEM_KEY }, { 'coupons.code': DEFAULT_FREE_SHIP_CODE }],
+    });
+    if (already) return 'exists';
+
+    const now = new Date();
+    try {
+      const res = await this.promotionModel.updateOne(
+        { systemKey: DEFAULT_FREE_SHIP_SYSTEM_KEY },
+        {
+          $setOnInsert: {
+            systemKey: DEFAULT_FREE_SHIP_SYSTEM_KEY,
+            name: 'Miễn phí vận chuyển',
+            description: 'Nhập mã FREE_SHIP khi thanh toán để được miễn phí vận chuyển.',
+            startDate: now,
+            endDate: new Date('2099-12-31T16:59:59.000Z'),
+            isActive: false,
+            assignedToAll: true,
+            assignedUsers: [],
+            coupons: [
+              {
+                _id: new Types.ObjectId(),
+                code: DEFAULT_FREE_SHIP_CODE,
+                type: DiscountType.FREE_SHIPPING,
+                value: 0,
+                minOrderValue: 0,
+                maxDiscountAmount: 0,
+                totalUsageLimit: 0,
+                perUserUsageLimit: 1,
+                totalUsedCount: 0,
+                usageRecords: [],
+              },
+            ],
+          },
+        },
+        { upsert: true },
+      );
+      if (res.upsertedCount) {
+        this.logger.log(`Seeded default ${DEFAULT_FREE_SHIP_CODE} coupon (inactive)`);
+        return 'created';
+      }
+      return 'exists';
+    } catch (err) {
+      if ((err as { code?: number }).code === 11000) return 'exists'; // another instance won the race
+      throw err;
+    }
+  }
 
   // ─── Admin: Program CRUD ──────────────────────────────────────────────────
 
@@ -129,6 +218,10 @@ export class PromotionsService {
 
   async remove(id: string): Promise<void> {
     const promo = await this.findById(id);
+    if (promo.systemKey) {
+      // Deleting it would only make the boot seed recreate it — switch it off instead.
+      throw new BadRequestException('Đây là chương trình mặc định của hệ thống — hãy tắt "Kích hoạt" thay vì xoá');
+    }
     await promo.deleteOne();
   }
 
@@ -170,28 +263,43 @@ export class PromotionsService {
 
   async addCoupon(programId: string, dto: CreateCouponItemDto): Promise<PromotionDocument> {
     const code = dto.code.toUpperCase().trim();
+    if (!code) throw new BadRequestException('Mã giảm giá không được để trống');
 
     // Ensure code is globally unique across all programs
     const conflict = await this.promotionModel.findOne({ 'coupons.code': code });
     if (conflict) throw new ConflictException(`Mã "${code}" đã tồn tại trong chương trình khác`);
 
-    if (dto.type === DiscountType.PERCENTAGE && dto.value > 100) {
-      throw new BadRequestException('Phần trăm giảm giá không thể vượt quá 100%');
-    }
+    const values = this.normalizeCouponValues(dto.type, dto.value, dto.maxDiscountAmount ?? 0);
 
     const promo = await this.findById(programId);
     promo.coupons.push({
       code,
       type: dto.type,
-      value: dto.value,
+      ...values,
       minOrderValue: dto.minOrderValue ?? 0,
-      maxDiscountAmount: dto.maxDiscountAmount ?? 0,
       totalUsageLimit: dto.totalUsageLimit ?? 0,
       perUserUsageLimit: dto.perUserUsageLimit ?? 1,
       totalUsedCount: 0,
       usageRecords: [],
     } as any);
     return promo.save();
+  }
+
+  /** Type-specific rules: percentage ≤ 100; fixed has no cap; free_shipping ignores `value`. */
+  private normalizeCouponValues(
+    type: DiscountType,
+    value: number,
+    maxDiscountAmount: number,
+  ): { value: number; maxDiscountAmount: number } {
+    switch (type) {
+      case DiscountType.PERCENTAGE:
+        if (value > 100) throw new BadRequestException('Phần trăm giảm giá không thể vượt quá 100%');
+        return { value, maxDiscountAmount };
+      case DiscountType.FREE_SHIPPING:
+        return { value: 0, maxDiscountAmount };
+      default:
+        return { value, maxDiscountAmount: 0 };
+    }
   }
 
   async updateCoupon(
@@ -203,15 +311,16 @@ export class PromotionsService {
     const coupon = promo.coupons.find((c) => c._id.toString() === couponId);
     if (!coupon) throw new NotFoundException('Không tìm thấy mã giảm giá');
 
-    if (dto.type !== undefined) coupon.type = dto.type;
-    if (dto.value !== undefined) {
-      if (coupon.type === DiscountType.PERCENTAGE && dto.value > 100) {
-        throw new BadRequestException('Phần trăm giảm giá không thể vượt quá 100%');
-      }
-      coupon.value = dto.value;
-    }
+    const type = dto.type ?? coupon.type;
+    const values = this.normalizeCouponValues(
+      type,
+      dto.value ?? coupon.value,
+      dto.maxDiscountAmount ?? coupon.maxDiscountAmount,
+    );
+    coupon.type = type;
+    coupon.value = values.value;
+    coupon.maxDiscountAmount = values.maxDiscountAmount;
     if (dto.minOrderValue !== undefined) coupon.minOrderValue = dto.minOrderValue;
-    if (dto.maxDiscountAmount !== undefined) coupon.maxDiscountAmount = dto.maxDiscountAmount;
     if (dto.totalUsageLimit !== undefined) coupon.totalUsageLimit = dto.totalUsageLimit;
     if (dto.perUserUsageLimit !== undefined) coupon.perUserUsageLimit = dto.perUserUsageLimit;
 
@@ -273,20 +382,32 @@ export class PromotionsService {
   }
 
   /**
-   * Validate coupon codes against an order total.
-   * Floor rule: final total after all discounts must remain >= 50,000 VND.
-   * Coupons that would violate the floor are silently skipped.
+   * Validate coupon codes against an order.
+   * - 'order' coupons (percentage / fixed) stack on the goods total, in the given order. Floor rule:
+   *   the goods total after all of them must stay >= 50,000 VND — a coupon that would break it is rejected.
+   * - 'shipping' coupons (free_shipping) waive the shipping fee (whole fee, or up to maxDiscountAmount);
+   *   at most one per order, and they need a known shipping fee (from `opts.shippingFee`, else `dto.city`).
+   * Every code that isn't applied is returned in `rejectedCoupons` with a customer-facing reason.
    */
-  async validateCoupons(userId: string, dto: ValidateCouponsDto): Promise<ValidateResult> {
-    const { couponCodes, orderTotal } = dto;
+  async validateCoupons(
+    userId: string,
+    dto: ValidateCouponsDto,
+    opts: { shippingFee?: number } = {},
+  ): Promise<ValidateResult> {
+    const { orderTotal } = dto;
+    const shippingFee =
+      opts.shippingFee !== undefined ? opts.shippingFee : dto.city?.trim() ? computeShippingFee(dto.city) : null;
     const now = new Date();
     const userOid = new Types.ObjectId(userId);
 
     const applied: AppliedCoupon[] = [];
+    const rejected: RejectedCoupon[] = [];
     let runningTotal = orderTotal;
+    let shippingDiscount = 0;
 
-    for (const rawCode of couponCodes) {
-      const code = rawCode.toUpperCase().trim();
+    const codes = [...new Set(dto.couponCodes.map((c) => c.toUpperCase().trim()).filter(Boolean))];
+    for (const code of codes) {
+      const reject = (reason: string) => rejected.push({ code, reason });
 
       // Find the accessible program containing this code
       const program = await this.promotionModel.findOne({
@@ -296,20 +417,49 @@ export class PromotionsService {
         $or: [{ assignedToAll: true }, { assignedUsers: userOid }],
         'coupons.code': code,
       });
-      if (!program) continue;
+      const coupon = program?.coupons.find((c) => c.code === code);
+      if (!program || !coupon) {
+        reject('Mã không tồn tại, đã hết hạn hoặc không áp dụng cho tài khoản của bạn');
+        continue;
+      }
 
-      const coupon = program.coupons.find((c) => c.code === code);
-      if (!coupon) continue;
-
-      // Check usage limits
-      if (coupon.totalUsageLimit > 0 && coupon.totalUsedCount >= coupon.totalUsageLimit) continue;
+      // Usage limits
+      if (coupon.totalUsageLimit > 0 && coupon.totalUsedCount >= coupon.totalUsageLimit) {
+        reject('Mã đã hết lượt sử dụng');
+        continue;
+      }
       const userRecord = coupon.usageRecords.find((r) => r.userId.toString() === userId);
-      if (userRecord && userRecord.count >= coupon.perUserUsageLimit) continue;
+      if (userRecord && userRecord.count >= coupon.perUserUsageLimit) {
+        reject('Bạn đã dùng hết lượt của mã này');
+        continue;
+      }
 
-      // Check minimum order requirement (against original total, not running)
-      if (orderTotal < coupon.minOrderValue) continue;
+      // Minimum order requirement (against the original goods total, not the running one)
+      if (orderTotal < coupon.minOrderValue) {
+        reject(`Đơn hàng tối thiểu ${coupon.minOrderValue.toLocaleString('vi-VN')}₫ để dùng mã này`);
+        continue;
+      }
 
-      // Calculate discount
+      if (coupon.type === DiscountType.FREE_SHIPPING) {
+        if (applied.some((a) => a.kind === 'shipping')) {
+          reject('Mỗi đơn chỉ áp dụng 1 mã miễn phí vận chuyển');
+          continue;
+        }
+        if (shippingFee === null) {
+          reject('Chọn địa chỉ giao hàng để áp dụng mã miễn phí vận chuyển');
+          continue;
+        }
+        if (shippingFee <= 0) {
+          reject('Đơn hàng này không có phí vận chuyển');
+          continue;
+        }
+        const amount = this.freeShippingAmount(coupon, shippingFee);
+        shippingDiscount = amount;
+        applied.push({ code, name: program.name, discountAmount: amount, kind: 'shipping' });
+        continue;
+      }
+
+      // Goods discount
       let discountAmount: number;
       if (coupon.type === DiscountType.PERCENTAGE) {
         discountAmount = Math.round((runningTotal * coupon.value) / 100);
@@ -320,19 +470,31 @@ export class PromotionsService {
         discountAmount = coupon.value;
       }
 
-      // Floor rule — silently skip if result would go below threshold
+      // Floor rule
       const afterDiscount = runningTotal - discountAmount;
-      if (afterDiscount < FLOOR_AMOUNT) continue;
+      if (afterDiscount < FLOOR_AMOUNT) {
+        reject(`Giá trị đơn sau giảm phải còn tối thiểu ${FLOOR_AMOUNT.toLocaleString('vi-VN')}₫`);
+        continue;
+      }
 
       runningTotal = afterDiscount;
-      applied.push({ code, name: program.name, discountAmount });
+      applied.push({ code, name: program.name, discountAmount, kind: 'order' });
     }
 
     return {
       appliedCoupons: applied,
+      rejectedCoupons: rejected,
       totalDiscount: orderTotal - runningTotal,
       finalTotal: runningTotal,
+      shippingDiscount,
+      shippingFee,
     };
+  }
+
+  /** Shipping fee a free-shipping coupon waives: the whole fee, or up to its cap. */
+  private freeShippingAmount(coupon: Pick<CouponItem, 'maxDiscountAmount'>, shippingFee: number): number {
+    const fee = Math.max(0, shippingFee);
+    return coupon.maxDiscountAmount > 0 ? Math.min(fee, coupon.maxDiscountAmount) : fee;
   }
 
   /**

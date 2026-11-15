@@ -6,7 +6,13 @@ export type PromotionDocument = Promotion & Document;
 export enum DiscountType {
   PERCENTAGE = 'percentage',
   FIXED = 'fixed',
+  /** Waives the shipping fee (fully, or up to maxDiscountAmount). `value` is unused (stored as 0). */
+  FREE_SHIPPING = 'free_shipping',
 }
+
+/** Built-in free-shipping code seeded on boot (see PromotionsService.ensureDefaultFreeShipCoupon). */
+export const DEFAULT_FREE_SHIP_CODE = 'FREE_SHIP';
+export const DEFAULT_FREE_SHIP_SYSTEM_KEY = 'DEFAULT_FREE_SHIP';
 
 /** Per-user usage tracking embedded inside a CouponItem */
 @Schema({ _id: false })
@@ -29,13 +35,13 @@ export class CouponItem {
   @Prop({ required: true, enum: Object.values(DiscountType) })
   type: DiscountType;
 
-  /** percentage 0–100 or fixed VND */
+  /** percentage 0–100 or fixed VND (0 for free_shipping) */
   @Prop({ required: true, min: 0 }) value: number;
 
   /** Minimum order total (VND). 0 = no minimum */
   @Prop({ default: 0, min: 0 }) minOrderValue: number;
 
-  /** For percentage type: cap max discount (VND). 0 = no cap */
+  /** percentage / free_shipping: cap max discount (VND). 0 = no cap (free_shipping: whole fee) */
   @Prop({ default: 0, min: 0 }) maxDiscountAmount: number;
 
   /** 0 = unlimited total uses */
@@ -83,6 +89,10 @@ export class Promotion {
 
   @Prop({ type: Types.ObjectId, ref: 'Staff' }) createdBy?: Types.ObjectId;
 
+  /** Set only on programs the system seeds itself (e.g. the default FREE_SHIP program), so the
+   * seed runs once per database and never duplicates. */
+  @Prop() systemKey?: string;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -91,3 +101,4 @@ export const PromotionSchema = SchemaFactory.createForClass(Promotion);
 PromotionSchema.index({ isActive: 1, startDate: 1, endDate: 1 });
 PromotionSchema.index({ assignedUsers: 1 });
 PromotionSchema.index({ 'coupons.code': 1 });
+PromotionSchema.index({ systemKey: 1 }, { unique: true, sparse: true });

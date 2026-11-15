@@ -17,6 +17,8 @@ export interface OrderMessageInput {
   subtotal?: number;
   discountAmount?: number;
   shippingFee?: number;
+  /** Shipping fee waived by a free-shipping coupon (shippingFee is already net of it). */
+  shippingDiscount?: number;
   total?: number;
   paidAmount?: number;
   /** COD / BANK_TRANSFER — absent on older and admin/marketplace orders (shown as COD). */
@@ -173,7 +175,10 @@ export function formatOrderCreatedMessage(order: OrderMessageInput, options: Ord
   const footer: string[] = [''];
   if (order.subtotal !== undefined && order.subtotal !== total) footer.push(`Tạm tính: ${formatVnd(order.subtotal)}`);
   if (Number(order.discountAmount) > 0) footer.push(`Giảm giá: -${formatVnd(order.discountAmount)}`);
-  if (Number(order.shippingFee) > 0) footer.push(`Phí vận chuyển: ${formatVnd(order.shippingFee)}`);
+  if (Number(order.shippingDiscount) > 0) {
+    const fee = Number(order.shippingFee) || 0;
+    footer.push(`Phí vận chuyển: ${formatVnd(fee)} (mã miễn phí vận chuyển -${formatVnd(order.shippingDiscount)})`);
+  } else if (Number(order.shippingFee) > 0) footer.push(`Phí vận chuyển: ${formatVnd(order.shippingFee)}`);
   if (Number(order.vatAmount) > 0) footer.push(`VAT (xuất hoá đơn điện tử): ${formatVnd(order.vatAmount)}`);
   footer.push(`Tổng tiền: ${formatVnd(total)}`);
   footer.push(`Thanh toán: ${PAYMENT_METHOD_LABELS[paymentMethod] ?? paymentMethod}`);

@@ -72,8 +72,9 @@ export function mapPromotionToTemplateData(
   return { ok: true, templateData };
 }
 
-/** "20%" / "50.000đ" — what the coupon takes off. */
+/** "20%" / "50.000đ" / "Miễn phí vận chuyển" — what the coupon takes off. */
 export function describeCouponValue(coupon: ZbsPromotionInput['coupon']): string {
+  if (coupon.type === 'free_shipping') return 'Miễn phí vận chuyển';
   return coupon.type === 'percentage' ? `${Number(coupon.value)}%` : formatVnd(coupon.value);
 }
 
@@ -94,7 +95,7 @@ function resolvePromotionSource(input: ZbsPromotionInput, source: ZbsPromotionSo
     case 'couponValueWithCap':
       return {
         ok: true,
-        value: coupon.type === 'percentage' && cap > 0 ? `${describeCouponValue(coupon)} (tối đa ${formatVnd(cap)})` : describeCouponValue(coupon),
+        value: (coupon.type === 'percentage' || coupon.type === 'free_shipping') && cap > 0 ? `${describeCouponValue(coupon)} (tối đa ${formatVnd(cap)})` : describeCouponValue(coupon),
       };
     case 'maxDiscount':
       return { ok: true, value: cap > 0 ? formatVnd(cap) : 'Không giới hạn' };
