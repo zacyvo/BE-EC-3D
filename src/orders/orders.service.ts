@@ -36,6 +36,9 @@ import {
   OrderVatInput,
 } from './einvoice-request.util';
 import { computeShippingFee } from './shipping-fee.util';
+import {
+  genOrderAccessCode, genOrderAccessToken, isUsableAccessPhone, normalizeAccessPhone,
+} from './order-public-access.util';
 import { resolveUnitPrice } from '../products/product-variant-price.util';
 import { ProductsService } from '../products/products.service';
 import { CartService } from '../cart/cart.service';
@@ -332,17 +335,20 @@ export class OrdersService {
   async createForAdmin(staffId: string, dto: AdminCreateOrderDto): Promise<OrderDocument> {
     // Resolve target userId
     let targetUserId: string;
+    let accountPhone: string | undefined;
 
     if (dto.userId) {
       const user = await this.usersService.findById(dto.userId);
       if (!user) throw new NotFoundException('User not found');
       targetUserId = dto.userId;
+      accountPhone = user.phone;
     } else if (dto.guestInfo) {
       const { user } = await this.usersService.findOrCreateByPhone(
         dto.guestInfo.phone,
         dto.guestInfo.name,
       );
       targetUserId = user._id.toString();
+      accountPhone = user.phone;
     } else {
       throw new BadRequestException('Provide either userId or guestInfo');
     }
@@ -390,6 +396,18 @@ export class OrdersService {
     const shippingFee = dto.shippingFee ?? 0;
     const total = subtotal - adminDiscountAmount + shippingFee;
 
+    // "Link xem đơn": the customer may have no password (guest account), so every admin-created
+    // order gets its own secret link + security code, opened with the account (or recipient) phone.
+    const accessPhone = [accountPhone, dto.shippingInfo.phone].find(isUsableAccessPhone);
+    const publicAccess = accessPhone
+      ? {
+          publicAccessToken: genOrderAccessToken(),
+          publicAccessCode: genOrderAccessCode(),
+          publicAccessPhone: normalizeAccessPhone(accessPhone),
+          publicAccessIssuedAt: new Date(),
+        }
+      : {};
+
     const order = await this.orderModel.create({
       userId: new Types.ObjectId(targetUserId),
       items,
@@ -404,6 +422,7 @@ export class OrdersService {
       currentVersion: 1,
       createdByAdmin: true,
       createdByStaffId: staffId,
+      ...publicAccess,
       ...(dto.customerNote ? { customerNote: dto.customerNote } : {}),
       ...(dto.adminNote ? { adminNote: dto.adminNote } : {}),
     });
@@ -952,7 +971,16 @@ export class OrdersService {
           { $skip: (page - 1) * limit },
           { $limit: limit },
           { $addFields: { userId: '$_user' } },
-          { $project: { _user: 0 } },
+          // Aggregation skips schema `select: false` and the toJSON transform — drop secrets here.
+          {
+            $project: {
+              _user: 0,
+              publicAccessCode: 0,
+              publicAccessAttempts: 0,
+              publicAccessLockedUntil: 0,
+              pendingNotificationEvents: 0,
+            },
+          },
         ]),
       ]);
 
@@ -1092,10 +1120,13 @@ export class OrdersService {
     changedByType: 'user' | 'staff',
     changeNote?: string,
   ) {
+    // A freshly created doc still holds its access secrets in memory — never copy them into history.
+    const { publicAccessCode: _c, publicAccessAttempts: _a, publicAccessLockedUntil: _l, ...snapshot } =
+      order.toObject() as Order & Record<string, unknown>;
     await this.orderVersionModel.create({
       orderId: order._id,
       versionNumber: order.currentVersion,
-      snapshot: order.toObject(),
+      snapshot,
       changedBy,
       changedByType,
       changeNote,

@@ -296,3 +296,26 @@ export class CompleteAdjustmentSettlementDto {
   @IsOptional() @Transform(trim) @IsString() @MaxLength(100) transferRef?: string;
   @IsOptional() @Transform(trim) @IsString() @MaxLength(500) note?: string;
 }
+
+/** "Link xem đơn" — the customer unlocks an admin-created order without logging in. */
+export class PublicOrderVerifyDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Vui lòng nhập số điện thoại' })
+  @MaxLength(20)
+  phone: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'Vui lòng nhập mã bảo mật' })
+  @MaxLength(16)
+  securityCode: string;
+}
+
+/** Admin "Xem link & mã" / "Tạo link mới" — needs the staff's own password again. */
+export class OrderPublicAccessDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Vui lòng nhập mật khẩu' })
+  password: string;
+
+  /** true → new link + new code (the old ones stop working). */
+  @IsOptional() @IsBoolean() regenerate?: boolean;
+}

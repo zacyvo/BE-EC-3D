@@ -59,7 +59,7 @@ async function bootstrap() {
     origin: corsList,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Contract-Access', 'X-Einvoice-Access', 'X-Nfc-Access'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Contract-Access', 'X-Einvoice-Access', 'X-Nfc-Access', 'X-Order-Access'],
   });
 
   app.setGlobalPrefix('api/v1');

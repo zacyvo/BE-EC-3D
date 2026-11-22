@@ -354,7 +354,8 @@ export class OrderReturnsService {
         { $skip: (page - 1) * limit },
         { $limit: limit },
         { $addFields: { userId: { _id: '$_user._id', name: '$_user.name', email: '$_user.email', phone: '$_user.phone' } } },
-        { $project: { _user: 0, pendingNotificationEvents: 0 } },
+        // Aggregation skips `select: false` + toJSON — keep internal state and access secrets out.
+        { $project: { _user: 0, pendingNotificationEvents: 0, publicAccessCode: 0, publicAccessAttempts: 0, publicAccessLockedUntil: 0 } },
       ]),
       this.orderModel.aggregate([
         { $match: { returnRequest: { $exists: true }, isDeleted: { $ne: true } } },

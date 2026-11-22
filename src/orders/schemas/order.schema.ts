@@ -564,6 +564,19 @@ export class Order {
    * of placed directly on Luxe Glow. Absent = a normal order. */
   @Prop({ type: OrderExternalRefSchema }) externalRef?: OrderExternalRef;
 
+  /** "Link xem đơn" (see orders/order-public-access.service.ts): the customer opens
+   * /order/<publicAccessToken> and enters publicAccessPhone + publicAccessCode — no login needed.
+   * Issued automatically for admin-created orders; absent on storefront/marketplace orders. */
+  @Prop() publicAccessToken?: string;
+  /** 8-char security code — never returned by default queries nor in toJSON. */
+  @Prop({ select: false }) publicAccessCode?: string;
+  /** Normalized phone the customer must enter (snapshot at issue time). */
+  @Prop() publicAccessPhone?: string;
+  @Prop() publicAccessIssuedAt?: Date;
+  /** Brute-force protection: wrong attempts in a row → temporary lock. */
+  @Prop({ default: undefined }) publicAccessAttempts?: number;
+  @Prop() publicAccessLockedUntil?: Date;
+
   @Prop({ default: false }) isDeleted: boolean;
   @Prop() deletedAt?: Date;
   @Prop() deletedBy?: string;
@@ -602,10 +615,15 @@ OrderSchema.index({ 'payment.reference': 1 }, { unique: true, sparse: true });
 OrderSchema.index({ 'adjustment.settlement.reference': 1 }, { unique: true, sparse: true });
 // Sparse: only orders with a not-yet-dispatched notification carry the field.
 OrderSchema.index({ pendingNotificationEvents: 1 }, { sparse: true });
-// Internal worker state — keep it out of checkout/admin API responses.
+// "Link xem đơn": the secret link token finds the order (sparse — most orders have none).
+OrderSchema.index({ publicAccessToken: 1 }, { unique: true, sparse: true });
+// Internal worker state / access secrets — keep them out of checkout/admin API responses.
 OrderSchema.set('toJSON', {
   transform: (_doc, ret) => {
     delete ret.pendingNotificationEvents;
+    delete ret.publicAccessCode;
+    delete ret.publicAccessAttempts;
+    delete ret.publicAccessLockedUntil;
     return ret;
   },
 });

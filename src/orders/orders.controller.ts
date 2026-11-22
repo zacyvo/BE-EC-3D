@@ -13,6 +13,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PaymentConfirmationService } from '../payments/payment-confirmation.service';
+import { OrderPublicAccessService } from './order-public-access.service';
 
 @Controller('orders')
 @UseGuards(JwtAuthGuard)
@@ -78,6 +79,7 @@ export class AdminOrdersController {
   constructor(
     private readonly ordersService: OrdersService,
     private readonly paymentConfirmation: PaymentConfirmationService,
+    private readonly publicAccess: OrderPublicAccessService,
   ) {}
 
   @Get('stats')
@@ -88,11 +90,13 @@ export class AdminOrdersController {
 
   @Post('for-user')
   @Roles(StaffRole.SUPER_ADMIN)
-  createForUser(
+  async createForUser(
     @Body() dto: AdminCreateOrderDto,
     @CurrentUser() staff: { sub: string; role: StaffRole },
   ) {
-    return this.ordersService.createForAdmin(staff.sub, dto);
+    const order = await this.ordersService.createForAdmin(staff.sub, dto);
+    // The creator sees the "Link xem đơn" credentials once, to send to the customer.
+    return { ...order.toJSON(), publicAccess: this.publicAccess.credentialsOfNewOrder(order) };
   }
 
   @Get()
