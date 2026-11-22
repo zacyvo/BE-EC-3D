@@ -312,3 +312,75 @@ export class SubmitSimpleSignatureDto {
   @MaxLength(120)
   confirmedName: string;
 }
+
+// ── Admin — phụ lục hợp đồng ─────────────────────────────────────────────────
+
+/**
+ * Hạng mục phụ lục: có productId → lấy tên/giá vốn từ danh mục (đơn giá mặc định finalPrice);
+ * không có → hạng mục tự nhập (gia công, dịch vụ phát sinh), bắt buộc productName + unitPrice.
+ */
+export class AddendumItemDto {
+  @IsOptional()
+  @IsMongoId()
+  productId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  productName?: string;
+
+  /** Mã hạng mục tự nhập (tuỳ chọn) — sản phẩm danh mục luôn dùng 6 ký tự cuối của _id */
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  productCode?: string;
+
+  @IsInt()
+  @Min(1)
+  quantity: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  unitPrice?: number;
+
+  /** Giá vốn / đơn vị của hạng mục tự nhập — sản phẩm danh mục lấy costPrice của sản phẩm */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  costPrice?: number;
+}
+
+export class CreateAddendumDto {
+  @IsOptional() @IsString() @MaxLength(200) title?: string;
+  @IsOptional() @IsString() @MaxLength(3000) content?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50, { message: 'Phụ lục tối đa 50 hạng mục' })
+  @ValidateNested({ each: true })
+  @Type(() => AddendumItemDto)
+  items?: AddendumItemDto[];
+
+  /** Lịch thanh toán giá trị phụ lục — không truyền thì gộp vào lần thanh toán cuối của HĐ */
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Lịch thanh toán phải có ít nhất 1 đợt' })
+  @ArrayMaxSize(5, { message: 'Lịch thanh toán tối đa 5 đợt' })
+  @ValidateNested({ each: true })
+  @Type(() => PaymentInstallmentDto)
+  paymentSchedule?: PaymentInstallmentDto[];
+
+  @IsOptional() @IsDateString() deliveryDate?: string;
+  @IsOptional() @IsDateString() signDate?: string;
+}
+
+/** Sửa phụ lục bản nháp — field nào gửi thì thay field đó; deliveryDate/signDate = null để xoá ngày */
+export class UpdateAddendumDto extends CreateAddendumDto {}
+
+export class CancelAddendumDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Vui lòng nhập lý do hủy phụ lục' })
+  @MaxLength(500)
+  reason: string;
+}

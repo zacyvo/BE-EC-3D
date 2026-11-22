@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as pdfMake from 'pdfmake';
 import { buildContractDocDefinition, ContractPdfInput } from './contract-pdf.definition';
 import { buildJoyloveAdvanceDocDefinition } from './joylove-advance-pdf.definition';
+import { AddendumPdfInput, buildAddendumDocDefinition } from './addendum-pdf.definition';
 
 const FONTS_DIR = path.join(__dirname, 'fonts');
 /** Roboto đi kèm package pdfmake (không có Bold → dùng Medium) — dự phòng khi thiếu file trong fonts/ */
@@ -52,5 +53,10 @@ export class PdfGenerationService {
         : buildContractDocDefinition(input);
     const pdfDoc = pdfMake.createPdf(docDefinition);
     return pdfDoc.getBuffer();
+  }
+
+  /** Sinh PDF phụ lục hợp đồng — bản chính tắc khi chốt, hoặc bản xem trước (có watermark) */
+  async generateAddendumPdf(input: AddendumPdfInput): Promise<Buffer> {
+    return pdfMake.createPdf(buildAddendumDocDefinition(input)).getBuffer();
   }
 }

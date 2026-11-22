@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { JwtModule } from '@nestjs/jwt';
 import { ContractsService } from './contracts.service';
+import { ContractAddendaService } from './contract-addenda.service';
+import { AdminContractAddendaController, PublicContractAddendaController } from './contract-addenda.controller';
 import {
   AdminContractsController,
   PublicContractsController,
@@ -27,8 +29,13 @@ import { DocumentSigningModule } from '../document-signing/document-signing.modu
     ExternalRevenueModule, // exports ExternalRevenue model — dùng ghi nhận tài chính khi SUCCESS
     DocumentSigningModule, // PDF generation + PAdES verify — xem backend/src/document-signing/
   ],
-  controllers: [AdminContractsController, PublicContractsController],
-  providers: [ContractsService],
+  controllers: [
+    AdminContractsController,
+    PublicContractsController,
+    AdminContractAddendaController,
+    PublicContractAddendaController,
+  ],
+  providers: [ContractsService, ContractAddendaService],
   // EInvoiceModule dùng để xác thực phiên hợp đồng khi khách xem hoá đơn liên kết
   exports: [ContractsService],
 })

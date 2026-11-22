@@ -13,6 +13,7 @@ import { ConfigService } from '@nestjs/config';
 import { Model, Types } from 'mongoose';
 import * as crypto from 'crypto';
 import {
+  AddendumStatus,
   Contract,
   ContractDocument,
   ContractSource,
@@ -404,29 +405,75 @@ export class ContractsService {
         signingTime: c.partyBSignature.signingTime,
         verifiedAt: c.partyBSignature.verifiedAt,
       },
-      partyASignature: c.partyASignature && {
-        status: c.partyASignature.status,
-        mode: c.partyASignature.mode,
-        signerCertCN: c.partyASignature.signerCertCN,
-        signerCertIssuer: c.partyASignature.signerCertIssuer,
-        signingTime: c.partyASignature.signingTime,
-        verifiedAt: c.partyASignature.verifiedAt,
-        rejectReason: c.partyASignature.rejectReason,
-        simpleSignature: c.partyASignature.simpleSignature && {
-          canvasImageUrl: c.partyASignature.simpleSignature.canvasImageUrl,
-          confirmedName: c.partyASignature.simpleSignature.confirmedName,
-          confirmedAt: c.partyASignature.simpleSignature.confirmedAt,
-        },
-      },
+      partyASignature: this.publicPartyASignature(c.partyASignature),
+      // Phụ lục: khách chỉ thấy bản đã chốt / đã hủy (bản nháp còn đang soạn)
+      addenda: (c.addenda ?? [])
+        .filter((a: any) => a.status !== AddendumStatus.DRAFT)
+        .sort((x: any, y: any) => x.addendumNo - y.addendumNo)
+        .map((a: any) => ({
+          _id: a._id,
+          addendumNo: a.addendumNo,
+          status: a.status,
+          title: a.title,
+          content: a.content,
+          items: (a.items ?? []).map(({ costPrice: _cost, ...rest }: any) => rest),
+          amount: a.amount,
+          paymentSchedule: a.paymentSchedule,
+          deliveryDate: a.deliveryDate,
+          signDate: a.signDate,
+          finalizedAt: a.finalizedAt,
+          cancelledAt: a.cancelledAt,
+          cancelReason: a.cancelReason,
+          hasPdf: !!a.unsignedPdfUrl,
+          partyBSignature: a.partyBSignature && {
+            status: a.partyBSignature.status,
+            signerCertCN: a.partyBSignature.signerCertCN,
+            signingTime: a.partyBSignature.signingTime,
+            verifiedAt: a.partyBSignature.verifiedAt,
+          },
+          partyASignature: this.publicPartyASignature(a.partyASignature),
+        })),
+      addendaAmount: c.addendaAmount ?? 0,
+      grandTotalAmount: c.totalAmount + (c.addendaAmount ?? 0),
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
     };
   }
 
-  private toAdminResponse(doc: ContractDocument) {
+  private publicPartyASignature(sig: any) {
+    return (
+      sig && {
+        status: sig.status,
+        mode: sig.mode,
+        signerCertCN: sig.signerCertCN,
+        signerCertIssuer: sig.signerCertIssuer,
+        signingTime: sig.signingTime,
+        verifiedAt: sig.verifiedAt,
+        rejectReason: sig.rejectReason,
+        simpleSignature: sig.simpleSignature && {
+          canvasImageUrl: sig.simpleSignature.canvasImageUrl,
+          confirmedName: sig.simpleSignature.confirmedName,
+          confirmedAt: sig.simpleSignature.confirmedAt,
+        },
+      }
+    );
+  }
+
+  /** Dữ liệu hợp đồng trả về phía khách (dùng chung cho ContractAddendaService) */
+  toPublicView(doc: ContractDocument) {
+    return this.sanitizeForUser(doc);
+  }
+
+  /** Dữ liệu hợp đồng trả về phía admin (dùng chung cho ContractAddendaService) */
+  toAdminResponse(doc: ContractDocument) {
     const c = doc.toObject();
     delete (c as any).securityCode;
-    return { ...c, publicUrl: this.publicUrl(c.accessToken) };
+    return {
+      ...c,
+      publicUrl: this.publicUrl(c.accessToken),
+      addendaAmount: c.addendaAmount ?? 0,
+      grandTotalAmount: c.totalAmount + (c.addendaAmount ?? 0),
+    };
   }
 
   // ─── Admin ──────────────────────────────────────────────────────────────────
@@ -858,6 +905,7 @@ export class ContractsService {
       throw new BadRequestException('Hợp đồng import chưa có file PDF');
     }
     const signedOffline = imported && contract.offlineSigned;
+    if (to === ContractStatus.SUCCESS) this.assertAddendaReadyForSuccess(contract);
     if (
       to === ContractStatus.SUCCESS &&
       !signedOffline &&
@@ -895,15 +943,26 @@ export class ContractsService {
         contract.successAt = now;
         // Tự động ghi nhận tài chính (doanh thu ngoài — nguồn CONTRACT)
         if (!contract.revenueEntryId) {
+          // Doanh thu gồm cả các phụ lục đã chốt (tổng thanh toán sau điều chỉnh)
+          const finalAddenda = (contract.addenda ?? []).filter((a) => a.status === AddendumStatus.FINAL);
           const cost =
             contract.items.reduce((sum, i) => sum + (i.costPrice ?? 0) * i.quantity, 0) +
-            (contract.importedCostAmount ?? 0);
+            (contract.importedCostAmount ?? 0) +
+            finalAddenda.reduce(
+              (sum, a) => sum + (a.items ?? []).reduce((s, i) => s + (i.costPrice ?? 0) * i.quantity, 0),
+              0,
+            );
+          const addendaAmount = finalAddenda.reduce((sum, a) => sum + (a.amount ?? 0), 0);
+          contract.addendaAmount = addendaAmount;
           const entry = await this.externalRevenueModel.create({
             source: ExternalSource.CONTRACT,
-            note: `Hợp đồng ${contract.contractNo}`,
+            note:
+              finalAddenda.length > 0
+                ? `Hợp đồng ${contract.contractNo} (gồm ${finalAddenda.length} phụ lục)`
+                : `Hợp đồng ${contract.contractNo}`,
             month: now.getMonth() + 1,
             year: now.getFullYear(),
-            revenue: contract.totalAmount,
+            revenue: contract.totalAmount + addendaAmount,
             cost,
             platformFee: 0,
             createdBy: new Types.ObjectId(staffId),
@@ -940,6 +999,28 @@ export class ContractsService {
     });
 
     return this.toAdminResponse(contract);
+  }
+
+  /**
+   * Hoàn tất hợp đồng: phụ lục bản nháp phải được chốt hoặc xoá, phụ lục đã chốt phải có chữ ký
+   * số Bên B hợp lệ (cùng quy tắc với hợp đồng) — tránh ghi nhận doanh thu thiếu / thừa.
+   */
+  private assertAddendaReadyForSuccess(contract: ContractDocument): void {
+    const addenda = contract.addenda ?? [];
+    const drafts = addenda.filter((a) => a.status === AddendumStatus.DRAFT);
+    if (drafts.length > 0) {
+      const nos = drafts.map((a) => String(a.addendumNo).padStart(2, '0')).join(', ');
+      throw new BadRequestException(`Còn phụ lục bản nháp (số ${nos}) — vui lòng chốt hoặc xoá trước khi Hoàn tất`);
+    }
+    const unsigned = addenda.filter(
+      (a) => a.status === AddendumStatus.FINAL && a.partyBSignature?.status !== PartySignatureStatus.VERIFIED,
+    );
+    if (unsigned.length > 0) {
+      const nos = unsigned.map((a) => String(a.addendumNo).padStart(2, '0')).join(', ');
+      throw new BadRequestException(
+        `Phụ lục số ${nos} chưa được Bên B ký số (đã xác thực) — vui lòng ký hoặc hủy phụ lục trước khi Hoàn tất`,
+      );
+    }
   }
 
   async remove(id: string, staffId: string): Promise<void> {

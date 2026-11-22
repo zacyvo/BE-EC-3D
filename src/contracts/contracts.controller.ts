@@ -43,7 +43,7 @@ import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
 /** Upload PDF (file ký số / file hợp đồng import) — nội dung còn được kiểm tra lại ở service */
-const PDF_UPLOAD_OPTIONS: MulterOptions = {
+export const PDF_UPLOAD_OPTIONS: MulterOptions = {
   storage: memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
   fileFilter: (_req, file, cb) => {
@@ -55,7 +55,7 @@ const PDF_UPLOAD_OPTIONS: MulterOptions = {
 };
 
 /** File chứng thư số PKCS#12 (.p12/.pfx) — mimetype không thống nhất giữa các trình duyệt/OS nên lọc theo đuôi file */
-const P12_UPLOAD_OPTIONS: MulterOptions = {
+export const P12_UPLOAD_OPTIONS: MulterOptions = {
   storage: memoryStorage(),
   limits: { fileSize: 100 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
@@ -67,7 +67,7 @@ const P12_UPLOAD_OPTIONS: MulterOptions = {
 };
 
 /** Cùng cấu hình với ValidationPipe toàn cục (main.ts) — dùng cho field JSON trong multipart */
-const multipartValidation = new ValidationPipe({
+export const multipartValidation = new ValidationPipe({
   whitelist: true,
   forbidNonWhitelisted: true,
   transform: true,

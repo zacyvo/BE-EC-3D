@@ -182,6 +182,101 @@ export class ImportedDocument {
 
 export const ImportedDocumentSchema = SchemaFactory.createForClass(ImportedDocument);
 
+// ── Phụ lục hợp đồng — sửa đổi, bổ sung sau khi hợp đồng đã chốt (FINAL) ───────
+
+/**
+ * Trạng thái phụ lục: DRAFT (admin soạn, khách chưa thấy) → FINAL (chốt, sinh PDF chính tắc, ký
+ * số, giá trị được cộng vào tổng thanh toán) → CANCELLED (hủy, không còn tính vào tổng).
+ */
+export enum AddendumStatus {
+  DRAFT = 'DRAFT',
+  FINAL = 'FINAL',
+  CANCELLED = 'CANCELLED',
+}
+
+/** Hạng mục bổ sung — sản phẩm trong danh mục hoặc hạng mục tự nhập (gia công, dịch vụ phát sinh) */
+@Schema({ _id: false })
+export class ContractAddendumItem {
+  /** Trống với hạng mục tự nhập */
+  @Prop({ trim: true, default: '' }) productId: string;
+  @Prop({ trim: true, default: '' }) productCode: string;
+  @Prop({ required: true, trim: true }) productName: string;
+  @Prop({ required: true, min: 1 }) quantity: number;
+  @Prop({ required: true, min: 0 }) unitPrice: number;
+  @Prop({ required: true, min: 0 }) subtotal: number;
+  /** Giá vốn / đơn vị — dùng khi ghi nhận tài chính, không trả về phía user */
+  @Prop({ required: true, min: 0, default: 0 }) costPrice: number;
+}
+
+export const ContractAddendumItemSchema = SchemaFactory.createForClass(ContractAddendumItem);
+
+@Schema({ timestamps: true })
+export class ContractAddendum {
+  _id: Types.ObjectId;
+
+  /** Số thứ tự phụ lục trong hợp đồng — không dùng lại số của phụ lục đã xoá/hủy */
+  @Prop({ required: true, min: 1 }) addendumNo: number;
+
+  @Prop({ default: AddendumStatus.DRAFT, enum: Object.values(AddendumStatus) })
+  status: AddendumStatus;
+
+  /** Tiêu đề ngắn, VD: "Bổ sung 20 móc khoá + gia công khắc tên" */
+  @Prop({ trim: true, default: '' }) title: string;
+
+  /** Nội dung sửa đổi, bổ sung khác (in ở Điều 1 của phụ lục) */
+  @Prop({ trim: true, default: '' }) content: string;
+
+  @Prop({ type: [ContractAddendumItemSchema], default: [] })
+  items: ContractAddendumItem[];
+
+  /** Giá trị phụ lục = tổng thành tiền các hạng mục — cộng vào tổng thanh toán khi FINAL */
+  @Prop({ required: true, min: 0, default: 0 }) amount: number;
+
+  /** Lịch thanh toán giá trị phụ lục — tổng % = 100 (khi amount > 0) */
+  @Prop({ type: [PaymentInstallmentSchema], default: [] })
+  paymentSchedule: PaymentInstallment[];
+
+  /** Thời gian giao các hạng mục bổ sung — trống: theo Hợp đồng */
+  @Prop() deliveryDate?: Date;
+
+  /** Ngày ký phụ lục — mặc định ngày chốt */
+  @Prop() signDate?: Date;
+
+  /** PDF chính tắc chưa ký — sinh 1 lần khi chốt, không regenerate sau đó */
+  @Prop() unsignedPdfUrl?: string;
+  @Prop() unsignedPdfPublicId?: string;
+  @Prop() unsignedPdfGeneratedAt?: Date;
+
+  @Prop({ type: PartyBSignatureSchema, default: () => ({}) })
+  partyBSignature: PartyBSignature;
+
+  @Prop({ type: PartyASignatureSchema, default: () => ({}) })
+  partyASignature: PartyASignature;
+
+  @Prop() finalizedAt?: Date;
+  @Prop() cancelledAt?: Date;
+  @Prop({ trim: true, default: '' }) cancelReason: string;
+  @Prop({ trim: true, default: '' }) createdBy: string;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const ContractAddendumSchema = SchemaFactory.createForClass(ContractAddendum);
+
+/** Lịch thanh toán mặc định của phụ lục — gộp vào lần thanh toán cuối của hợp đồng */
+export const DEFAULT_ADDENDUM_PAYMENT_SCHEDULE: { percent: number; timing: string }[] = [
+  { percent: 100, timing: 'cùng thời điểm thanh toán lần cuối theo Điều 3.2 của Hợp đồng' },
+];
+
+/**
+ * Số phụ lục bắt đầu theo mẫu hợp đồng — JOYLOVE_ADVANCE đã có sẵn Phụ lục 01, 02 trong văn bản
+ * hợp đồng nên phụ lục sửa đổi, bổ sung đầu tiên là Phụ lục 03.
+ */
+export const ADDENDUM_NO_START: Partial<Record<ContractTemplate, number>> = {
+  [ContractTemplate.JOYLOVE_ADVANCE]: 3,
+};
+
 /**
  * Lịch thanh toán mặc định (Điều 3.2) — Lần 1: tạm ứng 50%, Lần 2: 50% còn lại khi đủ điều kiện
  * (nhận đủ hàng, nghiệm thu đạt, đủ hồ sơ thanh toán — nội dung điều kiện in trong văn bản HĐ).
@@ -345,6 +440,18 @@ export class Contract {
 
   @Prop({ type: PartyASignatureSchema, default: () => ({}) })
   partyASignature: PartyASignature;
+
+  // ── Phụ lục hợp đồng ───────────────────────────────────────────────────────
+  @Prop({ type: [ContractAddendumSchema], default: [] })
+  addenda: ContractAddendum[];
+
+  /**
+   * Tổng giá trị các phụ lục đã chốt (FINAL) — tính lại mỗi khi phụ lục thay đổi. totalAmount
+   * giữ nguyên giá trị hợp đồng gốc (văn bản hợp đồng in theo giá trị này); tổng thanh toán =
+   * totalAmount + addendaAmount.
+   */
+  @Prop({ min: 0, default: 0 })
+  addendaAmount: number;
 
   @Prop({ default: false }) isDeleted: boolean;
   @Prop() deletedAt?: Date;
