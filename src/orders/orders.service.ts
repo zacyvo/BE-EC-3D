@@ -259,7 +259,14 @@ export class OrdersService {
     if (dto.couponCodes?.length) {
       const validation = await this.promotionsService.validateCoupons(
         userId,
-        { couponCodes: dto.couponCodes, orderTotal: subtotal },
+        {
+          couponCodes: dto.couponCodes,
+          orderTotal: subtotal,
+          // Program conditions: product/category scope, item count, region, payment method.
+          items: items.map((i) => ({ productId: i.productId.toString(), quantity: i.quantity, subtotal: i.subtotal })),
+          city: shippingInfo.city,
+          paymentMethod: dto.paymentMethod ?? PaymentMethod.COD,
+        },
         { shippingFee: baseShippingFee },
       );
       discountAmount = validation.totalDiscount;

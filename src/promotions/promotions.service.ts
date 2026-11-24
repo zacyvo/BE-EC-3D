@@ -9,15 +9,24 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
-  Promotion, PromotionDocument, DiscountType, CouponItem,
+  Promotion, PromotionDocument, DiscountType,
   DEFAULT_FREE_SHIP_CODE, DEFAULT_FREE_SHIP_SYSTEM_KEY,
 } from './schemas/promotion.schema';
 import { computeShippingFee } from '../orders/shipping-fee.util';
 import {
   CreatePromotionDto, UpdatePromotionDto, AssignPromotionDto,
   CreateCouponItemDto, UpdateCouponItemDto,
-  ValidateCouponsDto, QueryPromotionsDto,
+  ValidateCouponsDto, QueryPromotionsDto, PromotionConditionsDto,
 } from './dto/promotion.dto';
+import { Order, OrderDocument, OrderStatus, RETURN_SETTLED_STATUSES } from '../orders/schemas/order.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
+import { Product, ProductDocument } from '../products/schemas/product.schema';
+import { Category, CategoryDocument } from '../categories/schemas/category.schema';
+import {
+  CustomerPromoProfile, PromoCartLine,
+  checkCustomerConditions, checkOrderConditions, checkTimeConditions,
+  compactConditions, describeConditions, eligibleSubtotal, isScoped, needsCustomerProfile,
+} from './promotion-conditions.util';
 
 /** Final total must stay at or above this amount after all discounts (VND) */
 const FLOOR_AMOUNT = 50_000;
@@ -63,6 +72,11 @@ export interface UserCoupon {
   minOrderValue: number;
   maxDiscountAmount: number;
   perUserUsageLimit: number;
+  /** percentage / fixed code that also waives shipping. */
+  includeFreeShipping: boolean;
+  freeShippingMaxAmount: number;
+  /** Short rule lines for the customer ("Đơn hàng đầu tiên", "Thứ 6, Thứ 7"…). */
+  conditionTexts: string[];
   startDate: Date;
   endDate: Date;
 }
@@ -74,6 +88,11 @@ export class PromotionsService implements OnModuleInit {
   constructor(
     @InjectModel(Promotion.name)
     private readonly promotionModel: Model<PromotionDocument>,
+    // Read-only: customer history / profile / product categories for the program conditions.
+    @InjectModel(Order.name) private readonly orderModel: Model<OrderDocument>,
+    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+    @InjectModel(Product.name) private readonly productModel: Model<ProductDocument>,
+    @InjectModel(Category.name) private readonly categoryModel: Model<CategoryDocument>,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -150,9 +169,37 @@ export class PromotionsService implements OnModuleInit {
     }
     return this.promotionModel.create({
       ...dto,
+      conditions: this.normalizeConditions(dto.conditions),
       assignedUsers: (dto.assignedUsers ?? []).map((id) => new Types.ObjectId(id)),
       createdBy: new Types.ObjectId(staffId),
     });
+  }
+
+  /** Validate cross-field rules and keep only the rules that are on. */
+  private normalizeConditions(dto?: PromotionConditionsDto): Record<string, unknown> {
+    const c = compactConditions(dto);
+    if (c.minCompletedOrders && c.maxCompletedOrders && c.maxCompletedOrders < c.minCompletedOrders) {
+      throw new BadRequestException('Số đơn thành công tối đa phải ≥ số đơn tối thiểu');
+    }
+    if (c.firstOrderOnly && (c.minCompletedOrders || c.minTotalSpent || c.inactiveDays)) {
+      throw new BadRequestException(
+        '"Chỉ đơn hàng đầu tiên" không dùng chung được với điều kiện số đơn / tổng chi tiêu / khách quay lại',
+      );
+    }
+    if ((c.hourFrom === undefined) !== (c.hourTo === undefined)) {
+      throw new BadRequestException('Khung giờ cần cả giờ bắt đầu và giờ kết thúc');
+    }
+    if (c.hourFrom !== undefined && c.hourFrom === c.hourTo) {
+      delete c.hourFrom;
+      delete c.hourTo;
+    }
+    if (c.weekdays?.length === 7) delete c.weekdays; // every day = no restriction
+    if (c.paymentMethods?.length === 2) delete c.paymentMethods;
+    return {
+      ...c,
+      ...(c.productIds ? { productIds: c.productIds.map((id) => new Types.ObjectId(id)) } : {}),
+      ...(c.categoryIds ? { categoryIds: c.categoryIds.map((id) => new Types.ObjectId(id)) } : {}),
+    };
   }
 
   async findAll(query: QueryPromotionsDto): Promise<{ data: any[]; total: number; page: number; limit: number; totalPages: number }> {
@@ -212,7 +259,12 @@ export class PromotionsService implements OnModuleInit {
       const end = dto.endDate ? new Date(dto.endDate) : promo.endDate;
       if (end <= start) throw new BadRequestException('Ngày kết thúc phải sau ngày bắt đầu');
     }
-    Object.assign(promo, dto);
+    const { conditions, ...rest } = dto;
+    Object.assign(promo, rest);
+    if (conditions !== undefined) {
+      promo.conditions = this.normalizeConditions(conditions) as never;
+      promo.markModified('conditions');
+    }
     return promo.save();
   }
 
@@ -279,10 +331,23 @@ export class PromotionsService implements OnModuleInit {
       minOrderValue: dto.minOrderValue ?? 0,
       totalUsageLimit: dto.totalUsageLimit ?? 0,
       perUserUsageLimit: dto.perUserUsageLimit ?? 1,
+      ...this.normalizeBundledShipping(dto.type, dto.includeFreeShipping ?? false, dto.freeShippingMaxAmount ?? 0),
       totalUsedCount: 0,
       usageRecords: [],
     } as any);
     return promo.save();
+  }
+
+  /** "Kèm miễn phí vận chuyển" only exists on goods codes (free_shipping already waives shipping). */
+  private normalizeBundledShipping(
+    type: DiscountType,
+    includeFreeShipping: boolean,
+    freeShippingMaxAmount: number,
+  ): { includeFreeShipping: boolean; freeShippingMaxAmount: number } {
+    if (type === DiscountType.FREE_SHIPPING || !includeFreeShipping) {
+      return { includeFreeShipping: false, freeShippingMaxAmount: 0 };
+    }
+    return { includeFreeShipping: true, freeShippingMaxAmount };
   }
 
   /** Type-specific rules: percentage ≤ 100; fixed has no cap; free_shipping ignores `value`. */
@@ -323,6 +388,13 @@ export class PromotionsService implements OnModuleInit {
     if (dto.minOrderValue !== undefined) coupon.minOrderValue = dto.minOrderValue;
     if (dto.totalUsageLimit !== undefined) coupon.totalUsageLimit = dto.totalUsageLimit;
     if (dto.perUserUsageLimit !== undefined) coupon.perUserUsageLimit = dto.perUserUsageLimit;
+    const bundled = this.normalizeBundledShipping(
+      type,
+      dto.includeFreeShipping ?? coupon.includeFreeShipping ?? false,
+      dto.freeShippingMaxAmount ?? coupon.freeShippingMaxAmount ?? 0,
+    );
+    coupon.includeFreeShipping = bundled.includeFreeShipping;
+    coupon.freeShippingMaxAmount = bundled.freeShippingMaxAmount;
 
     return promo.save();
   }
@@ -335,9 +407,83 @@ export class PromotionsService implements OnModuleInit {
     return promo.save();
   }
 
+  // ─── Conditions: data loading ─────────────────────────────────────────────
+
+  /** The customer's profile + order history for the customer-level rules. */
+  async loadCustomerProfile(userId: string): Promise<CustomerPromoProfile> {
+    const userOid = new Types.ObjectId(userId);
+    const [user, stats] = await Promise.all([
+      this.userModel.findById(userOid).select('createdAt dob marketingOptIn').lean<{
+        createdAt?: Date; dob?: Date; marketingOptIn?: boolean;
+      }>(),
+      this.orderModel.aggregate<{
+        orderCount: number; lastOrderAt?: Date; completedOrders: number; totalSpent: number;
+      }>([
+        { $match: { userId: userOid, isDeleted: { $ne: true }, status: { $ne: OrderStatus.CANCELLED } } },
+        {
+          $group: {
+            _id: null,
+            orderCount: { $sum: 1 },
+            lastOrderAt: { $max: '$createdAt' },
+            completedOrders: { $sum: { $cond: [{ $eq: ['$status', OrderStatus.DELIVERED] }, 1, 0] } },
+            totalSpent: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$status', OrderStatus.DELIVERED] },
+                  {
+                    $subtract: [
+                      '$total',
+                      {
+                        $cond: [
+                          { $in: [{ $ifNull: ['$returnRequest.status', ''] }, RETURN_SETTLED_STATUSES] },
+                          { $ifNull: ['$returnRequest.refundAmount', 0] },
+                          0,
+                        ],
+                      },
+                    ],
+                  },
+                  0,
+                ],
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+    const s = stats[0];
+    return {
+      accountCreatedAt: user?.createdAt,
+      dob: user?.dob,
+      marketingOptIn: !!user?.marketingOptIn,
+      orderCount: s?.orderCount ?? 0,
+      lastOrderAt: s?.lastOrderAt,
+      completedOrders: s?.completedOrders ?? 0,
+      totalSpent: Math.max(0, s?.totalSpent ?? 0),
+    };
+  }
+
+  /** Cart lines with each product's category (only looked up when a scoped code needs it). */
+  private async enrichLines(items: { productId: string; quantity: number; subtotal: number }[]): Promise<PromoCartLine[]> {
+    const ids = [...new Set(items.map((i) => i.productId))].filter((id) => Types.ObjectId.isValid(id));
+    const products = ids.length
+      ? await this.productModel
+          .find({ _id: { $in: ids.map((id) => new Types.ObjectId(id)) } })
+          .select('category')
+          .lean<{ _id: Types.ObjectId; category?: Types.ObjectId }[]>()
+      : [];
+    const categoryOf = new Map(products.map((p) => [p._id.toString(), p.category?.toString()]));
+    return items.map((i) => ({
+      productId: String(i.productId),
+      categoryId: categoryOf.get(String(i.productId)),
+      quantity: i.quantity,
+      subtotal: i.subtotal,
+    }));
+  }
+
   // ─── User-facing ──────────────────────────────────────────────────────────
 
-  /** Return flat list of all coupons from programs accessible by this user */
+  /** Flat list of the codes this customer can use: programs assigned to them whose customer-level
+   * conditions they meet (order/time rules are only described, since they depend on the cart). */
   async getMyCoupons(userId: string): Promise<UserCoupon[]> {
     const now = new Date();
     const userOid = new Types.ObjectId(userId);
@@ -352,8 +498,28 @@ export class PromotionsService implements OnModuleInit {
       .sort({ endDate: 1 })
       .lean();
 
+    const profile = programs.some((p) => needsCustomerProfile(p.conditions))
+      ? await this.loadCustomerProfile(userId)
+      : null;
+
+    // Names of scoped categories, for "Áp dụng cho: Đèn ngủ, Móc khoá".
+    const catIds = [...new Set(programs.flatMap((p) => (p.conditions?.categoryIds ?? []).map(String)))];
+    const catNames = new Map<string, string>();
+    if (catIds.length) {
+      const cats = await this.categoryModel
+        .find({ _id: { $in: catIds.map((id) => new Types.ObjectId(id)) } })
+        .select('name')
+        .lean<{ _id: Types.ObjectId; name: string }[]>();
+      cats.forEach((c) => catNames.set(c._id.toString(), c.name));
+    }
+
     const result: UserCoupon[] = [];
     for (const prog of programs) {
+      if (profile && checkCustomerConditions(prog.conditions, profile, now)) continue;
+      const conditionTexts = describeConditions(prog.conditions, {
+        exclusive: prog.exclusive,
+        categoryNames: (prog.conditions?.categoryIds ?? []).map((id) => catNames.get(String(id))).filter(Boolean) as string[],
+      });
       for (const c of prog.coupons ?? []) {
         // Check if user still has usage quota for this coupon
         const userRecord = (c.usageRecords ?? []).find(
@@ -373,6 +539,9 @@ export class PromotionsService implements OnModuleInit {
           minOrderValue: c.minOrderValue,
           maxDiscountAmount: c.maxDiscountAmount,
           perUserUsageLimit: c.perUserUsageLimit,
+          includeFreeShipping: !!c.includeFreeShipping,
+          freeShippingMaxAmount: c.freeShippingMaxAmount ?? 0,
+          conditionTexts,
           startDate: prog.startDate,
           endDate: prog.endDate,
         });
@@ -383,10 +552,15 @@ export class PromotionsService implements OnModuleInit {
 
   /**
    * Validate coupon codes against an order.
-   * - 'order' coupons (percentage / fixed) stack on the goods total, in the given order. Floor rule:
-   *   the goods total after all of them must stay >= 50,000 VND — a coupon that would break it is rejected.
-   * - 'shipping' coupons (free_shipping) waive the shipping fee (whole fee, or up to maxDiscountAmount);
-   *   at most one per order, and they need a known shipping fee (from `opts.shippingFee`, else `dto.city`).
+   * - Program conditions (customer / order / time, see PromotionConditions) must all hold.
+   * - 'order' coupons (percentage / fixed) stack on the goods total, in the given order. A program
+   *   scoped to products/categories discounts only those lines. Floor rule: the goods total after
+   *   all of them must stay >= 50,000 VND — a coupon that would break it is rejected.
+   * - 'shipping' coupons (free_shipping, or the free shipping bundled into a goods code) waive the
+   *   shipping fee (whole fee, or up to the cap); at most one per order, and they need a known
+   *   shipping fee (from `opts.shippingFee`, else `dto.city`). A bundled one that can't apply
+   *   (no address yet / another shipping code) just leaves the goods part.
+   * - An `exclusive` program's code can't be combined with any other code.
    * Every code that isn't applied is returned in `rejectedCoupons` with a customer-facing reason.
    */
   async validateCoupons(
@@ -400,10 +574,18 @@ export class PromotionsService implements OnModuleInit {
     const now = new Date();
     const userOid = new Types.ObjectId(userId);
 
+    // Loaded once, only when some code needs them.
+    let profile: Promise<CustomerPromoProfile> | undefined;
+    const getProfile = () => (profile ??= this.loadCustomerProfile(userId));
+    let lines: Promise<PromoCartLine[]> | undefined;
+    const getLines = () => (lines ??= this.enrichLines(dto.items ?? []));
+    const quantityLines = dto.items?.map((i) => ({ productId: i.productId, quantity: i.quantity, subtotal: i.subtotal }));
+
     const applied: AppliedCoupon[] = [];
     const rejected: RejectedCoupon[] = [];
     let runningTotal = orderTotal;
     let shippingDiscount = 0;
+    let exclusiveCode: string | null = null;
 
     const codes = [...new Set(dto.couponCodes.map((c) => c.toUpperCase().trim()).filter(Boolean))];
     for (const code of codes) {
@@ -423,6 +605,16 @@ export class PromotionsService implements OnModuleInit {
         continue;
       }
 
+      // Combining rules
+      if (exclusiveCode) {
+        reject(`Mã ${exclusiveCode} không dùng chung với mã khác`);
+        continue;
+      }
+      if (program.exclusive && applied.length) {
+        reject('Mã này không dùng chung với mã khác — hãy bỏ các mã đã chọn');
+        continue;
+      }
+
       // Usage limits
       if (coupon.totalUsageLimit > 0 && coupon.totalUsedCount >= coupon.totalUsageLimit) {
         reject('Mã đã hết lượt sử dụng');
@@ -431,6 +623,24 @@ export class PromotionsService implements OnModuleInit {
       const userRecord = coupon.usageRecords.find((r) => r.userId.toString() === userId);
       if (userRecord && userRecord.count >= coupon.perUserUsageLimit) {
         reject('Bạn đã dùng hết lượt của mã này');
+        continue;
+      }
+
+      // Program conditions
+      const cond = program.conditions;
+      const condFail =
+        checkTimeConditions(cond, now) ??
+        checkOrderConditions(cond, { now, city: dto.city, paymentMethod: dto.paymentMethod, lines: quantityLines }) ??
+        (needsCustomerProfile(cond) ? checkCustomerConditions(cond, await getProfile(), now) : null);
+      if (condFail) {
+        reject(condFail);
+        continue;
+      }
+      const scope = isScoped(cond)
+        ? eligibleSubtotal(cond, dto.items ? await getLines() : undefined, orderTotal)
+        : { amount: orderTotal, reason: null };
+      if (scope.reason) {
+        reject(scope.reason);
         continue;
       }
 
@@ -453,21 +663,23 @@ export class PromotionsService implements OnModuleInit {
           reject('Đơn hàng này không có phí vận chuyển');
           continue;
         }
-        const amount = this.freeShippingAmount(coupon, shippingFee);
+        const amount = this.freeShippingAmount(coupon.maxDiscountAmount, shippingFee);
         shippingDiscount = amount;
         applied.push({ code, name: program.name, discountAmount: amount, kind: 'shipping' });
+        if (program.exclusive) exclusiveCode = code;
         continue;
       }
 
-      // Goods discount
+      // Goods discount (scoped codes only discount their eligible lines)
+      const base = Math.min(scope.amount, runningTotal);
       let discountAmount: number;
       if (coupon.type === DiscountType.PERCENTAGE) {
-        discountAmount = Math.round((runningTotal * coupon.value) / 100);
+        discountAmount = Math.round((base * coupon.value) / 100);
         if (coupon.maxDiscountAmount > 0) {
           discountAmount = Math.min(discountAmount, coupon.maxDiscountAmount);
         }
       } else {
-        discountAmount = coupon.value;
+        discountAmount = Math.min(coupon.value, base);
       }
 
       // Floor rule
@@ -479,6 +691,14 @@ export class PromotionsService implements OnModuleInit {
 
       runningTotal = afterDiscount;
       applied.push({ code, name: program.name, discountAmount, kind: 'order' });
+
+      // "Giảm giá kèm miễn phí vận chuyển"
+      if (coupon.includeFreeShipping && shippingFee && shippingFee > 0 && !applied.some((a) => a.kind === 'shipping')) {
+        const amount = this.freeShippingAmount(coupon.freeShippingMaxAmount ?? 0, shippingFee);
+        shippingDiscount = amount;
+        applied.push({ code, name: program.name, discountAmount: amount, kind: 'shipping' });
+      }
+      if (program.exclusive) exclusiveCode = code;
     }
 
     return {
@@ -491,22 +711,22 @@ export class PromotionsService implements OnModuleInit {
     };
   }
 
-  /** Shipping fee a free-shipping coupon waives: the whole fee, or up to its cap. */
-  private freeShippingAmount(coupon: Pick<CouponItem, 'maxDiscountAmount'>, shippingFee: number): number {
+  /** Shipping fee a free-shipping coupon waives: the whole fee, or up to its cap (0 = no cap). */
+  private freeShippingAmount(cap: number, shippingFee: number): number {
     const fee = Math.max(0, shippingFee);
-    return coupon.maxDiscountAmount > 0 ? Math.min(fee, coupon.maxDiscountAmount) : fee;
+    return cap > 0 ? Math.min(fee, cap) : fee;
   }
 
   /**
    * Mark coupons as used after an order is confirmed.
-   * Called by OrdersService after successful order creation.
+   * Called by OrdersService after successful order creation. A code that gave both a goods and a
+   * shipping discount appears twice in appliedCoupons — it is one use.
    */
   async markUsed(userId: string, couponCodes: string[]): Promise<void> {
     if (!couponCodes.length) return;
     const userOid = new Types.ObjectId(userId);
 
-    for (const rawCode of couponCodes) {
-      const code = rawCode.toUpperCase().trim();
+    for (const code of [...new Set(couponCodes.map((c) => c.toUpperCase().trim()))]) {
       const program = await this.promotionModel.findOne({ 'coupons.code': code });
       if (!program) continue;
 
@@ -524,5 +744,3 @@ export class PromotionsService implements OnModuleInit {
     }
   }
 }
-
-

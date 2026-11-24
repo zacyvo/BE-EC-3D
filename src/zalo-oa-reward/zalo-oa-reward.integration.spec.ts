@@ -80,7 +80,7 @@ const flush = () => new Promise((r) => setTimeout(r, 30));
 function build() {
   const configService = { get: (k: string) => env[k] } as unknown as ConfigService;
   const cfg = new ZaloOaRewardConfigService(configService);
-  const promotions = new PromotionsService(PromoModel);
+  const promotions = new PromotionsService(PromoModel, OrderModel, UserModel, {} as never, {} as never);
   const users = new UsersService(UserModel, {} as never, {} as never);
   const identity = new ZaloOaIdentityService(cfg);
   const recipients = new ZaloOaRecipientService(LinkModel, users);

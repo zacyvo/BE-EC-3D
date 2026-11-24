@@ -14,6 +14,9 @@ import { Order, OrderDocument, OrderSchema } from '../orders/schemas/order.schem
 import { OrderVersion, OrderVersionDocument, OrderVersionSchema } from '../orders/schemas/order-version.schema';
 import { OrdersService } from '../orders/orders.service';
 import { CreateOrderDto } from '../orders/dto/order.dto';
+import { User, UserSchema } from '../users/schemas/user.schema';
+import { Product, ProductSchema } from '../products/schemas/product.schema';
+import { Category, CategorySchema } from '../categories/schemas/category.schema';
 
 /**
  * Free-shipping coupons over a real (in-memory) MongoDB: the boot seed of FREE_SHIP, pricing against
@@ -86,7 +89,13 @@ beforeAll(async () => {
   OrderModel = conn.model(Order.name, OrderSchema) as unknown as Model<OrderDocument>;
   VersionModel = conn.model(OrderVersion.name, OrderVersionSchema) as unknown as Model<OrderVersionDocument>;
   await Promise.all([PromotionModel.init(), OrderModel.init(), VersionModel.init()]);
-  promotions = new PromotionsService(PromotionModel);
+  promotions = new PromotionsService(
+    PromotionModel,
+    OrderModel,
+    conn.model(User.name, UserSchema) as never,
+    conn.model(Product.name, ProductSchema) as never,
+    conn.model(Category.name, CategorySchema) as never,
+  );
 });
 
 afterAll(async () => {
