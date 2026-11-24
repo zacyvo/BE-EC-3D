@@ -6,7 +6,7 @@ import { OrdersController, AdminOrdersController } from './orders.controller';
 import { OrderAdjustmentsController, AdminOrderAdjustmentsController } from './order-adjustments.controller';
 import { OrderAdjustmentService } from './order-adjustment.service';
 import { OrderPublicAccessService } from './order-public-access.service';
-import { PublicOrderAccessController, AdminOrderAccessController } from './order-public-access.controller';
+import { PublicOrderAccessController, AdminOrderAccessController, GuestCheckoutController } from './order-public-access.controller';
 import { Order, OrderSchema } from './schemas/order.schema';
 import { OrderVersion, OrderVersionSchema } from './schemas/order-version.schema';
 import { ProductsModule } from '../products/products.module';
@@ -36,8 +36,9 @@ import { StaffModule } from '../staff/staff.module';
     StaffModule,
     JwtModule.register({}),
   ],
-  // PublicOrderAccessController first: its literal 'orders/public/...' routes must win over 'orders/:id/...'.
+  // Public controllers first: their literal 'orders/public/...' / 'orders/guest-checkout' routes must win over 'orders/:id/...'.
   controllers: [
+    GuestCheckoutController,
     PublicOrderAccessController,
     AdminOrderAccessController,
     OrdersController, AdminOrdersController, OrderAdjustmentsController, AdminOrderAdjustmentsController,

@@ -298,17 +298,29 @@ export class CompleteAdjustmentSettlementDto {
 }
 
 /** "Link xem đơn" — the customer unlocks an admin-created order without logging in. */
+/** Unlock an order with phone + security code, or — "Quên mã bảo mật" — phone + delivery street. */
 export class PublicOrderVerifyDto {
   @IsString()
   @IsNotEmpty({ message: 'Vui lòng nhập số điện thoại' })
   @MaxLength(20)
   phone: string;
 
+  @ValidateIf((o) => !o.street)
   @IsString()
   @IsNotEmpty({ message: 'Vui lòng nhập mã bảo mật' })
   @MaxLength(16)
-  securityCode: string;
+  securityCode?: string;
+
+  /** "Số nhà, tên đường" exactly as entered at checkout (case / accents / punctuation ignored). */
+  @ValidateIf((o) => !o.securityCode)
+  @IsString()
+  @IsNotEmpty({ message: 'Vui lòng nhập địa chỉ nhận hàng (số nhà, tên đường)' })
+  @MaxLength(300)
+  street?: string;
 }
+
+/** "Tra cứu đơn hàng" without the link — same credentials, searched over the phone's orders. */
+export class PublicOrderLookupDto extends PublicOrderVerifyDto {}
 
 /** Admin "Xem link & mã" / "Tạo link mới" — needs the staff's own password again. */
 export class OrderPublicAccessDto {

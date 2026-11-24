@@ -1,15 +1,20 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
+  Optional,
   UnauthorizedException,
+  forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { Order, OrderDocument } from './schemas/order.schema';
+import { Order, OrderDocument, PaymentMethod } from './schemas/order.schema';
+import { OrdersService } from './orders.service';
+import type { PaymentInstructions } from '../payments/bank-transfer.service';
 import { AuditService } from '../audit/audit.service';
 import { StaffService } from '../staff/staff.service';
 import { UsersService } from '../users/users.service';
@@ -27,7 +32,25 @@ import {
   orderPublicUrl,
   orderShortCode,
   safeEqual,
+  streetMatches,
 } from './order-public-access.util';
+
+/** How many of a phone's most recent orders "Tra cứu đơn hàng" looks at. */
+const LOOKUP_MAX_ORDERS = 50;
+
+const WRONG_CREDENTIALS = 'Số điện thoại, mã bảo mật hoặc địa chỉ không đúng';
+
+/** One order found by "Tra cứu đơn hàng" — already unlocked (accessJwt) for its own link. */
+export interface LookedUpOrder {
+  token: string;
+  accessJwt: string;
+  orderCode: string;
+  status: Order['status'];
+  total: number;
+  itemCount: number;
+  firstItemName: string;
+  createdAt: Date;
+}
 
 /** What the admin gets back (after re-entering their password) to send to the customer. */
 export interface OrderAccessCredentials {
@@ -42,6 +65,7 @@ export interface OrderAccessCredentials {
 export interface PublicOrderView {
   orderCode: string;
   status: Order['status'];
+  paymentMethod: PaymentMethod;
   items: {
     productName: string;
     productImage: string;
@@ -92,6 +116,8 @@ export class OrderPublicAccessService {
     private readonly staffService: StaffService,
     private readonly usersService: UsersService,
     private readonly auditService: AuditService,
+    /** Public payment (VietQR) of a guest order — optional so older specs construct without it. */
+    @Optional() @Inject(forwardRef(() => OrdersService)) private readonly ordersService?: OrdersService,
   ) {}
 
   private publicUrl(token: string): string {
@@ -213,50 +239,122 @@ export class OrderPublicAccessService {
     };
   }
 
-  async verify(token: string, phone: string, securityCode: string) {
+  /** Phone + (security code | delivery street — "Quên mã bảo mật"). */
+  private credentialsOk(
+    order: OrderDocument,
+    phone: string,
+    securityCode?: string,
+    street?: string,
+  ): boolean {
+    if (normalizeAccessPhone(phone) !== order.publicAccessPhone) return false;
+    if (securityCode?.trim()) {
+      return !!order.publicAccessCode && safeEqual(normalizeAccessCode(securityCode), order.publicAccessCode);
+    }
+    return streetMatches(street, order.shippingInfo?.street);
+  }
+
+  private lockedMinutes(order: OrderDocument): number | null {
+    if (!order.publicAccessLockedUntil || order.publicAccessLockedUntil <= new Date()) return null;
+    return Math.ceil((order.publicAccessLockedUntil.getTime() - Date.now()) / 60000);
+  }
+
+  /** Wrong guess on these orders. Atomic $inc: parallel guesses can't each read the same counter
+   * and slip past the lock. */
+  private async recordFailure(orderIds: Types.ObjectId[]): Promise<void> {
+    if (!orderIds.length) return;
+    await this.orderModel.updateMany({ _id: { $in: orderIds } }, { $inc: { publicAccessAttempts: 1 } }).exec();
+    await this.orderModel
+      .updateMany(
+        { _id: { $in: orderIds }, publicAccessAttempts: { $gte: ORDER_ACCESS_MAX_ATTEMPTS } },
+        {
+          $set: { publicAccessLockedUntil: new Date(Date.now() + ORDER_ACCESS_LOCK_MINUTES * 60_000) },
+          $unset: { publicAccessAttempts: 1 },
+        },
+      )
+      .exec();
+  }
+
+  private async clearFailures(orders: OrderDocument[]): Promise<void> {
+    const ids = orders.filter((o) => o.publicAccessAttempts || o.publicAccessLockedUntil).map((o) => o._id);
+    if (!ids.length) return;
+    await this.orderModel
+      .updateMany({ _id: { $in: ids } }, { $unset: { publicAccessAttempts: 1, publicAccessLockedUntil: 1 } })
+      .exec();
+  }
+
+  /** The token is part of the session: re-issuing the link ends every session opened with the old one. */
+  issueSession(order: OrderDocument): Promise<string> {
+    return this.jwtService.signAsync(
+      { sub: order._id.toString(), typ: ORDER_ACCESS_JWT_TYPE, tk: order.publicAccessToken },
+      { secret: this.jwtSecret(), expiresIn: ORDER_ACCESS_JWT_TTL },
+    );
+  }
+
+  async verify(token: string, phone: string, securityCode?: string, street?: string) {
     const order = await this.findByToken(token, true);
 
-    if (order.publicAccessLockedUntil && order.publicAccessLockedUntil > new Date()) {
-      const minutes = Math.ceil((order.publicAccessLockedUntil.getTime() - Date.now()) / 60000);
-      throw new ForbiddenException(`Nhập sai quá nhiều lần. Vui lòng thử lại sau ${minutes} phút`);
-    }
+    const minutes = this.lockedMinutes(order);
+    if (minutes) throw new ForbiddenException(`Nhập sai quá nhiều lần. Vui lòng thử lại sau ${minutes} phút`);
 
-    const phoneOk = normalizeAccessPhone(phone) === order.publicAccessPhone;
-    const codeOk = !!order.publicAccessCode && safeEqual(normalizeAccessCode(securityCode), order.publicAccessCode);
-
-    if (!phoneOk || !codeOk) {
-      // Atomic $inc: parallel wrong guesses can't each read the same counter and slip past the lock.
-      const after = await this.orderModel
-        .findByIdAndUpdate(order._id, { $inc: { publicAccessAttempts: 1 } }, { new: true })
-        .exec();
-      if ((after?.publicAccessAttempts ?? 0) >= ORDER_ACCESS_MAX_ATTEMPTS) {
-        await this.orderModel.updateOne(
-          { _id: order._id },
-          {
-            $set: { publicAccessLockedUntil: new Date(Date.now() + ORDER_ACCESS_LOCK_MINUTES * 60_000) },
-            $unset: { publicAccessAttempts: 1 },
-          },
-        );
-      }
-      throw new UnauthorizedException('Số điện thoại hoặc mã bảo mật không đúng');
-    }
-
-    if (order.publicAccessAttempts || order.publicAccessLockedUntil) {
-      await this.orderModel.updateOne(
-        { _id: order._id },
-        { $unset: { publicAccessAttempts: 1, publicAccessLockedUntil: 1 } },
+    if (!this.credentialsOk(order, phone, securityCode, street)) {
+      await this.recordFailure([order._id]);
+      throw new UnauthorizedException(
+        securityCode?.trim() ? 'Số điện thoại hoặc mã bảo mật không đúng' : 'Số điện thoại hoặc địa chỉ nhận hàng không đúng',
       );
     }
 
-    // The token is part of the session: re-issuing the link ends every session opened with the old one.
-    const accessJwt = await this.jwtService.signAsync(
-      { sub: order._id.toString(), typ: ORDER_ACCESS_JWT_TYPE, tk: token },
-      { secret: this.jwtSecret(), expiresIn: ORDER_ACCESS_JWT_TTL },
-    );
+    await this.clearFailures([order]);
+    const accessJwt = await this.issueSession(order);
     return { accessJwt, order: this.toPublicView(order) };
   }
 
-  async getOrder(token: string, accessJwt?: string): Promise<PublicOrderView> {
+  /**
+   * "Tra cứu đơn hàng" — the customer has lost the link: phone + security code finds that order,
+   * phone + delivery street finds every order of that phone delivered there. Unknown phone and
+   * wrong credentials answer the same (no "this phone has orders" oracle); each wrong guess counts
+   * against all of the phone's orders, so the 5-tries lock still bounds guessing.
+   */
+  async lookup(phone: string, securityCode?: string, street?: string): Promise<{ orders: LookedUpOrder[] }> {
+    const normalized = normalizeAccessPhone(phone);
+    if (!isUsableAccessPhone(normalized)) throw new UnauthorizedException(WRONG_CREDENTIALS);
+
+    const candidates = await this.orderModel
+      .find({ publicAccessPhone: normalized, publicAccessToken: { $exists: true } })
+      .select('+publicAccessCode')
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(LOOKUP_MAX_ORDERS)
+      .exec();
+
+    const open = candidates.filter((o) => !this.lockedMinutes(o));
+    if (candidates.length && !open.length) {
+      const minutes = Math.min(...candidates.map((o) => this.lockedMinutes(o) ?? ORDER_ACCESS_LOCK_MINUTES));
+      throw new ForbiddenException(`Nhập sai quá nhiều lần. Vui lòng thử lại sau ${minutes} phút`);
+    }
+
+    const matched = open.filter((o) => this.credentialsOk(o, normalized, securityCode, street));
+    if (!matched.length) {
+      await this.recordFailure(open.map((o) => o._id));
+      throw new UnauthorizedException(WRONG_CREDENTIALS);
+    }
+
+    await this.clearFailures(matched);
+    const orders = await Promise.all(
+      matched.map(async (o) => ({
+        token: o.publicAccessToken!,
+        accessJwt: await this.issueSession(o),
+        orderCode: orderShortCode(o._id.toString()),
+        status: o.status,
+        total: o.total,
+        itemCount: o.items.reduce((n, i) => n + i.quantity, 0),
+        firstItemName: o.items[0]?.productName ?? '',
+        createdAt: o.createdAt,
+      })),
+    );
+    return { orders };
+  }
+
+  /** The order behind a valid customer session for this link. */
+  private async authorize(token: string, accessJwt?: string): Promise<OrderDocument> {
     if (!accessJwt) throw new UnauthorizedException('Vui lòng xác thực để xem đơn hàng');
     let payload: { sub?: string; typ?: string; tk?: string };
     try {
@@ -269,7 +367,25 @@ export class OrderPublicAccessService {
     }
     const order = await this.findByToken(token);
     if (payload.sub !== order._id.toString()) throw new UnauthorizedException('Phiên không hợp lệ');
-    return this.toPublicView(order);
+    return order;
+  }
+
+  async getOrder(token: string, accessJwt?: string): Promise<PublicOrderView> {
+    return this.toPublicView(await this.authorize(token, accessJwt));
+  }
+
+  /** VietQR instructions of a bank-transfer order, through its link (guest has no login). */
+  async getPayment(token: string, accessJwt?: string): Promise<PaymentInstructions> {
+    const order = await this.authorize(token, accessJwt);
+    if (!this.ordersService) throw new BadRequestException('Thanh toán tạm thời không khả dụng');
+    return this.ordersService.getPaymentForUser(order._id.toString(), order.userId.toString());
+  }
+
+  /** "Tôi đã chuyển khoản" through the link — same customer claim as the logged-in flow. */
+  async reportPayment(token: string, accessJwt?: string) {
+    const order = await this.authorize(token, accessJwt);
+    if (!this.ordersService) throw new BadRequestException('Thanh toán tạm thời không khả dụng');
+    return this.ordersService.reportPaymentByUser(order._id.toString(), order.userId.toString());
   }
 
   toPublicView(order: OrderDocument): PublicOrderView {
@@ -279,6 +395,7 @@ export class OrderPublicAccessService {
     return {
       orderCode: orderShortCode(order._id.toString()),
       status: order.status,
+      paymentMethod: order.paymentMethod ?? PaymentMethod.COD,
       items: order.items.map((i) => ({
         productName: i.productName,
         productImage: i.productImage,

@@ -30,6 +30,11 @@ Khách mở link → nhập SĐT + mã → nhận JWT `typ=order-access` (4h, g�
 - Đơn sàn (`externalRef`, SĐT bị che) không cấp link. Đơn đã xoá mềm không mở được.
 - CORS: header `X-Order-Access` đã thêm vào `allowedHeaders` (main.ts).
 
+## Mở rộng (2026-11-24) — xem docs/GUEST_CHECKOUT.md
+- Đơn đặt không cần đăng nhập trên storefront cũng tự có link + mã (SĐT người nhận).
+- "Quên mã bảo mật": `verify` nhận `{ phone, street }` thay cho mã.
+- `POST /orders/public/lookup` — tra cứu khi mất link; thanh toán VietQR qua link.
+
 ## Phạm vi hiện tại
 Chỉ xem đơn (trạng thái, sản phẩm, tiền, giao hàng, mã vận đơn). Khách chưa thể huỷ / yêu cầu HĐĐT / trả hàng
 qua link này — các thao tác đó vẫn cần đăng nhập.

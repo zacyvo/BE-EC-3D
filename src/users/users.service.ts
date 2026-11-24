@@ -6,6 +6,16 @@ import { User, UserDocument } from './schemas/user.schema';
 import { MailService } from '../mail/mail.service';
 import { AddressConversionService } from '../locations/address-conversion.service';
 
+/** "+84912345678" → "0912345678" (same rule as login by phone). */
+export function normalizeUserPhone(phone: string): string {
+  const p = phone.trim();
+  return p.startsWith('+84') ? '0' + p.slice(3) : p;
+}
+
+export function guestEmailOfPhone(normalizedPhone: string): string {
+  return `guest_${normalizedPhone}@guest.luxe-glow.vn`;
+}
+
 @Injectable()
 export class UsersService {
   constructor(
@@ -29,6 +39,10 @@ export class UsersService {
     const existing = await this.userModel.findOne({ email: data.email }).select('+password').exec();
     if (existing) {
       throw new ConflictException('Email already registered');
+    }
+    if (data.phone) {
+      data = { ...data, phone: normalizeUserPhone(data.phone) };
+      await this.claimPhoneForAccount(data.phone!);
     }
 
     let hashedPassword: string | undefined;
@@ -77,7 +91,10 @@ export class UsersService {
     const existing = await this.userModel.findOne({ phone: normalized }).exec();
     if (existing) return { user: existing, created: false };
 
-    const tempEmail = `guest_${normalized}@guest.luxe-glow.vn`;
+    const tempEmail = guestEmailOfPhone(normalized);
+    // A storefront-checkout guest for this phone that no longer carries it (see findOrCreateCheckoutGuest).
+    const guest = await this.userModel.findOne({ email: tempEmail }).exec();
+    if (guest) return { user: guest, created: false };
     const user = new this.userModel({
       email: tempEmail,
       name: name || `Khách ${normalized}`,
@@ -87,6 +104,59 @@ export class UsersService {
     });
     await user.save();
     return { user, created: true };
+  }
+
+  /**
+   * "User tạm" for a storefront checkout without login, keyed on the recipient phone.
+   *
+   * Unlike findOrCreateByPhone (admin flow — staff talks to the customer), this NEVER returns a
+   * real (registered) account: phones on accounts are not verified, so attaching a guest order to
+   * whoever registered with that number would show them a stranger's address. The guest is found
+   * by its deterministic email `guest_<phone>@guest.luxe-glow.vn` (the same record the admin flow
+   * creates for a new phone); it carries `phone` only while no other account holds that number.
+   */
+  async findOrCreateCheckoutGuest(phone: string, name: string): Promise<UserDocument> {
+    const normalized = normalizeUserPhone(phone);
+    const email = guestEmailOfPhone(normalized);
+    const existing = await this.userModel.findOne({ email, isDeleted: { $in: [true, false] } }).exec();
+    if (existing) return existing;
+
+    // Deleted accounts still hold their phone in the unique index → check them too.
+    const phoneTaken = await this.userModel.exists({ phone: normalized, isDeleted: { $in: [true, false] } });
+    try {
+      return await new this.userModel({
+        email,
+        name: name?.trim() || `Khách ${normalized}`,
+        ...(phoneTaken ? {} : { phone: normalized }),
+        provider: 'local',
+        isGuest: true,
+      }).save();
+    } catch (err) {
+      // Two checkouts with the same new phone at once: the other one created it — use that.
+      if ((err as { code?: number }).code !== 11000) throw err;
+      const raced = await this.userModel.findOne({ email, isDeleted: { $in: [true, false] } }).exec();
+      if (raced) return raced;
+      throw err;
+    }
+  }
+
+  /**
+   * Before an account takes `phone` (register / profile update): a guest ("user tạm", no password)
+   * holding it lets it go — its orders stay on the guest and remain viewable through their links;
+   * they are NOT moved into the new account (no phone OTP, so ownership isn't proven). A real
+   * account holding it → conflict (previously a raw duplicate-key 500).
+   */
+  private async claimPhoneForAccount(phone: string, selfId?: string): Promise<void> {
+    const holder = await this.userModel
+      .findOne({ phone, isDeleted: { $in: [true, false] } })
+      .select('+password')
+      .exec();
+    if (!holder || holder._id.toString() === selfId) return;
+    if (holder.isGuest && !holder.password && !holder.isDeleted) {
+      await this.userModel.updateOne({ _id: holder._id, isGuest: true }, { $unset: { phone: 1 } }).exec();
+      return;
+    }
+    throw new ConflictException('Số điện thoại đã được sử dụng cho tài khoản khác');
   }
 
   /** Like findOrCreateByPhone, but keyed on a marketplace's own buyer id instead of a
@@ -231,6 +301,10 @@ export class UsersService {
     userId: string,
     data: { name?: string; phone?: string; avatar?: string; dob?: Date; marketingOptIn?: boolean; marketingOptInAt?: Date },
   ): Promise<UserDocument> {
+    if (data.phone) {
+      data = { ...data, phone: normalizeUserPhone(data.phone) };
+      await this.claimPhoneForAccount(data.phone!, userId);
+    }
     const user = await this.userModel
       .findByIdAndUpdate(userId, { $set: data }, { new: true })
       .exec();

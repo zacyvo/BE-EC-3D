@@ -542,6 +542,9 @@ export class Order {
   @Prop({ type: OrderEInvoiceRequestSchema }) einvoiceRequest?: OrderEInvoiceRequest;
   @Prop() adminNote?: string;
   @Prop({ default: false }) createdByAdmin: boolean;
+  /** Placed on the storefront without login ("Mua không cần đăng nhập") — userId is a guest
+   * ("user tạm" keyed on the recipient phone); followed through the "Link xem đơn". */
+  @Prop() placedAsGuest?: boolean;
   @Prop() createdByStaffId?: string;
 
   /** Direct discount applied by admin (separate from coupon discounts) */
@@ -617,6 +620,8 @@ OrderSchema.index({ 'adjustment.settlement.reference': 1 }, { unique: true, spar
 OrderSchema.index({ pendingNotificationEvents: 1 }, { sparse: true });
 // "Link xem đơn": the secret link token finds the order (sparse — most orders have none).
 OrderSchema.index({ publicAccessToken: 1 }, { unique: true, sparse: true });
+// "Tra cứu đơn hàng" (phone + security code / delivery address, no link at hand).
+OrderSchema.index({ publicAccessPhone: 1 }, { sparse: true });
 // Internal worker state / access secrets — keep them out of checkout/admin API responses.
 OrderSchema.set('toJSON', {
   transform: (_doc, ret) => {

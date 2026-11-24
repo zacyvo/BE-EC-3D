@@ -195,7 +195,31 @@ export class OrdersService {
     };
   }
 
-  async create(userId: string, dto: CreateOrderDto): Promise<OrderDocument> {
+  /**
+   * "Mua không cần đăng nhập": the order goes to a guest ("user tạm") keyed on the recipient
+   * phone and gets its own "Link xem đơn" (secret link + phone + security code) — the guest has
+   * no password, so that link is how they follow (and pay) the order. Coupons need an account:
+   * per-customer limits would be bypassed by just typing another phone number.
+   */
+  async createAsGuest(dto: CreateOrderDto): Promise<OrderDocument> {
+    if (dto.acceptTerms !== true) {
+      throw new BadRequestException('Vui lòng đồng ý với Điều khoản dịch vụ và Chính sách bảo mật');
+    }
+    if (dto.couponCodes?.length) {
+      throw new BadRequestException('Vui lòng đăng nhập để sử dụng mã giảm giá');
+    }
+    const guest = await this.usersService.findOrCreateCheckoutGuest(
+      dto.shippingInfo.phone,
+      dto.shippingInfo.recipientName,
+    );
+    if (guest.isBlocked) {
+      throw new ForbiddenException('Không thể đặt hàng với số điện thoại này. Vui lòng liên hệ shop để được hỗ trợ');
+    }
+    return this.create(guest._id.toString(), dto, { guest: true });
+  }
+
+  async create(userId: string, dto: CreateOrderDto, opts: { guest?: boolean } = {}): Promise<OrderDocument> {
+    const guest = opts.guest === true;
     // Validate and compute items
     const items = await Promise.all(
       dto.items.map(async (item) => {
@@ -248,7 +272,7 @@ export class OrdersService {
       ? this.buildEInvoiceRequest(
           { items, discountAmount, shippingFee },
           dto.einvoiceRequest,
-          (await this.usersService.findById(userId))?.name || dto.shippingInfo.recipientName,
+          (guest ? undefined : (await this.usersService.findById(userId))?.name) || dto.shippingInfo.recipientName,
         )
       : undefined;
     const total = subtotal - discountAmount + shippingFee;
@@ -259,9 +283,21 @@ export class OrdersService {
       ...(einvoiceRequest ? this.orderNotifications.einvoiceRequestedOutboxEvents() : []),
     ];
 
+    // Guest checkout: the "Link xem đơn" is opened with the recipient phone (validated VN mobile).
+    const publicAccess = guest
+      ? {
+          placedAsGuest: true,
+          publicAccessToken: genOrderAccessToken(),
+          publicAccessCode: genOrderAccessCode(),
+          publicAccessPhone: normalizeAccessPhone(shippingInfo.phone),
+          publicAccessIssuedAt: new Date(),
+        }
+      : {};
+
     const paymentMethod = dto.paymentMethod ?? PaymentMethod.COD;
     const fields = {
       userId: new Types.ObjectId(userId),
+      ...publicAccess,
       items,
       shippingInfo,
       subtotal,
@@ -292,15 +328,15 @@ export class OrdersService {
     }
 
     // Save initial version snapshot
-    await this.saveVersion(order, userId, 'user', 'Order created');
+    await this.saveVersion(order, userId, 'user', guest ? 'Order created (guest checkout)' : 'Order created');
 
-    // Clear cart
-    await this.cartService.clearCart(userId);
+    // Clear cart (a guest's cart only lives in the browser)
+    if (!guest) await this.cartService.clearCart(userId);
 
     await this.auditService.log({
       actorId: userId,
       actorType: 'user',
-      action: 'CREATE_ORDER',
+      action: guest ? 'GUEST_CREATE_ORDER' : 'CREATE_ORDER',
       module: 'orders',
       targetId: order._id.toString(),
     });

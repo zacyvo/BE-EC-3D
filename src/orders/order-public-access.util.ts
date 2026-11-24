@@ -59,6 +59,26 @@ export function orderShortCode(orderId: string): string {
   return orderId.slice(-8).toUpperCase();
 }
 
+/**
+ * Street line ("Số nhà, tên đường") in a comparable form, for "Quên mã bảo mật": case, Vietnamese
+ * diacritics, punctuation and spacing don't matter — "123 Nguyễn Huệ" = "123, nguyen hue".
+ */
+export function normalizeStreet(street: string | undefined | null): string {
+  return (street ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/gi, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/** The customer's street matches the order's — needs at least one digit-or-word of substance. */
+export function streetMatches(input: string | undefined | null, orderStreet: string | undefined | null): boolean {
+  const a = normalizeStreet(input);
+  return a.length >= 3 && safeEqual(a, normalizeStreet(orderStreet));
+}
+
 export function orderPublicUrl(frontendUrl: string, token: string): string {
   return `${frontendUrl.replace(/\/$/, '')}/order/${token}`;
 }
