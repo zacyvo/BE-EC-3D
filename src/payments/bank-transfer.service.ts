@@ -26,6 +26,17 @@ export function paymentReferenceFor(orderId: string, length = PAYMENT_REFERENCE_
   return `${PAYMENT_REFERENCE_PREFIX}${orderId.slice(-length).toUpperCase()}`;
 }
 
+/** One receiving account with its own QR — one tab on the storefront. */
+export interface PaymentAccountQr extends BankAccountSnapshot {
+  qrPayload: string | null;
+  qrError?: string;
+}
+
+/** The accounts an order's payment offers (old orders: just the primary one). */
+export function paymentAccountsOf(payment: OrderPayment): BankAccountSnapshot[] {
+  return payment.bankAccounts?.length ? payment.bankAccounts : [payment.bankAccount];
+}
+
 /** What the storefront needs to show the payment section of one order. */
 export interface PaymentInstructions {
   orderId: string;
@@ -38,7 +49,11 @@ export interface PaymentInstructions {
   amount: number;
   currency: string;
   reference: string;
+  /** Primary account (default tab; after "Tôi đã chuyển khoản", the one the customer chose). */
   bank: BankAccountSnapshot;
+  /** Every account with its own QR (generated together) — personal first, then Hộ kinh doanh.
+   * QR payloads are null when the order isn't payable. */
+  accounts: PaymentAccountQr[];
   /** true while the customer still has to pay (unpaid, not cancelled). */
   payable: boolean;
   /** VietQR payload to render — null when not payable or the payload failed its self-check. */
@@ -81,16 +96,26 @@ export class BankTransferService {
     return { enabled: accountTypes.length > 0, accountTypes, defaultAccountType: this.config.defaultAccountType() };
   }
 
-  /** Payment subdocument for a new checkout order. Throws (the order isn't created) when bank
-   * transfer is off / misconfigured, the chosen account isn't available, or the server-computed
-   * total can't be paid by QR. `accountType` omitted = default account (personal). */
+  /**
+   * Payment subdocument for a new checkout order: one QR per configured account (personal +
+   * Hộ kinh doanh), same amount and reference. With `businessOnly` (the order asks for an
+   * e-invoice, issued by the Hộ kinh doanh) only that account is offered — if it's configured.
+   * `accountType` = primary / default tab (omitted → personal). Throws (the order isn't created)
+   * when bank transfer is off / misconfigured, an explicitly chosen account isn't available, or
+   * the server-computed total can't be paid by QR.
+   */
   buildInitialPayment(
     orderId: Types.ObjectId,
     total: number,
     referenceLength?: number,
     accountType?: PaymentAccountType,
+    { businessOnly = false }: { businessOnly?: boolean } = {},
   ): OrderPayment {
-    const account = this.config.activeAccount(accountType);
+    const business = businessOnly ? this.config.activeAccount(PaymentAccountType.BUSINESS) : null;
+    const accounts = business
+      ? [business]
+      : this.config.availableAccountTypes().map((t) => this.config.activeAccount(t)!).filter(Boolean);
+    const account = business ?? (accountType ? this.config.activeAccount(accountType) : accounts[0] ?? null);
     if (!account) {
       const v = this.config.validate();
       if (accountType && v.valid) {
@@ -113,19 +138,10 @@ export class BankTransferService {
       amount: total,
       currency: 'VND',
       bankAccount: { ...account },
+      bankAccounts: accounts.map((a) => ({ ...a })),
       verificationStatus: PaymentVerificationStatus.NOT_REPORTED,
       history: [{ action: PaymentHistoryAction.INSTRUCTIONS_CREATED, at: new Date(), byType: 'system', amount: total }],
     };
-  }
-
-  /**
-   * Account type a new bank-transfer order should use: an order with an e-invoice request is paid
-   * into the Hộ kinh doanh account (the invoice is issued by the Hộ kinh doanh), whatever the
-   * customer picked — unless that account isn't configured, then the customer's choice stands.
-   */
-  resolveAccountType(requested: PaymentAccountType | undefined, wantsEInvoice: boolean): PaymentAccountType | undefined {
-    if (wantsEInvoice && this.config.activeAccount(PaymentAccountType.BUSINESS)) return PaymentAccountType.BUSINESS;
-    return requested;
   }
 
   /**
@@ -157,7 +173,7 @@ export class BankTransferService {
           status: { $ne: OrderStatus.CANCELLED },
         },
         {
-          $set: { 'payment.bankAccount': { ...account } },
+          $set: { 'payment.bankAccount': { ...account }, 'payment.bankAccounts': [{ ...account }] },
           $push: {
             'payment.history': {
               action: PaymentHistoryAction.ACCOUNT_CHANGED,
@@ -192,6 +208,8 @@ export class BankTransferService {
     order: OrderDocument,
     actor: { userId: string; name?: string },
     outboxEvents: string[] = [],
+    /** The tab the customer paid with — becomes the primary account the shop checks. */
+    accountType?: PaymentAccountType,
   ): Promise<{ order: OrderDocument; reported: boolean }> {
     this.assertBankTransfer(order);
     const current = await this.syncAmount(order);
@@ -203,6 +221,11 @@ export class BankTransferService {
         current.status === OrderStatus.CANCELLED ? 'Đơn hàng đã bị hủy' : 'Đơn hàng không còn chờ thanh toán',
       );
     }
+
+    const paidInto = accountType
+      ? paymentAccountsOf(current.payment!).find((a) => a.accountType === accountType)
+      : undefined;
+    if (accountType && !paidInto) throw new BadRequestException('Tài khoản nhận tiền không hợp lệ cho đơn hàng này');
 
     const now = new Date();
     const updated = await this.orderModel
@@ -218,6 +241,7 @@ export class BankTransferService {
           $set: {
             'payment.verificationStatus': PaymentVerificationStatus.AWAITING_CONFIRMATION,
             'payment.customerReportedAt': now,
+            ...(paidInto ? { 'payment.bankAccount': { ...paidInto } } : {}),
           },
           $push: {
             'payment.history': {
@@ -227,6 +251,9 @@ export class BankTransferService {
               by: actor.userId,
               ...(actor.name ? { byName: actor.name } : {}),
               amount: current.payment!.amount,
+              ...(paidInto
+                ? { note: `Chuyển vào: ${paidInto.bankName} ••••${paidInto.accountNumber.slice(-4)}${paidInto.accountType === PaymentAccountType.BUSINESS ? ' (Hộ kinh doanh)' : paidInto.accountType === PaymentAccountType.PERSONAL ? ' (Cá nhân)' : ''}` }
+                : {}),
             },
           },
           $inc: { currentVersion: 1 },
@@ -252,6 +279,20 @@ export class BankTransferService {
     const { qrPayload, qrError } = payable
       ? this.buildQr(payment.bankAccount, payment.amount, payment.reference, order._id.toString())
       : { qrPayload: null, qrError: undefined };
+    const accounts: PaymentAccountQr[] = paymentAccountsOf(payment).map((acc) => {
+      const qr = payable
+        ? this.buildQr(acc, payment.amount, payment.reference, order._id.toString())
+        : { qrPayload: null, qrError: undefined };
+      return {
+        bankBin: acc.bankBin,
+        bankName: acc.bankName,
+        accountNumber: acc.accountNumber,
+        accountName: acc.accountName,
+        ...(acc.accountType ? { accountType: acc.accountType } : {}),
+        qrPayload: qr.qrPayload,
+        ...(qr.qrError ? { qrError: qr.qrError } : {}),
+      };
+    });
     return {
       orderId: order._id.toString(),
       orderCode: `#${order._id.toString().slice(-8).toUpperCase()}`,
@@ -269,6 +310,7 @@ export class BankTransferService {
         accountName: payment.bankAccount.accountName,
         ...(payment.bankAccount.accountType ? { accountType: payment.bankAccount.accountType } : {}),
       },
+      accounts,
       payable,
       qrPayload,
       ...(qrError ? { qrError } : {}),

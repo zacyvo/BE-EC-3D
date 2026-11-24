@@ -2,7 +2,7 @@ import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { OrderPublicAccessService } from './order-public-access.service';
 import { OrdersService } from './orders.service';
-import { CreateOrderDto, OrderPublicAccessDto, PublicOrderLookupDto, PublicOrderVerifyDto } from './dto/order.dto';
+import { CreateOrderDto, OrderPublicAccessDto, PublicOrderLookupDto, PublicOrderVerifyDto, ReportPaymentDto } from './dto/order.dto';
 import { JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles, StaffRole } from '../auth/decorators/roles.decorator';
@@ -76,8 +76,12 @@ export class PublicOrderAccessController {
   @Post(':token/payment/report')
   @UseGuards(ClientIpThrottlerGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  reportPayment(@Param('token') token: string, @Headers('x-order-access') accessJwt?: string) {
-    return this.service.reportPayment(token, accessJwt);
+  reportPayment(
+    @Param('token') token: string,
+    @Body() dto: ReportPaymentDto,
+    @Headers('x-order-access') accessJwt?: string,
+  ) {
+    return this.service.reportPayment(token, accessJwt, dto?.accountType);
   }
 
   @Get(':token')

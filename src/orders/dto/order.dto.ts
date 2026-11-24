@@ -138,6 +138,12 @@ export class CreateOrderDto {
   paymentAccountType?: PaymentAccountType;
 }
 
+/** "Tôi đã chuyển khoản" — `accountType` = the tab (QR) the customer paid with. */
+export class ReportPaymentDto {
+  @IsOptional() @IsEnum(PaymentAccountType, { message: 'Tài khoản nhận tiền không hợp lệ' })
+  accountType?: PaymentAccountType;
+}
+
 /** Admin CMS "Xác nhận đã thanh toán" — `expectedAmount` is the amount shown in the dialog; the
  * confirmation is refused if the order total changed since (stale screen). */
 export class ConfirmPaymentDto {

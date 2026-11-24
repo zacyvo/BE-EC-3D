@@ -385,7 +385,12 @@ export class OrderPayment {
   /** Amount the customer is asked to transfer — follows Order.total until the order is paid. */
   @Prop({ required: true, min: 0 }) amount: number;
   @Prop({ required: true, default: 'VND' }) currency: string;
+  /** Primary account: the default tab, and — once the customer reports a transfer — the account
+   * they say they paid into (what the shop checks). */
   @Prop({ type: BankAccountSnapshotSchema, required: true }) bankAccount: BankAccountSnapshot;
+  /** Every account the customer is shown a QR for (one tab each: personal, Hộ kinh doanh).
+   * Absent on orders placed before 2026-11-24 → only `bankAccount`. */
+  @Prop({ type: [BankAccountSnapshotSchema], default: undefined }) bankAccounts?: BankAccountSnapshot[];
   @Prop({ required: true, enum: Object.values(PaymentVerificationStatus) })
   verificationStatus: PaymentVerificationStatus;
   @Prop() customerReportedAt?: Date;

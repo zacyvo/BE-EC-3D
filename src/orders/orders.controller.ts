@@ -5,7 +5,7 @@ import {
 import { OrdersService } from './orders.service';
 import {
   CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto, UserCancelOrderDto,
-  EInvoiceRequestDto, RejectEInvoiceRequestDto, ConfirmPaymentDto, RefundPaymentDto,
+  EInvoiceRequestDto, RejectEInvoiceRequestDto, ConfirmPaymentDto, RefundPaymentDto, ReportPaymentDto,
 } from './dto/order.dto';
 import { EInvoiceRequestStatus, OrderStatus } from './schemas/order.schema';
 import { JwtAuthGuard, JwtStaffGuard } from '../auth/guards/jwt-auth.guard';
@@ -62,8 +62,8 @@ export class OrdersController {
 
   /** "Tôi đã chuyển khoản" — records the customer's claim; never marks the order paid. */
   @Post(':id/payment/report')
-  reportPayment(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
-    return this.ordersService.reportPaymentByUser(id, user.sub);
+  reportPayment(@Param('id') id: string, @CurrentUser() user: { sub: string }, @Body() dto: ReportPaymentDto) {
+    return this.ordersService.reportPaymentByUser(id, user.sub, dto?.accountType);
   }
 
   /** Customer asks for a VAT e-invoice (+VAT on the total) — notifies the owner to accept/reject. */

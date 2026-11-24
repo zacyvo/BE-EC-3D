@@ -237,6 +237,41 @@ describe('Receiving account: personal (default) or Hộ kinh doanh', () => {
     expect(decodeVietQrPayload(info.qrPayload!)).toMatchObject({ bankBin: '970415', accountNumber: '0909064680' });
   });
 
+  it('generates one QR per account at once — same amount and transfer description', async () => {
+    const { orders } = build();
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    expect(order.payment!.bankAccounts!.map((a) => a.accountType)).toEqual([PaymentAccountType.PERSONAL, PaymentAccountType.BUSINESS]);
+
+    const info = await orders.getPaymentForUser(order._id.toString(), userId);
+    expect(info.accounts.map((a) => a.accountType)).toEqual([PaymentAccountType.PERSONAL, PaymentAccountType.BUSINESS]);
+    const decoded = info.accounts.map((a) => decodeVietQrPayload(a.qrPayload!));
+    expect(decoded.map((d) => d.accountNumber)).toEqual(['0909064680', '0011001932418']);
+    expect(decoded.map((d) => d.bankBin)).toEqual(['970415', '970436']);
+    for (const d of decoded) {
+      expect(d.amount).toBe(order.total);
+      expect(d.description).toBe(order.payment!.reference);
+    }
+  });
+
+  it('"Tôi đã chuyển khoản" records the tab the customer paid with as the account to check', async () => {
+    const { orders } = build();
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    const res = await orders.reportPaymentByUser(order._id.toString(), userId, PaymentAccountType.BUSINESS);
+    expect(res.bank).toMatchObject({ accountType: PaymentAccountType.BUSINESS, accountNumber: '0011001932418' });
+    expect(res.accounts).toHaveLength(2); // both QRs stay visible until the shop confirms
+    const saved = await OrderModel.findById(order._id).lean();
+    expect(saved!.payment!.bankAccount.accountType).toBe(PaymentAccountType.BUSINESS);
+    expect(saved!.payment!.history.at(-1)).toMatchObject({ action: 'CUSTOMER_REPORTED' });
+    expect(saved!.payment!.history.at(-1)!.note).toContain('Hộ kinh doanh');
+  });
+
+  it('"Tôi đã chuyển khoản" without a tab keeps the primary account', async () => {
+    const { orders } = build();
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    const res = await orders.reportPaymentByUser(order._id.toString(), userId);
+    expect(res.bank.accountType).toBe(PaymentAccountType.PERSONAL);
+  });
+
   it('uses the Hộ kinh doanh account when the customer picks it', async () => {
     const { orders } = build();
     const order = await orders.create(
@@ -298,6 +333,13 @@ describe('Receiving account: personal (default) or Hộ kinh doanh', () => {
       checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER, paymentAccountType: PaymentAccountType.PERSONAL, einvoiceRequest: EINVOICE }),
     );
     expect(order.payment!.bankAccount).toMatchObject({ accountType: PaymentAccountType.BUSINESS, accountNumber: '0011001932418' });
+    // Only the Hộ kinh doanh QR is offered; reporting a personal transfer is refused.
+    expect(order.payment!.bankAccounts!.map((a) => a.accountType)).toEqual([PaymentAccountType.BUSINESS]);
+    const info = await orders.getPaymentForUser(order._id.toString(), userId);
+    expect(info.accounts).toHaveLength(1);
+    await expect(
+      orders.reportPaymentByUser(order._id.toString(), userId, PaymentAccountType.PERSONAL),
+    ).rejects.toThrow('Tài khoản nhận tiền không hợp lệ');
   });
 
   it('keeps the personal account for an e-invoice order when Hộ kinh doanh is not configured', async () => {
@@ -317,6 +359,7 @@ describe('Receiving account: personal (default) or Hộ kinh doanh', () => {
     expect(updated.payment!.bankAccount).toMatchObject({ accountType: PaymentAccountType.BUSINESS, accountNumber: '0011001932418' });
     expect(updated.payment!.reference).toBe(order.payment!.reference);
     expect(updated.payment!.history.at(-1)).toMatchObject({ action: 'ACCOUNT_CHANGED', byType: 'system' });
+    expect(updated.payment!.bankAccounts!.map((a) => a.accountType)).toEqual([PaymentAccountType.BUSINESS]);
 
     const info = await orders.getPaymentForUser(order._id.toString(), userId);
     expect(decodeVietQrPayload(info.qrPayload!).accountNumber).toBe('0011001932418');

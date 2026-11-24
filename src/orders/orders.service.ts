@@ -317,11 +317,7 @@ export class OrdersService {
     };
     const order =
       paymentMethod === PaymentMethod.BANK_TRANSFER
-        ? await this.createBankTransferOrder(
-            fields,
-            total,
-            this.bankTransfer?.resolveAccountType(dto.paymentAccountType, !!einvoiceRequest) ?? dto.paymentAccountType,
-          )
+        ? await this.createBankTransferOrder(fields, total, dto.paymentAccountType, !!einvoiceRequest)
         : await this.orderModel.create(fields);
 
     // Mark coupons as used
@@ -359,13 +355,15 @@ export class OrdersService {
     fields: Record<string, unknown>,
     total: number,
     accountType?: PaymentAccountType,
+    /** E-invoice orders are paid into the Hộ kinh doanh account only. */
+    businessOnly = false,
   ): Promise<OrderDocument> {
     if (!this.bankTransfer) {
       throw new BadRequestException('Phương thức chuyển khoản ngân hàng tạm thời không khả dụng — vui lòng chọn COD');
     }
     const _id = new Types.ObjectId();
     for (const [i, length] of PAYMENT_REFERENCE_LENGTHS.entries()) {
-      const payment: OrderPayment = this.bankTransfer.buildInitialPayment(_id, total, length, accountType);
+      const payment: OrderPayment = this.bankTransfer.buildInitialPayment(_id, total, length, accountType, { businessOnly });
       try {
         return await this.orderModel.create({ _id, ...fields, payment });
       } catch (err) {
@@ -679,6 +677,8 @@ export class OrdersService {
   async reportPaymentByUser(
     orderId: string,
     userId: string,
+    /** The QR tab the customer paid with (personal / Hộ kinh doanh). */
+    accountType?: PaymentAccountType,
   ): Promise<PaymentInstructions & { alreadyReported: boolean }> {
     if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
     const before = await this.findByIdForUser(orderId, userId);
@@ -688,6 +688,7 @@ export class OrdersService {
       before,
       { userId, name: user?.name || before.shippingInfo?.recipientName },
       this.orderNotifications.paymentReportedOutboxEvents(),
+      accountType,
     );
     if (reported) {
       await this.saveVersion(order, userId, 'user', 'Khách hàng báo đã chuyển khoản');

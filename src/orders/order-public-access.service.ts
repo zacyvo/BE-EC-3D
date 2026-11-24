@@ -12,7 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { Order, OrderDocument, PaymentMethod } from './schemas/order.schema';
+import { Order, OrderDocument, PaymentAccountType, PaymentMethod } from './schemas/order.schema';
 import { OrdersService } from './orders.service';
 import type { PaymentInstructions } from '../payments/bank-transfer.service';
 import { AuditService } from '../audit/audit.service';
@@ -382,10 +382,10 @@ export class OrderPublicAccessService {
   }
 
   /** "Tôi đã chuyển khoản" through the link — same customer claim as the logged-in flow. */
-  async reportPayment(token: string, accessJwt?: string) {
+  async reportPayment(token: string, accessJwt?: string, accountType?: PaymentAccountType) {
     const order = await this.authorize(token, accessJwt);
     if (!this.ordersService) throw new BadRequestException('Thanh toán tạm thời không khả dụng');
-    return this.ordersService.reportPaymentByUser(order._id.toString(), order.userId.toString());
+    return this.ordersService.reportPaymentByUser(order._id.toString(), order.userId.toString(), accountType);
   }
 
   toPublicView(order: OrderDocument): PublicOrderView {
