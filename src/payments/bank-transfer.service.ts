@@ -118,6 +118,65 @@ export class BankTransferService {
     };
   }
 
+  /**
+   * Account type a new bank-transfer order should use: an order with an e-invoice request is paid
+   * into the Hộ kinh doanh account (the invoice is issued by the Hộ kinh doanh), whatever the
+   * customer picked — unless that account isn't configured, then the customer's choice stands.
+   */
+  resolveAccountType(requested: PaymentAccountType | undefined, wantsEInvoice: boolean): PaymentAccountType | undefined {
+    if (wantsEInvoice && this.config.activeAccount(PaymentAccountType.BUSINESS)) return PaymentAccountType.BUSINESS;
+    return requested;
+  }
+
+  /**
+   * Moves an unpaid order's transfer to another receiving account (same amount and reference).
+   * Only while the customer hasn't reported a transfer yet — once they say they paid, the money
+   * may already be in the old account, so nothing changes. Returns the order (updated or not).
+   */
+  async switchAccount(order: OrderDocument, type: PaymentAccountType, note: string): Promise<OrderDocument> {
+    const payment = order.payment;
+    if (
+      order.paymentMethod !== PaymentMethod.BANK_TRANSFER ||
+      !payment ||
+      !isPaymentOpen(order) ||
+      payment.verificationStatus !== PaymentVerificationStatus.NOT_REPORTED ||
+      payment.bankAccount?.accountType === type
+    ) {
+      return order;
+    }
+    const account = this.config.activeAccount(type);
+    if (!account) return order;
+
+    const updated = await this.orderModel
+      .findOneAndUpdate(
+        {
+          _id: order._id,
+          paymentMethod: PaymentMethod.BANK_TRANSFER,
+          'payment.status': PaymentStatus.PENDING_PAYMENT,
+          'payment.verificationStatus': PaymentVerificationStatus.NOT_REPORTED,
+          status: { $ne: OrderStatus.CANCELLED },
+        },
+        {
+          $set: { 'payment.bankAccount': { ...account } },
+          $push: {
+            'payment.history': {
+              action: PaymentHistoryAction.ACCOUNT_CHANGED,
+              at: new Date(),
+              byType: 'system',
+              note: `${note}: ${payment.bankAccount?.bankName ?? '?'} ••••${(payment.bankAccount?.accountNumber ?? '').slice(-4)} → ${account.bankName} ••••${account.accountNumber.slice(-4)}`,
+            },
+          },
+        },
+        { new: true },
+      )
+      .exec();
+    if (updated) {
+      this.logger.log(`Đơn ${order._id}: đổi tài khoản nhận tiền → ${type}`);
+      return updated;
+    }
+    return (await this.orderModel.findById(order._id).exec()) ?? order;
+  }
+
   /** Instructions for an order the caller already checked the customer may see. */
   async getInstructions(order: OrderDocument): Promise<PaymentInstructions> {
     this.assertBankTransfer(order);

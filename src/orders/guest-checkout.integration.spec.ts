@@ -46,6 +46,7 @@ function build() {
     kick: jest.fn(),
   };
   const bankTransfer = {
+    resolveAccountType: jest.fn((requested?: string) => requested),
     buildInitialPayment: jest.fn((_id: Types.ObjectId, amount: number) => ({
       method: PaymentMethod.BANK_TRANSFER, status: 'PENDING_PAYMENT', amount, reference: `LG${_id.toString().slice(-8)}`,
       verificationStatus: 'NOT_REPORTED',

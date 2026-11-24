@@ -333,6 +333,8 @@ export enum PaymentConfirmationSource {
 export enum PaymentHistoryAction {
   INSTRUCTIONS_CREATED = 'INSTRUCTIONS_CREATED',
   AMOUNT_UPDATED = 'AMOUNT_UPDATED',
+  /** Receiving account switched (e.g. to Hộ kinh doanh after an e-invoice request). */
+  ACCOUNT_CHANGED = 'ACCOUNT_CHANGED',
   CUSTOMER_REPORTED = 'CUSTOMER_REPORTED',
   CONFIRMED = 'CONFIRMED',
   REFUNDED = 'REFUNDED',

@@ -289,6 +289,56 @@ describe('Receiving account: personal (default) or Hộ kinh doanh', () => {
     expect(order.payment!.bankAccount.accountType).toBe(PaymentAccountType.PERSONAL);
   });
 
+  const EINVOICE = { buyerType: 'INDIVIDUAL', buyerName: 'Nguyễn Văn A', address: '1 Lê Lợi', email: 'a@b.vn' } as never;
+
+  it('an order placed with an e-invoice request is paid into the Hộ kinh doanh account', async () => {
+    const { orders } = build();
+    const order = await orders.create(
+      userId,
+      checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER, paymentAccountType: PaymentAccountType.PERSONAL, einvoiceRequest: EINVOICE }),
+    );
+    expect(order.payment!.bankAccount).toMatchObject({ accountType: PaymentAccountType.BUSINESS, accountNumber: '0011001932418' });
+  });
+
+  it('keeps the personal account for an e-invoice order when Hộ kinh doanh is not configured', async () => {
+    env.PAYMENT_BANK_ACCOUNT_NUMBER = '';
+    const { orders } = build();
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER, einvoiceRequest: EINVOICE }));
+    expect(order.payment!.bankAccount.accountType).toBe(PaymentAccountType.PERSONAL);
+  });
+
+  it('an e-invoice request after checkout moves an unpaid, unreported transfer to Hộ kinh doanh', async () => {
+    const { orders } = build();
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    expect(order.payment!.bankAccount.accountType).toBe(PaymentAccountType.PERSONAL);
+
+    const updated = await orders.requestEInvoiceByUser(order._id.toString(), userId, EINVOICE);
+    expect(updated.einvoiceRequest).toBeDefined();
+    expect(updated.payment!.bankAccount).toMatchObject({ accountType: PaymentAccountType.BUSINESS, accountNumber: '0011001932418' });
+    expect(updated.payment!.reference).toBe(order.payment!.reference);
+    expect(updated.payment!.history.at(-1)).toMatchObject({ action: 'ACCOUNT_CHANGED', byType: 'system' });
+
+    const info = await orders.getPaymentForUser(order._id.toString(), userId);
+    expect(decodeVietQrPayload(info.qrPayload!).accountNumber).toBe('0011001932418');
+  });
+
+  it('does not move the transfer once the customer reported paying the personal account', async () => {
+    const { orders } = build();
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    await orders.reportPaymentByUser(order._id.toString(), userId);
+    const updated = await orders.requestEInvoiceByUser(order._id.toString(), userId, EINVOICE);
+    expect(updated.einvoiceRequest).toBeDefined();
+    expect(updated.payment!.bankAccount.accountType).toBe(PaymentAccountType.PERSONAL);
+  });
+
+  it('an e-invoice request on a COD order touches no payment', async () => {
+    const { orders } = build();
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.COD }));
+    const updated = await orders.requestEInvoiceByUser(order._id.toString(), userId, EINVOICE);
+    expect(updated.einvoiceRequest).toBeDefined();
+    expect(updated.payment).toBeUndefined();
+  });
+
   it('is unavailable when bank transfer is switched off, whatever is configured', () => {
     env.PAYMENT_BANK_ENABLED = 'false';
     const { bankTransfer } = build();

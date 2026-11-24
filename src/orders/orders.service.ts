@@ -317,7 +317,11 @@ export class OrdersService {
     };
     const order =
       paymentMethod === PaymentMethod.BANK_TRANSFER
-        ? await this.createBankTransferOrder(fields, total, dto.paymentAccountType)
+        ? await this.createBankTransferOrder(
+            fields,
+            total,
+            this.bankTransfer?.resolveAccountType(dto.paymentAccountType, !!einvoiceRequest) ?? dto.paymentAccountType,
+          )
         : await this.orderModel.create(fields);
 
     // Mark coupons as used
@@ -858,9 +862,15 @@ export class OrdersService {
       afterData: { total: updated.total, vatIncluded: request.vatAmount, buyerType: request.buyerType },
     });
 
+    // The invoice is issued by the Hộ kinh doanh → an unpaid, not-yet-reported transfer moves to
+    // that account (no-op for COD, paid / reported orders, or when it isn't configured).
+    const result = this.bankTransfer
+      ? await this.bankTransfer.switchAccount(updated, PaymentAccountType.BUSINESS, 'Khách yêu cầu hoá đơn điện tử')
+      : updated;
+
     // Non-blocking, same as checkout: a Zalo failure can't affect the request.
     this.orderNotifications.kick();
-    return updated;
+    return result;
   }
 
   /** Shop accepts the customer's e-invoice request — the invoice is issued (and emailed) once the
