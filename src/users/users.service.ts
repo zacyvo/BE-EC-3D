@@ -5,6 +5,8 @@ import * as bcrypt from 'bcrypt';
 import { User, UserDocument } from './schemas/user.schema';
 import { MailService } from '../mail/mail.service';
 import { AddressConversionService } from '../locations/address-conversion.service';
+import { FindUsersQueryDto, UserOrdersFilter } from './dto/find-users-query.dto';
+import { buildUsersFilter } from './users-filter.util';
 
 /** "+84912345678" → "0912345678" (same rule as login by phone). */
 export function normalizeUserPhone(phone: string): string {
@@ -257,14 +259,12 @@ export class UsersService {
     }).exec();
   }
 
-  async findAll(query: { page: number; limit: number; search?: string }) {
-    const { page, limit, search } = query;
-    const filter: Record<string, unknown> = {};
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-      ];
+  async findAll(query: FindUsersQueryDto) {
+    const { page, limit } = query;
+    const filter = buildUsersFilter(query);
+    if (query.orders) {
+      const ids = await this.userIdsWithOrders(query.orders === UserOrdersFilter.DELIVERED);
+      filter._id = query.orders === UserOrdersFilter.NONE ? { $nin: ids } : { $in: ids };
     }
     const [data, total] = await Promise.all([
       this.userModel
@@ -276,6 +276,14 @@ export class UsersService {
       this.userModel.countDocuments(filter).exec(),
     ]);
     return { data, total, page, limit };
+  }
+
+  /** Read straight from the orders collection: OrdersModule already imports UsersModule. */
+  private async userIdsWithOrders(deliveredOnly: boolean): Promise<Types.ObjectId[]> {
+    return this.userModel.db.collection('orders').distinct('userId', {
+      isDeleted: { $ne: true },
+      ...(deliveredOnly ? { status: 'DELIVERED' } : {}),
+    });
   }
 
   async softDelete(userId: string, deletedBy: string): Promise<void> {

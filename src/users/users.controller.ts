@@ -8,8 +8,6 @@ import {
   Query,
   Delete,
   UseGuards,
-  ParseIntPipe,
-  DefaultValuePipe,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
@@ -21,6 +19,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { IsBoolean, IsDateString, IsOptional, IsString, MaxLength, MinLength, Length, ValidateIf, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { OldAddressInputDto } from '../locations/dto/old-address-input.dto';
+import { FindUsersQueryDto } from './dto/find-users-query.dto';
 
 class UpdateProfileDto {
   @IsOptional() @IsString() @MaxLength(64) name?: string;
@@ -159,12 +158,8 @@ export class AdminUsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Get()
-  async findAll(
-    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
-    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
-    @Query('search') search?: string,
-  ) {
-    return this.usersService.findAll({ page, limit, search });
+  async findAll(@Query() query: FindUsersQueryDto) {
+    return this.usersService.findAll(query);
   }
 
   @Get('by-phone')
