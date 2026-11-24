@@ -7,6 +7,7 @@ import {
   OrderDocument,
   OrderPayment,
   OrderStatus,
+  PaymentAccountType,
   PaymentHistoryAction,
   PaymentMethod,
   PaymentStatus,
@@ -73,12 +74,33 @@ export class BankTransferService {
     return !!this.config.activeAccount();
   }
 
+  /** Public checkout info: whether bank transfer is offered and which receiving accounts the
+   * customer may pick (no account details). */
+  availability(): { enabled: boolean; accountTypes: PaymentAccountType[]; defaultAccountType: PaymentAccountType | null } {
+    const accountTypes = this.config.availableAccountTypes();
+    return { enabled: accountTypes.length > 0, accountTypes, defaultAccountType: this.config.defaultAccountType() };
+  }
+
   /** Payment subdocument for a new checkout order. Throws (the order isn't created) when bank
-   * transfer is off / misconfigured or the server-computed total can't be paid by QR. */
-  buildInitialPayment(orderId: Types.ObjectId, total: number, referenceLength?: number): OrderPayment {
-    const account = this.config.activeAccount();
+   * transfer is off / misconfigured, the chosen account isn't available, or the server-computed
+   * total can't be paid by QR. `accountType` omitted = default account (personal). */
+  buildInitialPayment(
+    orderId: Types.ObjectId,
+    total: number,
+    referenceLength?: number,
+    accountType?: PaymentAccountType,
+  ): OrderPayment {
+    const account = this.config.activeAccount(accountType);
     if (!account) {
-      this.logger.warn(`Chuyển khoản không khả dụng: ${this.config.validate().errors.join('; ')}`);
+      const v = this.config.validate();
+      if (accountType && v.valid) {
+        throw new BadRequestException(
+          accountType === PaymentAccountType.BUSINESS
+            ? 'Tài khoản Hộ kinh doanh tạm thời không nhận chuyển khoản — vui lòng chọn tài khoản khác'
+            : 'Tài khoản cá nhân tạm thời không nhận chuyển khoản — vui lòng chọn tài khoản khác',
+        );
+      }
+      this.logger.warn(`Chuyển khoản không khả dụng: ${v.errors.join('; ')}`);
       throw new BadRequestException('Phương thức chuyển khoản ngân hàng tạm thời không khả dụng — vui lòng chọn COD');
     }
     if (validateAmount(total)) {
@@ -186,6 +208,7 @@ export class BankTransferService {
         bankName: payment.bankAccount.bankName,
         accountNumber: payment.bankAccount.accountNumber,
         accountName: payment.bankAccount.accountName,
+        ...(payment.bankAccount.accountType ? { accountType: payment.bankAccount.accountType } : {}),
       },
       payable,
       qrPayload,
@@ -198,9 +221,10 @@ export class BankTransferService {
   }
 
   /** The receiving account to snapshot into a new payment request, or null when bank transfer is
-   * off / misconfigured. */
-  activeAccountSnapshot(): BankAccountSnapshot | null {
-    const account = this.config.activeAccount();
+   * off / misconfigured. With `preferred` (e.g. the account the order was paid into), that account
+   * when available, otherwise the default one. */
+  activeAccountSnapshot(preferred?: PaymentAccountType): BankAccountSnapshot | null {
+    const account = (preferred && this.config.activeAccount(preferred)) || this.config.activeAccount();
     return account ? { ...account } : null;
   }
 

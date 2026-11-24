@@ -9,6 +9,6 @@ export class PaymentsController {
 
   @Get('bank-transfer/availability')
   availability() {
-    return { enabled: this.bankTransfer.isAvailable() };
+    return this.bankTransfer.availability();
   }
 }

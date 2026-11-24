@@ -17,6 +17,7 @@ import {
   EInvoiceRequestStatus,
   OrderEInvoiceRequest,
   OrderPayment,
+  PaymentAccountType,
   PaymentMethod,
   PaymentStatus,
   OrderAdjustmentStatus,
@@ -316,7 +317,7 @@ export class OrdersService {
     };
     const order =
       paymentMethod === PaymentMethod.BANK_TRANSFER
-        ? await this.createBankTransferOrder(fields, total)
+        ? await this.createBankTransferOrder(fields, total, dto.paymentAccountType)
         : await this.orderModel.create(fields);
 
     // Mark coupons as used
@@ -350,13 +351,17 @@ export class OrdersService {
   /** Bank-transfer checkout: the payment snapshot (bank account, server-computed amount, unique
    * transfer reference derived from the order id) is written in the same insert as the order.
    * A reference collision (unique index) is retried with a longer id suffix. */
-  private async createBankTransferOrder(fields: Record<string, unknown>, total: number): Promise<OrderDocument> {
+  private async createBankTransferOrder(
+    fields: Record<string, unknown>,
+    total: number,
+    accountType?: PaymentAccountType,
+  ): Promise<OrderDocument> {
     if (!this.bankTransfer) {
       throw new BadRequestException('Phương thức chuyển khoản ngân hàng tạm thời không khả dụng — vui lòng chọn COD');
     }
     const _id = new Types.ObjectId();
     for (const [i, length] of PAYMENT_REFERENCE_LENGTHS.entries()) {
-      const payment: OrderPayment = this.bankTransfer.buildInitialPayment(_id, total, length);
+      const payment: OrderPayment = this.bankTransfer.buildInitialPayment(_id, total, length, accountType);
       try {
         return await this.orderModel.create({ _id, ...fields, payment });
       } catch (err) {

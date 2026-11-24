@@ -20,7 +20,7 @@ import {
   ValidateBy,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
-import { EInvoiceBuyerType, OrderStatus, PaymentMethod } from '../schemas/order.schema';
+import { EInvoiceBuyerType, OrderStatus, PaymentAccountType, PaymentMethod } from '../schemas/order.schema';
 import { OldAddressInputDto } from '../../locations/dto/old-address-input.dto';
 
 /** Shared with shopee-order-mapping.util.ts (masked/invalid Shopee phone detection) —
@@ -131,6 +131,11 @@ export class CreateOrderDto {
   /** COD (default) or BANK_TRANSFER (VietQR). The amount is always computed server-side. */
   @IsOptional() @IsEnum(PaymentMethod, { message: 'Phương thức thanh toán không hợp lệ' })
   paymentMethod?: PaymentMethod;
+
+  /** Receiving account for BANK_TRANSFER: PERSONAL (default when omitted) or BUSINESS (Hộ kinh
+   * doanh). Ignored for COD. */
+  @IsOptional() @IsEnum(PaymentAccountType, { message: 'Tài khoản nhận tiền không hợp lệ' })
+  paymentAccountType?: PaymentAccountType;
 }
 
 /** Admin CMS "Xác nhận đã thanh toán" — `expectedAmount` is the amount shown in the dialog; the

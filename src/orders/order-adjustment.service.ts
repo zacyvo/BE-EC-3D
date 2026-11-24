@@ -24,6 +24,7 @@ import {
   OrderItem,
   OrderStatus,
   ORDER_ADJUSTABLE_STATUSES,
+  PaymentAccountType,
   PaymentMethod,
   PaymentStatus,
   PaymentVerificationStatus,
@@ -308,7 +309,7 @@ export class OrderAdjustmentService {
       throw new BadRequestException('Đơn hàng vừa thay đổi — vui lòng chờ shop gửi lại đề xuất điều chỉnh');
     }
 
-    const settlement = this.buildSettlement(adj, dto);
+    const settlement = this.buildSettlement(adj, dto, order.payment?.bankAccount?.accountType);
     const after = adj.after;
     const vatAmount =
       order.einvoiceRequest &&
@@ -630,6 +631,8 @@ export class OrderAdjustmentService {
   private buildSettlement(
     adj: OrderAdjustment,
     dto: AcceptOrderAdjustmentDto,
+    /** Account the order itself was paid into — the extra payment goes to the same one. */
+    preferredAccountType?: PaymentAccountType,
   ): Omit<AdjustmentSettlement, 'reference'> | null {
     if (adj.balance < 0) {
       if (!dto.refundAccount) {
@@ -647,7 +650,7 @@ export class OrderAdjustmentService {
         throw new BadRequestException('Vui lòng chọn hình thức thanh toán phần còn lại (COD hoặc chuyển khoản)');
       }
       if (dto.extraPaymentMethod === PaymentMethod.BANK_TRANSFER) {
-        const bank = this.bankTransfer?.activeAccountSnapshot();
+        const bank = this.bankTransfer?.activeAccountSnapshot(preferredAccountType);
         if (!bank) {
           throw new BadRequestException('Chuyển khoản ngân hàng tạm thời không khả dụng — vui lòng chọn COD');
         }
@@ -698,6 +701,7 @@ export class OrderAdjustmentService {
         bankName: st.bankAccount.bankName,
         accountNumber: st.bankAccount.accountNumber,
         accountName: st.bankAccount.accountName,
+        ...(st.bankAccount.accountType ? { accountType: st.bankAccount.accountType } : {}),
       },
       status: st.status,
       payable,

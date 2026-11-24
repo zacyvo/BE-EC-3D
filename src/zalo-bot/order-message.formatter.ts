@@ -28,7 +28,7 @@ export interface OrderMessageInput {
     amount?: number;
     status?: string;
     customerReportedAt?: Date | string;
-    bankAccount?: { bankName?: string; accountNumber?: string };
+    bankAccount?: { bankName?: string; accountNumber?: string; accountType?: string };
   };
   customerNote?: string;
   cancelRequest?: { requestedAt?: Date | string; reason?: string; requestedByName?: string };
@@ -393,7 +393,13 @@ export function formatPaymentReportedMessage(order: OrderMessageInput, options: 
   lines.push(`Nội dung chuyển khoản: ${reference}`);
   if (payment.bankAccount?.bankName) {
     const acc = payment.bankAccount.accountNumber ?? '';
-    lines.push(`Tài khoản nhận: ${payment.bankAccount.bankName}${acc ? ` ••••${acc.slice(-4)}` : ''}`);
+    const kind =
+      payment.bankAccount.accountType === 'PERSONAL'
+        ? ' (Cá nhân)'
+        : payment.bankAccount.accountType === 'BUSINESS'
+          ? ' (Hộ kinh doanh)'
+          : '';
+    lines.push(`Tài khoản nhận: ${payment.bankAccount.bankName}${acc ? ` ••••${acc.slice(-4)}` : ''}${kind}`);
   }
   lines.push('', '⚠️ Đây chỉ là thông báo của khách, CHƯA phải xác nhận đã nhận tiền.');
   lines.push('Sau khi kiểm tra tài khoản ngân hàng, gửi cho bot:', `Đơn hàng: ${reference}`, 'Đã thanh toán');

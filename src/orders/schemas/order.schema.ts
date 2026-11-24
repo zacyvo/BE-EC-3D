@@ -338,6 +338,13 @@ export enum PaymentHistoryAction {
   REFUNDED = 'REFUNDED',
 }
 
+/** Which of the shop's receiving accounts a bank-transfer payment goes to — the owner's personal
+ * account (default) or the Hộ kinh doanh Luxe Glow account. Chosen by the customer at checkout. */
+export enum PaymentAccountType {
+  PERSONAL = 'PERSONAL',
+  BUSINESS = 'BUSINESS',
+}
+
 /** The receiving account as it was when the instructions were created — a later change of the
  * shop's bank config doesn't rewrite what an old order told its customer. */
 @Schema({ _id: false })
@@ -346,6 +353,8 @@ export class BankAccountSnapshot {
   @Prop({ required: true }) bankName: string;
   @Prop({ required: true }) accountNumber: string;
   @Prop({ required: true }) accountName: string;
+  /** Absent on orders placed before 2026-11-24 — those all went to the Hộ kinh doanh account. */
+  @Prop({ enum: Object.values(PaymentAccountType) }) accountType?: PaymentAccountType;
 }
 
 const BankAccountSnapshotSchema = SchemaFactory.createForClass(BankAccountSnapshot);

@@ -9,6 +9,7 @@ import {
   OrderStatus,
   PaymentConfirmationSource,
   PaymentHistoryAction,
+  PaymentAccountType,
   PaymentMethod,
   PaymentStatus,
   PaymentVerificationStatus,
@@ -200,6 +201,100 @@ beforeEach(async () => {
 });
 
 // ─── Customer side ──────────────────────────────────────────────────────────
+
+const PERSONAL_ENV: Record<string, string> = {
+  PAYMENT_PERSONAL_BANK_BIN: '970415',
+  PAYMENT_PERSONAL_BANK_NAME: 'VietinBank',
+  PAYMENT_PERSONAL_BANK_ACCOUNT_NUMBER: '0909064680',
+  PAYMENT_PERSONAL_BANK_ACCOUNT_NAME: 'QUACH PHUONG THANH TRUC',
+};
+
+describe('Receiving account: personal (default) or Hộ kinh doanh', () => {
+  beforeEach(() => {
+    Object.assign(env, PERSONAL_ENV);
+  });
+
+  it('offers both accounts, personal first and by default', () => {
+    const { bankTransfer } = build();
+    expect(bankTransfer.availability()).toEqual({
+      enabled: true,
+      accountTypes: [PaymentAccountType.PERSONAL, PaymentAccountType.BUSINESS],
+      defaultAccountType: PaymentAccountType.PERSONAL,
+    });
+  });
+
+  it('uses the personal account when the customer does not choose', async () => {
+    const { orders } = build();
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    expect(order.payment!.bankAccount).toMatchObject({
+      accountType: PaymentAccountType.PERSONAL,
+      bankBin: '970415',
+      accountNumber: '0909064680',
+      accountName: 'QUACH PHUONG THANH TRUC',
+    });
+    const info = await orders.getPaymentForUser(order._id.toString(), userId);
+    expect(info.bank.accountType).toBe(PaymentAccountType.PERSONAL);
+    expect(decodeVietQrPayload(info.qrPayload!)).toMatchObject({ bankBin: '970415', accountNumber: '0909064680' });
+  });
+
+  it('uses the Hộ kinh doanh account when the customer picks it', async () => {
+    const { orders } = build();
+    const order = await orders.create(
+      userId,
+      checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER, paymentAccountType: PaymentAccountType.BUSINESS }),
+    );
+    expect(order.payment!.bankAccount).toMatchObject({
+      accountType: PaymentAccountType.BUSINESS,
+      bankBin: '970436',
+      accountNumber: '0011001932418',
+    });
+    const info = await orders.getPaymentForUser(order._id.toString(), userId);
+    expect(decodeVietQrPayload(info.qrPayload!).accountNumber).toBe('0011001932418');
+  });
+
+  it('ignores the account choice for COD', async () => {
+    const { orders } = build();
+    const order = await orders.create(
+      userId,
+      checkoutDto({ paymentMethod: PaymentMethod.COD, paymentAccountType: PaymentAccountType.BUSINESS }),
+    );
+    expect(order.payment).toBeUndefined();
+  });
+
+  it('falls back to Hộ kinh doanh by default when the personal account is not configured', async () => {
+    env.PAYMENT_PERSONAL_BANK_ACCOUNT_NUMBER = '';
+    const { orders, bankTransfer } = build();
+    expect(bankTransfer.availability()).toEqual({
+      enabled: true,
+      accountTypes: [PaymentAccountType.BUSINESS],
+      defaultAccountType: PaymentAccountType.BUSINESS,
+    });
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    expect(order.payment!.bankAccount.accountType).toBe(PaymentAccountType.BUSINESS);
+    // An explicit choice of the missing account is refused, nothing is created.
+    await expect(
+      orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER, paymentAccountType: PaymentAccountType.PERSONAL })),
+    ).rejects.toThrow('Tài khoản cá nhân tạm thời không nhận chuyển khoản');
+    expect(await OrderModel.countDocuments()).toBe(1);
+  });
+
+  it('works with only the personal account configured', async () => {
+    env.PAYMENT_BANK_ACCOUNT_NUMBER = '';
+    const { orders, bankTransfer } = build();
+    expect(bankTransfer.availability().accountTypes).toEqual([PaymentAccountType.PERSONAL]);
+    await expect(
+      orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER, paymentAccountType: PaymentAccountType.BUSINESS })),
+    ).rejects.toThrow('Tài khoản Hộ kinh doanh tạm thời không nhận chuyển khoản');
+    const order = await orders.create(userId, checkoutDto({ paymentMethod: PaymentMethod.BANK_TRANSFER }));
+    expect(order.payment!.bankAccount.accountType).toBe(PaymentAccountType.PERSONAL);
+  });
+
+  it('is unavailable when bank transfer is switched off, whatever is configured', () => {
+    env.PAYMENT_BANK_ENABLED = 'false';
+    const { bankTransfer } = build();
+    expect(bankTransfer.availability()).toEqual({ enabled: false, accountTypes: [], defaultAccountType: null });
+  });
+});
 
 describe('VietQR checkout + payment instructions', () => {
   it('creates a bank-transfer order with a server-side amount, reference and bank snapshot', async () => {
