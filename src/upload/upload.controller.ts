@@ -35,6 +35,28 @@ export class UploadController {
     const urls = await this.uploadService.uploadMultiple(files);
     return { urls };
   }
+
+  /** Ảnh banner / hero trang chủ — lưu riêng thư mục web-ec-3d/banners. */
+  @Post('banner-images')
+  @UseInterceptors(
+    FilesInterceptor('images', 2, {
+      storage: memoryStorage(),
+      limits: { fileSize: 10 * 1024 * 1024 }, // 10MB per file
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype.match(/^image\/(jpeg|jpg|png|webp)$/)) {
+          return cb(new BadRequestException('Ảnh banner chỉ nhận JPG, PNG hoặc WebP'), false);
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  async uploadBannerImages(@UploadedFiles() files: Express.Multer.File[]) {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('No files uploaded');
+    }
+    const urls = await this.uploadService.uploadBannerImages(files);
+    return { urls };
+  }
 }
 
 /** Endpoint used by regular users to upload images for custom-order requests */

@@ -32,6 +32,11 @@ export class UploadService {
     return results;
   }
 
+  /** Ảnh banner / hero trang chủ (xem banners/). */
+  async uploadBannerImages(files: Express.Multer.File[]): Promise<string[]> {
+    return Promise.all(files.map((file) => this.uploadOne(file, 'web-ec-3d/banners')));
+  }
+
   async uploadReturnImages(files: Express.Multer.File[]): Promise<string[]> {
     return Promise.all(files.map((file) => this.uploadOne(file, 'web-ec-3d/returns')));
   }
