@@ -16,6 +16,15 @@ export const NET_ORDER_TOTAL_EXPR = {
   ],
 };
 
+/** What a customer spent and saved — `$group` fields over their DELIVERED orders. `totalDiscount` is
+ * every reduction on the order: coupons, admin direct discount, and the shipping fee waived by a code. */
+export const CUSTOMER_SPENDING_FIELDS = {
+  totalSpent: { $sum: NET_ORDER_TOTAL_EXPR },
+  totalDiscount: {
+    $sum: { $add: [{ $ifNull: ['$discountAmount', 0] }, { $ifNull: ['$shippingDiscount', 0] }] },
+  },
+};
+
 /** Drop-in replacement for `{ $unwind: '$items' }` that also sets `_returnedQty` — how many
  * units of this line came back through a settled return (0 otherwise). Return items point at
  * their line by index (`returnRequest.items[].itemIndex`). */

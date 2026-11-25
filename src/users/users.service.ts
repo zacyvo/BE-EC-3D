@@ -7,6 +7,7 @@ import { MailService } from '../mail/mail.service';
 import { AddressConversionService } from '../locations/address-conversion.service';
 import { FindUsersQueryDto, UserOrdersFilter } from './dto/find-users-query.dto';
 import { buildUsersFilter } from './users-filter.util';
+import { CUSTOMER_SPENDING_FIELDS } from '../orders/order-return-aggregation';
 
 /** "+84912345678" → "0912345678" (same rule as login by phone). */
 export function normalizeUserPhone(phone: string): string {
@@ -17,6 +18,13 @@ export function normalizeUserPhone(phone: string): string {
 export function guestEmailOfPhone(normalizedPhone: string): string {
   return `guest_${normalizedPhone}@guest.luxe-glow.vn`;
 }
+
+export interface CustomerSpending {
+  totalSpent: number;
+  totalDiscount: number;
+}
+
+export type UserListRow = User & CustomerSpending;
 
 @Injectable()
 export class UsersService {
@@ -259,14 +267,14 @@ export class UsersService {
     }).exec();
   }
 
-  async findAll(query: FindUsersQueryDto) {
+  async findAll(query: FindUsersQueryDto): Promise<{ data: UserListRow[]; total: number; page: number; limit: number }> {
     const { page, limit } = query;
     const filter = buildUsersFilter(query);
     if (query.orders) {
       const ids = await this.userIdsWithOrders(query.orders === UserOrdersFilter.DELIVERED);
       filter._id = query.orders === UserOrdersFilter.NONE ? { $nin: ids } : { $in: ids };
     }
-    const [data, total] = await Promise.all([
+    const [users, total] = await Promise.all([
       this.userModel
         .find(filter)
         .sort({ createdAt: -1 })
@@ -275,6 +283,11 @@ export class UsersService {
         .exec(),
       this.userModel.countDocuments(filter).exec(),
     ]);
+    const spending = await this.spendingByUser(users.map((u) => u._id));
+    const data = users.map((u) => ({
+      ...(u.toJSON() as User),
+      ...(spending.get(u._id.toString()) ?? { totalSpent: 0, totalDiscount: 0 }),
+    }));
     return { data, total, page, limit };
   }
 
@@ -284,6 +297,20 @@ export class UsersService {
       isDeleted: { $ne: true },
       ...(deliveredOnly ? { status: 'DELIVERED' } : {}),
     });
+  }
+
+  /** Same figures as OrdersService.getUserStats, for a page of users at once. */
+  private async spendingByUser(
+    userIds: Types.ObjectId[],
+  ): Promise<Map<string, CustomerSpending>> {
+    const rows = await this.userModel.db
+      .collection('orders')
+      .aggregate<CustomerSpending & { _id: Types.ObjectId }>([
+        { $match: { userId: { $in: userIds }, status: 'DELIVERED', isDeleted: { $ne: true } } },
+        { $group: { _id: '$userId', ...CUSTOMER_SPENDING_FIELDS } },
+      ])
+      .toArray();
+    return new Map(rows.map(({ _id, ...figures }) => [_id.toString(), figures]));
   }
 
   async softDelete(userId: string, deletedBy: string): Promise<void> {

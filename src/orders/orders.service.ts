@@ -25,7 +25,7 @@ import {
   AdjustmentSettlementStatus,
 } from './schemas/order.schema';
 import { OrderVersion, OrderVersionDocument } from './schemas/order-version.schema';
-import { NET_ORDER_TOTAL_EXPR } from './order-return-aggregation';
+import { CUSTOMER_SPENDING_FIELDS } from './order-return-aggregation';
 import {
   CreateOrderDto, UpdateOrderStatusDto, AdminCreateOrderDto, ShippingInfoDto, EInvoiceRequestDto,
 } from './dto/order.dto';
@@ -971,19 +971,22 @@ export class OrdersService {
     throw new BadRequestException('Đơn hàng vừa được cập nhật, vui lòng thử lại');
   }
 
-  async getUserStats(userId: string): Promise<{ totalOrders: number; deliveredOrders: number; totalSpent: number }> {
+  async getUserStats(userId: string): Promise<{
+    totalOrders: number; deliveredOrders: number; totalSpent: number; totalDiscount: number;
+  }> {
     const uid = new Types.ObjectId(userId);
     const [allResult, deliveredResult] = await Promise.all([
-      this.orderModel.countDocuments({ userId: uid }),
+      this.orderModel.countDocuments({ userId: uid, isDeleted: { $ne: true } }),
       this.orderModel.aggregate([
-        { $match: { userId: uid, status: OrderStatus.DELIVERED } },
-        { $group: { _id: null, count: { $sum: 1 }, totalSpent: { $sum: NET_ORDER_TOTAL_EXPR } } },
+        { $match: { userId: uid, status: OrderStatus.DELIVERED, isDeleted: { $ne: true } } },
+        { $group: { _id: null, count: { $sum: 1 }, ...CUSTOMER_SPENDING_FIELDS } },
       ]),
     ]);
     return {
       totalOrders: allResult,
       deliveredOrders: deliveredResult[0]?.count ?? 0,
       totalSpent: deliveredResult[0]?.totalSpent ?? 0,
+      totalDiscount: deliveredResult[0]?.totalDiscount ?? 0,
     };
   }
 

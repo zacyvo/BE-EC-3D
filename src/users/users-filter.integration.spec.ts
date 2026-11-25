@@ -3,6 +3,8 @@ import mongoose, { Connection, Model, Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { User, UserDocument, UserSchema } from './schemas/user.schema';
 import { UsersService } from './users.service';
+import { OrdersService } from '../orders/orders.service';
+import { Order, OrderSchema } from '../orders/schemas/order.schema';
 import { FindUsersQueryDto } from './dto/find-users-query.dto';
 
 /** Admin customer list filters, from the raw query string (real ValidationPipe) to an in-memory MongoDB. */
@@ -52,8 +54,13 @@ beforeAll(async () => {
   await add('N******n', 'shopee_buyer2@guest.luxe-glow.vn', { isGuest: true });
 
   await conn.collection('orders').insertMany([
-    { userId: ids['an@test.vn'], status: 'DELIVERED', isDeleted: false },
-    { userId: ids['an@test.vn'], status: 'PENDING', isDeleted: false },
+    { userId: ids['an@test.vn'], status: 'DELIVERED', isDeleted: false, total: 200_000, discountAmount: 30_000, shippingDiscount: 22_000 },
+    {
+      userId: ids['an@test.vn'], status: 'DELIVERED', isDeleted: false, total: 110_000, vatAmount: 10_000, discountAmount: 5_000,
+      returnRequest: { status: 'COMPLETED', refundAmount: 40_000 },
+    },
+    { userId: ids['an@test.vn'], status: 'DELIVERED', isDeleted: true, total: 999_000, discountAmount: 999_000 },
+    { userId: ids['an@test.vn'], status: 'PENDING', isDeleted: false, total: 500_000, discountAmount: 50_000 },
     { userId: ids['binh@gmail.com'], status: 'PENDING', isDeleted: false },
     { userId: ids['my.shopee_fan@test.vn'], status: 'DELIVERED', isDeleted: true },
   ]);
@@ -118,6 +125,21 @@ describe('admin customer list filters', () => {
     expect(res).toMatchObject({ total: 4, page: 2, limit: 3 });
     expect(res.data).toHaveLength(1);
     expect(await parse({})).toMatchObject({ page: 1, limit: 20 });
+  });
+
+  it('adds what each customer paid and saved on delivered orders, as in the customer detail', async () => {
+    const { data } = await service.findAll(await parse({ masked: 'EXCLUDE' }));
+    const row = (email: string) => data.find((u) => u.email === email);
+    // 200k + (110k − 10k VAT − 40k refunded); 30k + 22k shipping + 5k
+    expect(row('an@test.vn')).toMatchObject({ totalSpent: 260_000, totalDiscount: 57_000 });
+    expect(row('binh@gmail.com')).toMatchObject({ totalSpent: 0, totalDiscount: 0 });
+    expect(row('an@test.vn')).not.toHaveProperty('password');
+
+    const orders = Object.create(OrdersService.prototype) as OrdersService;
+    Object.assign(orders, { orderModel: conn.model(Order.name, OrderSchema) });
+    expect(await orders.getUserStats(ids['an@test.vn'].toString())).toEqual({
+      totalOrders: 3, deliveredOrders: 2, totalSpent: 260_000, totalDiscount: 57_000,
+    });
   });
 
   it('rejects unknown values and impossible dates', async () => {
